@@ -122,7 +122,8 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 
 - `captured-project-synthetic-cli-v2/validation-summary.json` 记录完整合成metadata驱动的素材复制、实际App音轨映射、保存重开、M4A导出与派生分析输入；5秒素材的3个合成视听脉冲全部配对。这是CLI正向接线验证，尚不能替代真实录制的完整metadata随工程恢复。
 - `analyze-ffplay-sync-v2.py` 改用ffprobe JSON读取帧时间戳，忽略H.264 SEI side data；解析器纯测与H.264合成3/3验证通过。原30秒实录离线重分析仍为1820帧、18/18配对，原始中位数/P95/P99/最大值逐项不变，见 `capture-audio-clock-appsync-30s-v1/analyzer-json-fix-v1/comparison.json`。未改变cue判定或偏差阈值。
-- 麦克风时钟段纯测接受暂停前后两段及增加合法重锚段的情况，拒绝时间或帧倒序、重叠、缺口、活动覆盖不足和暂停内容泄漏；它不访问麦克风。真实输入信号和物理设备复位仍待实录。
+- 麦克风时钟段纯测接受暂停前后两段及增加合法重锚段的情况，拒绝时间或帧倒序、重叠、缺口、活动覆盖不足和暂停内容泄漏；它不访问麦克风。该项在后台回归v2之后增加，当前 `-IncludeCaptureProbe` 共八组；`package-0.2.3/source-validation-logs-6fefeebe14554efbb5ac6386e0d8b73a/tests.stdout.log` 已记录独立源码包八组通过。真实输入信号和物理设备复位仍待实录。
 - `runtime-lock-stability-v1.json` 确认13份NuGet锁文件在后台测试后哈希不变。发布使用锁定恢复。源码身份测试也覆盖深层解压路径与父Git仓库，独立源码构建的每轮报告保存在对应日志目录中。
+- 源码ZIP结构策略的17项合成用例通过，拒绝根目录外文件、规范路径重复、文件目录冲突、Windows路径歧义及无效元数据类型；只测试临时归档，不构建或运行应用。独立验证的子PowerShell使用UTF-8输出，`package-log-encoding-repro-v2/summary.json` 确认中文stdout/stderr完整、特殊字符参数不被执行、失败退出码传播及父进程代码页保持。
 
 当前程序包和源码包的最终文件、提交、哈希及验收范围以 `artifacts/release/FrameTrail-0.2.3-candidate-manifest.json`、`artifacts/validation/package-0.2.3/source-validation.json` 和 `content-result.json` 为准；候选清单不表示实际安装、卸载或设备录制已经通过。

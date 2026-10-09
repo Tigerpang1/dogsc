@@ -13,6 +13,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$null = . (Join-Path $PSScriptRoot 'source-zip-policy.ps1')
 $workspaceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $sourceZipPath = [System.IO.Path]::GetFullPath($SourceZip)
 $resultDirectory = Join-Path $workspaceRoot "artifacts/validation/package-$Version"
@@ -35,6 +36,7 @@ $run = [ordered]@{
     workspaceRoot = $workspaceRoot
     logsDirectory = $logsDirectory
     sourceMetadata = $null
+    sourceArchiveLayout = $null
     noGitMetadataVerified = $false
     steps = @()
     buildInfo = $null
@@ -66,6 +68,7 @@ function Invoke-LoggedProcess(
         name = $Name
         executable = $FileName
         arguments = @($Arguments)
+        launcherArguments = $null
         workingDirectory = $WorkingDirectory
         timeoutSeconds = $TimeoutSeconds
         startedUtc = [DateTime]::UtcNow.ToString('o')
@@ -87,7 +90,19 @@ function Invoke-LoggedProcess(
         $startInfo.RedirectStandardError = $true
         $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
         $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-        foreach ($argument in $Arguments) { $null = $startInfo.ArgumentList.Add($argument) }
+        $launcherArguments = $Arguments
+        if ([IO.Path]::GetFileNameWithoutExtension($FileName) -eq 'pwsh') {
+            if ($Arguments.Count -lt 4 -or $Arguments[0] -ne '-NoProfile' -or
+                $Arguments[1] -ne '-NonInteractive' -or $Arguments[2] -ne '-File') {
+                throw 'PowerShell validation steps must use the known noninteractive script invocation.'
+            }
+            $scriptArguments = if ($Arguments.Count -gt 4) { @($Arguments[4..($Arguments.Count - 1)]) } else { @() }
+            $launcherArguments = @('-NoProfile', '-NonInteractive', '-File',
+                (Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'), '-ScriptPath', $Arguments[3],
+                '-ArgumentsJson', (ConvertTo-Json -InputObject @($scriptArguments) -Compress))
+        }
+        $record.launcherArguments = @($launcherArguments)
+        foreach ($argument in $launcherArguments) { $null = $startInfo.ArgumentList.Add($argument) }
 
         $process = [System.Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
@@ -130,22 +145,7 @@ try {
     $archiveRoot = Join-Path $tempRoot 'extract'
     $null = New-Item -ItemType Directory -Path $archiveRoot
 
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($sourceZipPath)
-    try {
-        $destinationBoundary = [System.IO.Path]::GetFullPath($archiveRoot).TrimEnd('\') + '\'
-        foreach ($entry in $archive.Entries) {
-            $entryName = $entry.FullName.Replace('/', '\')
-            if ([System.IO.Path]::IsPathRooted($entryName) -or $entryName -match '(^|\\)\.\.(\\|$)' -or $entryName.Contains(':')) {
-                throw "Unsafe ZIP entry path: $($entry.FullName)"
-            }
-            $target = [System.IO.Path]::GetFullPath((Join-Path $archiveRoot $entryName))
-            if (-not $target.StartsWith($destinationBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
-                throw "ZIP entry escapes extraction root: $($entry.FullName)"
-            }
-        }
-    }
-    finally { $archive.Dispose() }
+    $run.sourceArchiveLayout = Assert-FrameTrailSourceZipLayout -SourceZipPath $sourceZipPath -ExtractionRoot $archiveRoot
     Expand-Archive -LiteralPath $sourceZipPath -DestinationPath $archiveRoot
 
     $gitMetadata = @(Get-ChildItem -LiteralPath $archiveRoot -Force -Recurse -ErrorAction Stop |

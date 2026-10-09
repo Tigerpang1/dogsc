@@ -61,7 +61,8 @@ try {
     if ($IncludeReleaseProbe) {
         & (Join-Path $PSScriptRoot 'test-release-manifest.ps1')
         & (Join-Path $PSScriptRoot 'test-source-provenance.ps1')
-        Write-Host '发行清单规则检查完成；使用隔离合成报告，未运行安装器或应用。'
+        & (Join-Path $PSScriptRoot 'test-source-zip-policy.ps1')
+        Write-Host '发行清单、源码来源与源码 ZIP 结构规则检查完成；使用隔离合成数据，未运行安装器或应用。'
     }
 }
 finally {
