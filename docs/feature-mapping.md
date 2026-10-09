@@ -28,7 +28,7 @@
 | `CanvasCustomAspectRatio.swift`、`FrameScene.swift` | 画布宽高保存在 `FrameTrailSettings`；UI 可调背景色、留白、圆角、阴影和光标；渲染按画布比例保持源画面宽高比 | 背景、padding、radius、shadow、画布比例参数 | WPF、Core、Direct3D 11 | 阶段 1/2 | 保存重开项目，并对不同素材/输出宽高比检查不拉伸、裁切和填充 | 部分实现：color/padding/radius/shadow 已实现；自定义画布比例编辑、源画面 crop 编辑未来支持 |
 | `ScreenProjection.swift`、`ScreenMotion.swift`、`CameraMotion.swift` | 当前 `FrameScene` 只含二维归一化裁切与缩放，无三维透视或摄像头运动层 | 可参考原有运动参数和交互意图 | Direct3D 11 shader、动画模型 | 阶段 2 | 对开场、倾斜、透视和动画关键帧做逐帧预览/导出对照 | 未实现 |
 | `EditorTimelinePrimaryEditing.swift`、`ProjectTimelineEditing.swift`、`ProjectTimelineRetime.swift` | `FrameTrail.Core/Models.cs` 提供分割、裁短、重排、变速、输出/源时间映射；`Persistence.cs` 的 `UndoRedoHistory`；UI 在 `MainWindow.xaml(.cs)` | 非破坏片段、源时间与输出时间分离、恢复历史 | Core、WPF、FFmpeg concat/filter | 阶段 1 闭环 | Core 自动测试覆盖分割、裁短、重排、速度、接点/重复源区间和撤销恢复；工作流会保存重开并导出 | 部分实现：核心分割/trim/变速/重排/undo-redo 已通过；UI 仅有 1/1.5/2/4 倍速度，暂无多效果轨道、片段删除和波纹编辑 |
-| `EditorTimelineFilmstrip.swift`、`EditorTimelineMergedWaveform.swift`、`EditorTimelineMagneticSnap.swift` | `src/FrameTrail.App/TimelineAssets.cs` 异步用 FFmpeg 生成缩略图和限量波形；Timeline UI 绘制缩略图/波形并有边界吸附选项 | 长素材异步处理、峰值采样和时间线素材缩略图 | FFmpeg 子进程、WPF BitmapSource | 阶段 2 基础 | 现代码已接入；需在真实窗口检查缩略图、波形、取消清理和长素材响应。尚无连续拖动、缩放或磁吸行为验收 | 已实现，设备/人工待验证：缩略图和波形刚接入 UI，待屏幕检查；吸附仅有 UI 选项，完整磁吸/时间线缩放未实现 |
+| `EditorTimelineFilmstrip.swift`、`EditorTimelineMergedWaveform.swift`、`EditorTimelineMagneticSnap.swift` | `src/FrameTrail.App/TimelineAssets.cs` 异步用 FFmpeg 生成缩略图和限量波形；Timeline UI 绘制缩略图/波形，播放头拖动可吸附片段边界 | 长素材异步处理、峰值采样和时间线素材缩略图 | FFmpeg 子进程、WPF BitmapSource | 阶段 2 基础 | [编辑器截图](../artifacts/validation/editor-with-thumbnails.png) 已确认缩略图和波形可见；播放头吸附按片段边界和控件宽度计算，需继续人工检查拖动手感及长素材响应 | 部分实现：缩略图/波形已截图检查通过；边界吸附已实现，人工验收有限；片段拖拽重排和时间线缩放未实现 |
 | `RecordingMarker.swift`、`RecordingMarkers.swift` | 标记从录制条和 Ctrl+Alt+M 写入 `FrameTrailProject.Markers`，双击跳转、可删除 | 标记时间和标签随项目保存 | WPF RegisterHotKey、Core 持久化 | 阶段 1 闭环 | 桌面工作流自动添加标记并验证项目重载；检查裁剪/重复源片段后的跳转 | 部分实现：录入、保存、跳转、删除已实现；重复播放时源时间标记选择首次匹配位置 |
 | `EditorScenePresets.swift`、`EditorStylePresetStore.swift` | 当前项目只存单套设置，无预设库 | 预设结构和默认参数可参考 | Core 项目存储、WPF UI | 阶段 2 | 保存/载入预设并验证素材复制和跨项目行为 | 未实现 |
 | `StickerTransition.swift`、`FrameScene.swift`、`ProjectStore.swift` | 当前模型、GPU shader 和导出路径没有贴图或多图层效果轨 | 仅复用时间线与场景评估结构 | WPF 文件导入、GPU shader、Core 模型 | 阶段 2 | 多贴图导入、动画、层级、裁剪、重载和导出逐帧对照 | 未实现 |
@@ -50,6 +50,6 @@
 
 ## 阶段性验收限制
 
-阶段 1 的首个录制、编辑、运镜和导出闭环已在本机自动跑通；这不表示阶段 2 完成。采集私有字节持续增长、真实采集首帧时钟锚点与长期音画漂移、干净 Windows 环境安装和设备验收都没有通过。短录制、Probe 或合成素材结果不能替代 30 分钟长录制稳定性证明。
+阶段 1 的首个录制、编辑、运镜和导出闭环已在本机自动跑通；这不表示阶段 2 完成。启用低延迟的 300 秒普通 MP4 加 loopback 样片中，Private Bytes 前段增长后约在 1.28 GiB 平台；30 分钟内存稳定性仍未验证。真实采集首帧时钟锚点、长期音画漂移、干净 Windows 环境安装和设备验收也未完成。短录制、Probe 或合成素材结果不能替代 30 分钟长录制稳定性证明。
 
 具体环境、命令和证据见 [`validation-report.md`](validation-report.md)、[`capture-validation.md`](capture-validation.md)；当前缺口见 [`known-issues.md`](known-issues.md)。自动缩放与指针算法的近似和未移植部分见 [`algorithm-port.md`](algorithm-port.md)。发布用 FFmpeg 构建及许可证材料仍待审计，不要把本地验证用 Gyan GPL full build 当作可公开发布的依赖。

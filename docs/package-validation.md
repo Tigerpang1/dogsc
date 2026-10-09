@@ -1,28 +1,15 @@
-# 打包与安装验证记录
+# FrameTrail 0.1.0 本机打包验证
 
-本记录对应 2026-10-08 本机生成的 FrameTrail 0.1.0 验证包。该包用于检查自包含运行、文件布局和安装器行为，不是公开发行包。
+本记录对应固定应用代码提交 `159e17bbf8b8db250358b30363dc16ba97c23180` 构建的本机验证包。包用于本地功能验收，包含 Gyan FFmpeg 8.1.1 GPLv3 构建，不可直接公开发行。逐项路径、哈希、探测结果及源码 ZIP 无 Git 回退验证状态以 [`artifacts/validation/package-final.json`](../artifacts/validation/package-final.json) 为准。
 
-## 验证结果
+Release `win-x64` 自包含发布、便携 ZIP 与 Inno Setup 安装器均已生成。便携包带 `FrameTrail.exe`、`tools/ffmpeg/ffmpeg.exe`、`ffprobe.exe`、根 LICENSE、README、文档、第三方通知和每次录制 60 秒限制说明。构建元数据记录代码提交和上游 DogSC 基线；打包工作区含脚本及文档改动，因此不能标记为 Git clean。
 
-- `scripts/package.ps1` 成功完成 Release、`win-x64`、自包含发布，并生成便携 ZIP：`artifacts/release/FrameTrail-0.1.0-win-x64.zip`，SHA-256：`498A0F4C386C79141C26E12C3619F0492D23275D09187EAC91A57C541BB33AC3`。
-- Inno Setup 6.7.3 成功生成 per-user 安装器：`artifacts/release/FrameTrail-Setup-0.1.0-win-x64.exe`，SHA-256：`7C70711B5C9B75638A3EED137E03073A8290FF9214BAFBB8A37816C203D3FDEC`。编译器报告 `x64` 架构标识已弃用并自动替换为 `x64os`；此警告不影响本次编译结果。
-- 从发布目录运行 `FrameTrail.exe --smoke artifacts/validation/packaged-smoke.png`，进程退出码为 0，并生成 84,484 字节的 PNG 截图。进程环境的 `PATH` 只含 `C:\Windows\System32;C:\Windows`，没有开发工具路径；窗口正常显示并自动退出。
-- 以验证程序的 `AppContext.BaseDirectory` 指向测试副本目录，并将包内 `tools/ffmpeg` 放在该目录下；清空 `FRAMETRAIL_FFMPEG_DIR`、限制 `PATH` 后，`MediaTools.Ffmpeg` 与 `MediaTools.Ffprobe` 都解析到包内工具，FFmpeg 返回 `8.1.1-full_build-www.gyan.dev`。
-- 在测试前确认本机不存在 FrameTrail 的 HKCU/HKLM 卸载注册项。安装到 `artifacts/install-test/app` 后，主程序和 `tools/ffmpeg/ffmpeg.exe` 位于安装目录根，HKCU 卸载记录创建；运行 `unins000.exe /VERYSILENT` 后，程序文件和 HKCU 记录均删除，退出码为 0。临时安装目录随后清除。
-- 本机已安装 Microsoft Visual C++ 2015–2022 Redistributable (x64)，因此本次录制依赖检查只验证了提示和不静默安装逻辑；干净虚拟机尚未验证。
+隔离 PATH（只保留 Windows 系统目录）启动最终包的合成项目并运行 `--smoke` 成功，截图输出到 `artifacts/validation/package-final-open-smoke.png`。相对素材、缩略图和波形均能在样例项目中显示。本轮诊断启动的 FrameTrail 进程已退出。
 
-## 许可证与版本边界
+最终包的短工作流验收使用真实桌面录制作为输入，录制约 3.52 秒，采集得到一条鼠标位置事件并自动添加一个标记，执行 split、变速和重排，重载项目后导出 MP4 成功。工程输出时长约 2.64 秒；完整机器可读结果位于 `artifacts/validation/package-final-workflow/workflow-result.json`。这项短验收用于检查最终包内采集与导出工作流，不代表真人点击运镜、长时间录制稳定性或干净虚拟机结果。
 
-本机验证包包含 Gyan FFmpeg 8.1.1 GPLv3 构建。包内保留了构建配置、版本信息、GPL 文本和 FFmpeg 核心仓库提交前缀 `239f2c733d` 对应的源码压缩包。Gyan 构建静态外部依赖的完整精确源码、构建脚本与补丁尚未全部收集，因此当前材料不足以宣称满足公开发行要求；该包不得直接公开发布。媒体导出通过独立 FFmpeg 子进程调用，不静态链接 FFmpeg。
+另外，媒体集成程序对真实 3840×2160、约 2.97 秒的录制及其相邻指针 JSONL 执行了项目保存/重载、编辑、取消清理、MP4/M4A 导出和探测，结果成功；对 1080p60 的合成同步素材导出 300 帧、耗时约 1.86 秒，三组音画脉冲偏差均为 20 毫秒，编码器为 `h264_nvenc`，渲染器为 Direct3D 11 GPU。合成素材数据仅用于时间线及封装同步验证，不代表真实采集同步性能。
 
-FrameTrail 录制功能依赖微软 VC++ x64 运行库。安装程序只检测并提示，不会安装或更新该系统级运行库。当前预览版本每次录制最长 60 秒；发布脚本会在包内写入 `RECORDING-LIMIT.txt`。
+安装器此前已通过 per-user 安装与卸载检查；正式最终包复测的退出码、HKCU 卸载记录清除及安装文件检查须以 `package-final.json` 状态字段为准。安装器设置 `PrivilegesRequired=lowest`，不安装系统级 VC 运行库。本机已安装 Microsoft Visual C++ 2015–2022 Redistributable (x64)，干净虚拟机仍未验证。源码 ZIP 的元数据回退测试尚待提交最终脚本后，在临时解压副本中运行 `package.ps1 -WithoutFfmpeg -SkipInstaller`；在外部 JSON 明确通过前不标记完成。
 
-## 当前包与最终包的差别
-
-本次打包产物是在 2026-10-08 22:30 左右构建的。`src/FrameTrail.App/MainWindow.xaml.cs` 后续修改时间为 22:38，故本记录列出的包不能代表这些后续界面修改。当前 `scripts/package.ps1` 和 `installer/FrameTrail.iss` 已补充在便携目录及安装目录中放入根 `LICENSE`、`README.md`、`docs/` 和 60 秒录制限制说明，并记录 FrameTrail HEAD 与 DogSC 上游基线；这些新增材料尚未进入本记录所列的 ZIP 与安装器。
-
-源码压缩包由 `scripts/package-source.ps1` 使用 `git archive HEAD` 和上游固定基线 `e207d11b111c5e58152238fb64115b2009850547` 分别生成；该脚本尚未在最终提交状态下执行。最终包需等待代码和文档固定到最终提交后重新生成，并复核 SHA-256、 smoke、安装和卸载结果。当前工作区有未提交修改，`git archive HEAD` 会排除这些修改。
-
-## 本机打包路径修正
-
-当前工作区路径包含撇号，.NET SDK 8.0.303 将仓库内 `artifacts/release` 作为 `dotnet publish` 输出目录时触发 `MSB3094`（目标文件只有 1 项、源文件 481 项）。脚本现先发布到不含撇号的系统临时目录，再复制到发布目录。Gyan README 已提供 FFmpeg 固定提交前缀；源码下载改为直接访问 GitHub codeload，避免依赖受匿名速率限制的 GitHub REST API。
+本机包随附 FFmpeg 核心仓库源码材料及构建信息，但 Gyan full build 静态包含的全部依赖源码、补丁和构建脚本仍未完整核实。FFmpeg 通过独立子进程调用；这不免除发行 GPLv3 构建所需的材料和义务。公开发行流程保持未启用。

@@ -10,7 +10,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $upstreamRoot = Join-Path $repoRoot 'upstream/dogsc'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
 $output = Join-Path $releaseRoot "FrameTrail-$Version-source.zip"
-$head = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+$head = [string](& git -C $repoRoot rev-parse HEAD 2>$null)
 if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') { throw '无法读取 FrameTrail 仓库 HEAD。' }
 & git -C $upstreamRoot cat-file -e "$UpstreamBaseSha^{commit}" 2>$null
 if ($LASTEXITCODE -ne 0) { throw "DogSC 上游基线不存在：$UpstreamBaseSha" }
@@ -28,18 +28,18 @@ try {
     $null = New-Item -ItemType Directory -Path $stage -Force
     & git -C $repoRoot archive --format=zip --prefix='FrameTrail/' HEAD "-o$ownArchive"
     if ($LASTEXITCODE -ne 0) { throw 'git archive HEAD 失败。' }
-    & git -C $upstreamRoot archive --format=zip --prefix='upstream/dogsc/' $UpstreamBaseSha "-o$upstreamArchive"
+    & git -C $upstreamRoot archive --format=zip --prefix='FrameTrail/upstream/dogsc/' $UpstreamBaseSha "-o$upstreamArchive"
     if ($LASTEXITCODE -ne 0) { throw '上游 git archive 固定基线失败。' }
     Expand-Archive -LiteralPath $ownArchive -DestinationPath $stage -Force
     Expand-Archive -LiteralPath $upstreamArchive -DestinationPath $stage -Force
-    $metadata = @"
-FrameTrail 源码提交（git archive HEAD）：$head
-DogSC 上游源码快照：upstream/dogsc，提交 $UpstreamBaseSha
-打包时 FrameTrail 工作区状态：$worktreeState
-
-压缩包只包含以上 Git 提交中的受版本控制文件。工作区未提交或未跟踪更改不会进入源码包；artifacts、bin、obj、验证录制素材等生成文件不从工作区复制。
-"@
-    $metadata | Set-Content -LiteralPath (Join-Path $stage 'SOURCE-METADATA.txt') -Encoding utf8
+    $metadata = [ordered]@{
+        formatVersion = 1
+        frameTrailCommit = $head
+        upstreamDogScCommit = $UpstreamBaseSha
+        worktreeStateAtArchive = $worktreeState
+        archiveContents = 'git archive HEAD 与 upstream/dogsc 固定基线；不包含未提交修改或构建/验证产物。'
+    }
+    $metadata | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $stage 'FrameTrail/SOURCE-METADATA.json') -Encoding utf8
     if (Test-Path -LiteralPath $output) { Remove-Item -LiteralPath $output -Force }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $output, [System.IO.Compression.CompressionLevel]::Optimal, $false)

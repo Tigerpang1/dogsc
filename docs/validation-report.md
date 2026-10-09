@@ -19,14 +19,14 @@
 |---|---|---|
 | Core 算法与存储 | 时间线分割、变速、重排、接点、重复源区间、鼠标校准、自动缩放、备份恢复、未来版本和路径验证通过 | `tests/FrameTrail.Core.Tests` |
 | GPU 合成 | 硬件 D3D11；背景、圆角、缩放、裁切外光标隐藏、点击环、不同输出尺寸的光标比例通过 | `tests/FrameTrail.Render.Probe`；40 帧小尺寸平均约 0.19ms，不能外推为完整导出性能 |
-| 桌面闭环 | 主程序实际录制 3.519979s，分割、后半段 2 倍速并前移、保存重开，导出 2.63998425s | `artifacts/validation/workflow/workflow-result.json` 与 `desktop-edited.mp4` |
-| 固定点击与运镜 | 6s 自制 testsrc2 与固定指针事件生成 2 段自动缩放，项目重载、MP4/M4A 成功 | `artifacts/validation/synthetic-testsrc2-20261009-042721-000/result.json` |
+| 桌面闭环 | 主程序实际录制 3.519979s，分割、后半段 2 倍速并前移、保存重开，导出 2.63998425s | `artifacts/validation/final-workflow/workflow-result.json` 与 `desktop-edited.mp4` |
+| 固定点击与运镜 | 6s 自制 testsrc2 与固定指针事件生成 2 段自动缩放，项目重载、MP4/M4A 成功 | `artifacts/validation/synthetic-testsrc2-20261009-043947-563/result.json` |
 | 预览/成片构图 | 四个精确帧时刻使用相同 GPU 代码生成参考，压缩后 PSNR 25.07–25.85dB、MAE 3.75–4.69；按测试容差通过 | 同上；这是有损编码容差验证，不能理解为逐像素完全相同 |
-| 1080p60 导出 | 完整 6 秒、360 帧，实际 `h264_nvenc` 与 D3D11 硬件；约 1.688 秒 | 同上；源图是 320×180 合成素材，输出为 1920×1080，不等价于复杂原生 1080p 素材压力测试 |
-| 时间线音画对齐 | 三段重排/变速后输出 5s/300帧；闪屏上升 0.5/2/4s，音频脉冲上升 0.48/1.98/3.98s，三处偏差均 20ms | `artifacts/validation/sync-1080p60-20261009-042653-851/sync-result.json` |
+| 1080p60 导出 | 完整 6 秒、360 帧，实际 `h264_nvenc` 与 D3D11 硬件；约 1.709 秒 | 同上；源图是 320×180 合成素材，输出为 1920×1080，不等价于复杂原生 1080p 素材压力测试 |
+| 时间线音画对齐 | 三段重排/变速后输出 5s/300帧；闪屏上升 0.5/2/4s，音频脉冲上升 0.48/1.98/3.98s，三处偏差均 20ms | `artifacts/validation/sync-1080p60-20261009-043915-980/sync-result.json` |
 | 取消后再次导出 | 在合成帧阶段取消，检查临时文件消失，再导出成功 | Integration 默认与真实素材两模式 |
 | 系统回环素材 | Probe 播放本机生成的 440Hz 音调并录制默认输出，成片含音轨；真实录制再次剪辑导出成功 | `artifacts/validation/real-recording-20261009-042508-244/result.json` |
-| 程序界面 | 主程序初始化、录制、编辑后生成实际 WPF 诊断快照 | `artifacts/validation/workflow/editor-project.png` |
+| 程序界面 | 主程序初始化、录制、编辑后生成实际 WPF 诊断快照；合成项目的缩略图与波形已经截图检查 | `artifacts/validation/final-workflow/editor-project.png` 与 `artifacts/validation/editor-with-thumbnails.png` |
 
 桌面闭环样片的鼠标基本静止，只有 1 条位置事件；点击运镜验证来自明确标识的合成事件。未将合成测试当作人工真实点击验收。
 

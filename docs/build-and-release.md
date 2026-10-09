@@ -9,11 +9,11 @@
 - 发布目录：`artifacts/release/FrameTrail-0.1.0-win-x64/app`
 - 输出：便携目录、ZIP、per-user Inno Setup 安装程序
 
-脚本会在应用 csproj 尚未集成时停止并显示路径错误。应用主程序默认名为 `FrameTrail.App.exe`；集成后若 `AssemblyName` 不同，可在打包时使用 `-ApplicationExeName` 明确指定。
+应用主程序名为 `FrameTrail.exe`。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`，与应用的工具查找路径一致。
 
 ## 构建和测试
 
-需要已安装 .NET 8 SDK。仓库 `global.json` 固定 SDK `8.0.303` 并允许采用相同 feature band 的后续补丁。
+需要已安装 .NET 8 SDK。仓库 `global.json` 以 SDK `8.0.303` 为起点，`latestFeature` 允许采用同一 8.0 系列的后续 feature band。
 
 ```powershell
 .\scripts\build.ps1
@@ -28,7 +28,17 @@
 .\scripts\package.ps1
 ```
 
-脚本执行 `dotnet publish`，生成自包含 `win-x64` 应用目录，将许可证和 VC 运行库说明放进便携包，复制本机 Gyan FFmpeg 8.1.1 的 `ffmpeg.exe`/`ffprobe.exe`，并通过 `fetch-ffmpeg-corresponding-source.ps1` 归档上游精确 FFmpeg commit、Gyan README、构建配置、二进制哈希和 GPLv3 文本。随后生成 ZIP 和 Inno Setup 安装程序。
+脚本执行 `dotnet publish`，生成自包含 `win-x64` 应用目录，把根 `LICENSE`、`README.md`、`docs/`、第三方许可证、VC 运行库说明和单次录制 60 秒限制说明一并放入便携包，复制本机 Gyan FFmpeg 8.1.1 的 `ffmpeg.exe`/`ffprobe.exe` 到 `app/tools/ffmpeg`，并通过 `fetch-ffmpeg-corresponding-source.ps1` 归档上游 FFmpeg commit、Gyan README、构建配置、二进制哈希和 GPLv3 文本。随后生成 ZIP 和 Inno Setup 安装程序。
+
+源码归档命令：
+
+```powershell
+.\scripts\package-source.ps1
+```
+
+该命令把 FrameTrail `git archive HEAD` 和 `upstream/dogsc` 的固定基线 `e207d11b111c5e58152238fb64115b2009850547` 放进同一个 `FrameTrail-0.1.0-source.zip`；上游快照位于 `FrameTrail/upstream/dogsc/`。压缩包内 `FrameTrail/SOURCE-METADATA.json` 记录 FrameTrail HEAD、上游基线和打包时工作区状态。Git 归档只收录提交中的文件，不含未提交修改，也不会打包 `artifacts/`、`bin/`、`obj/` 或真实录制素材。
+
+从源码 ZIP 构建时，上游快照已经包含在 `FrameTrail/upstream/dogsc/`，不需要运行 `git submodule update`。从 Git 克隆仓库时，才需要按仓库说明初始化上游 submodule。源码 ZIP 中没有 `.git` 元数据；`package-source.ps1` 只在发行者重新生成源码 ZIP 时需要 Git。 `package.ps1` 在 Git 仓库中优先验证提交与上游基线；源码 ZIP 构建会读取 `SOURCE-METADATA.json` 并标记为源码归档。无 Git 源码归档路径的验证状态以 `artifacts/validation/package-final.json` 为准。
 
 本机验证版包含 GPLv3 的 Gyan FFmpeg full static build。它可以供本地功能验证使用，生成的 ZIP/安装程序不得直接公开发布。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
 
@@ -50,4 +60,4 @@ ScreenRecorderLib 需要 Microsoft Visual C++ 2015–2022 Redistributable (x64) 
 
 ## 发行检查
 
-发布材料和第三方组件见 [`../licenses/THIRD-PARTY-NOTICES.md`](../licenses/THIRD-PARTY-NOTICES.md)。每次升级 NuGet 版本、FFmpeg 构建、编译开关或发行文件，都要重新审阅许可证清单和构建配置。只在完成项目集成后运行这些脚本；在本机功能和包结构验证通过前不要创建公开发行物。
+发布材料和第三方组件见 [`../licenses/THIRD-PARTY-NOTICES.md`](../licenses/THIRD-PARTY-NOTICES.md)。每次升级 NuGet 版本、FFmpeg 构建、编译开关或发行文件，都要重新审阅许可证清单和构建配置。当前脚本可构建本地验证包；在本机功能、包结构和发行义务验证完成前，不要公开发布包含 GPLv3 FFmpeg 的包。

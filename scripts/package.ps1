@@ -57,7 +57,7 @@ try {
     try {
         & dotnet publish $project --configuration $Configuration --runtime win-x64 --self-contained true `
             -p:Platform=x64 -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=false `
-            -p:Version=$Version -p:AssemblyVersion=$Version -p:FileVersion=$Version `
+            -p:RestorePackagesWithLockFile=false -p:Version=$Version -p:AssemblyVersion=$Version -p:FileVersion=$Version `
             --output $publishStaging
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败，退出码 $LASTEXITCODE" }
     }
@@ -97,13 +97,40 @@ $recordingLimitNotice = @'
 '@
 $recordingLimitNotice | Set-Content -LiteralPath (Join-Path $publishRoot 'RECORDING-LIMIT.txt') -Encoding utf8
 
-$gitHead = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
-if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') { throw '无法读取仓库 HEAD 提交。' }
-& git -C (Join-Path $repoRoot 'upstream/dogsc') cat-file -e "$upstreamBaseSha^{commit}" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "上游固定基线不存在：$upstreamBaseSha" }
-$gitStatusLines = @(& git -C $repoRoot status --porcelain 2>$null)
-if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
-$workingTreeState = if ($gitStatusLines.Count -eq 0) { 'clean' } else { 'dirty' }
+$gitHead = $null
+$sourceKind = $null
+$workingTreeState = $null
+if (Get-Command git -ErrorAction SilentlyContinue) {
+    $gitHeadOutput = @(& git -C $repoRoot rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -eq 0 -and $gitHeadOutput.Count -gt 0) {
+        $candidateHead = ([string]$gitHeadOutput[0]).Trim()
+        if ($candidateHead -match '^[0-9a-f]{40}$') {
+            $gitHead = $candidateHead
+            & git -C (Join-Path $repoRoot 'upstream/dogsc') cat-file -e "$upstreamBaseSha^{commit}" 2>$null
+            if ($LASTEXITCODE -ne 0) { throw "Git 仓库存在，但上游固定基线不存在：$upstreamBaseSha" }
+            $gitStatusLines = @(& git -C $repoRoot status --porcelain 2>$null)
+            if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
+            $workingTreeState = if ($gitStatusLines.Count -eq 0) { 'clean' } else { 'dirty' }
+            $sourceKind = 'git checkout'
+        }
+    }
+}
+if (-not $gitHead) {
+    $metadataPath = Join-Path $repoRoot 'SOURCE-METADATA.json'
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+        throw '无法读取 Git HEAD，且源码归档中缺少 SOURCE-METADATA.json。'
+    }
+    try { $sourceMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json }
+    catch { throw "源码归档元数据 JSON 无效：$metadataPath" }
+    if ($sourceMetadata.formatVersion -ne 1 -or
+        [string]$sourceMetadata.frameTrailCommit -notmatch '^[0-9a-f]{40}$' -or
+        [string]$sourceMetadata.upstreamDogScCommit -ne $upstreamBaseSha) {
+        throw "源码归档元数据版本、FrameTrail 提交或上游基线不匹配：$metadataPath"
+    }
+    $gitHead = [string]$sourceMetadata.frameTrailCommit
+    $workingTreeState = '源码归档（无 Git 元数据）'
+    $sourceKind = 'source archive'
+}
 
 $ffmpegSourceMaterial = Join-Path $releaseRoot 'ffmpeg-corresponding-source'
 if (-not $WithoutFfmpeg) {
@@ -146,6 +173,7 @@ $buildInfo = @"
 目标：win-x64 自包含便携发布目录
 配置：$Configuration
 打包用途：本地验证
+源码类型：$sourceKind
 包含 FFmpeg：$(-not $WithoutFfmpeg)
 FrameTrail 源码提交：$gitHead
 DogSC 上游审计基线：$upstreamBaseSha
