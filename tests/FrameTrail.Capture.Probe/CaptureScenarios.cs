@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -20,6 +21,7 @@ internal static class CaptureScenarios
         if (options.KillRecoveryTest) { await RunKillRecoveryTestAsync(options); return; }
         if (options.TrackTest) { await RunTrackTestAsync(options); return; }
         if (options.TargetTest) { await RunTargetTestAsync(options); return; }
+        if (options.ExclusionTest) { await RunExclusionTestAsync(options); return; }
         throw new ArgumentException("No capture test scenario was selected.");
     }
 
@@ -366,6 +368,116 @@ internal static class CaptureScenarios
         Console.WriteLine($"Region target capture completed; physical bounds={bounds}; output={regionResult.OutputPath}; output={regionResult.Width}x{regionResult.Height}.");
     }
 
+    private static async Task RunExclusionTestAsync(ProbeOptions options)
+    {
+        var output = RequireOutput(options);
+        var directory = Path.GetDirectoryName(output)!;
+        Directory.CreateDirectory(directory);
+        await using var capture = new FrameCaptureService();
+        var display = (await capture.EnumerateDisplaysAsync()).FirstOrDefault(x => x.IsPrimary)
+            ?? throw new InvalidOperationException("No primary display was enumerated.");
+        const int width = 320, height = 180;
+        var x = display.Bounds.X + Math.Min(640, Math.Max(0, display.Bounds.Width - width));
+        var y = display.Bounds.Y + Math.Min(300, Math.Max(0, display.Bounds.Height - height));
+        var bounds = new Rectangle(x, y, width, height);
+        if (width > display.Bounds.Width || height > display.Bounds.Height)
+            throw new InvalidOperationException("The primary display is too small for the exclusion test ROI.");
+        await using var window = await PatternWindowHost.StartAsync(bounds, solidRed: true);
+        window.BringToTopWithoutActivating();
+        await Task.Delay(300);
+
+        var ffmpeg = ResolveFfmpegExe();
+        var region = new PixelRect(bounds.X, bounds.Y, bounds.Width, bounds.Height);
+        var affinityNone = await window.SetDisplayAffinityAsync(0);
+        var noneVideo = Path.Combine(directory, Path.GetFileNameWithoutExtension(output) + "-affinity-none.mp4");
+        await CaptureRegionSampleAsync(capture, display, region, noneVideo);
+        var noneDda = await ReadCenterPixelFromVideoAsync(ffmpeg, noneVideo, width, height);
+        var noneGdi = await CaptureGdiCenterPixelAsync(ffmpeg, bounds);
+
+        var affinityExcluded = await window.SetDisplayAffinityAsync(0x11);
+        await Task.Delay(300);
+        var excludedVideo = Path.Combine(directory, Path.GetFileNameWithoutExtension(output) + "-affinity-excluded.mp4");
+        await CaptureRegionSampleAsync(capture, display, region, excludedVideo);
+        var excludedDda = await ReadCenterPixelFromVideoAsync(ffmpeg, excludedVideo, width, height);
+        var excludedGdi = await CaptureGdiCenterPixelAsync(ffmpeg, bounds);
+
+        var summary = new
+        {
+            Utc = DateTimeOffset.UtcNow,
+            OperatingSystem = Environment.OSVersion.VersionString,
+            WindowHandle = $"0x{window.Handle.ToInt64():X}",
+            CaptureBounds = bounds,
+            WindowColor = "#FF0000",
+            AffinityNone = affinityNone,
+            AffinityExcludeFromCapture = affinityExcluded,
+            FrameTrailDdagrab = new { BaselineCenterRgb = noneDda, ExcludedCenterRgb = excludedDda, BaselineVideo = noneVideo, ExcludedVideo = excludedVideo },
+            FfmpegGdiGrab = new { BaselineCenterRgb = noneGdi, ExcludedCenterRgb = excludedGdi, Input = "desktop" },
+            Note = "RGB values are the first pixel of a 2x2 crop aligned on the center of the controlled pure-red window ROI; 1x1 crop is unsupported by the H.264 4:2:0 decoder. WDA is best-effort window capture affinity, not a security boundary."
+        };
+        var summaryPath = Path.ChangeExtension(output, ".exclusion.json");
+        await File.WriteAllTextAsync(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine(JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"Window-exclusion sample completed; summary={summaryPath}");
+    }
+
+    private static async Task CaptureRegionSampleAsync(FrameCaptureService capture, DisplayInfo display, PixelRect bounds, string output)
+    {
+        await capture.StartAsync(new RecordingRequest(output,
+            new CaptureTarget(CaptureTargetKind.Region, display.Id, bounds),
+            new VideoOptions(30, bounds.Width, bounds.Height), new AudioOptions(), new InputTrackingOptions(false)));
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        await capture.StopAsync();
+    }
+
+    private static async Task<string> ReadCenterPixelFromVideoAsync(string ffmpeg, string path, int width, int height)
+    {
+        var pixel = await RunRawPixelCommandAsync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-i", path,
+            "-frames:v", "1", "-vf", $"crop=2:2:{width / 2}:{height / 2}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+        return FormatRgb(pixel);
+    }
+
+    private static async Task<string> CaptureGdiCenterPixelAsync(string ffmpeg, Rectangle bounds)
+    {
+        var pixel = await RunRawPixelCommandAsync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-f", "gdigrab", "-framerate", "10",
+            "-draw_mouse", "0", "-offset_x", bounds.X.ToString(), "-offset_y", bounds.Y.ToString(),
+            "-video_size", $"{bounds.Width}x{bounds.Height}", "-i", "desktop", "-frames:v", "1",
+            "-vf", $"crop=2:2:{bounds.Width / 2}:{bounds.Height / 2}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+        return FormatRgb(pixel);
+    }
+
+    private static async Task<byte[]> RunRawPixelCommandAsync(string executable, IReadOnlyList<string> arguments)
+    {
+        var startInfo = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true };
+        foreach (var argument in arguments) startInfo.ArgumentList.Add(argument);
+        using var process = Process.Start(startInfo) ?? throw new InvalidOperationException($"Could not start {executable}.");
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var pixel = new byte[12];
+        try { await process.StandardOutput.BaseStream.ReadExactlyAsync(pixel).AsTask().WaitAsync(TimeSpan.FromSeconds(10)); }
+        catch { try { if (!process.HasExited) process.Kill(true); } catch { } throw; }
+        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10));
+        var stderr = await stderrTask;
+        if (process.ExitCode != 0) throw new InvalidOperationException($"{Path.GetFileName(executable)} failed (exit {process.ExitCode}): {stderr}");
+        return pixel;
+    }
+
+    private static string FormatRgb(byte[] pixel) => $"#{pixel[0]:X2}{pixel[1]:X2}{pixel[2]:X2}";
+
+    private static string ResolveFfmpegExe()
+    {
+        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var candidate = Path.Combine(dir.Trim('"'), "ffmpeg.exe");
+            if (File.Exists(candidate)) return candidate;
+        }
+        var local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var winget = Path.Combine(local, "Microsoft", "WinGet", "Packages");
+        if (Directory.Exists(winget))
+            foreach (var candidate in Directory.EnumerateFiles(winget, "ffmpeg.exe", SearchOption.AllDirectories))
+                if (candidate.Contains("Gyan.FFmpeg_", StringComparison.OrdinalIgnoreCase)) return candidate;
+        throw new FileNotFoundException("ffmpeg.exe was not found on PATH or in the Gyan FFmpeg WinGet package.");
+    }
+
     private static async Task RunSyncStimulusAsync(ProbeOptions options)
     {
         var duration = TimeSpan.FromSeconds(options.DurationSeconds);
@@ -611,16 +723,19 @@ internal static class CaptureScenarios
 internal sealed class PatternWindow : Form
 {
     internal const int FlashMessage = 0x8001;
+    internal const int DisplayAffinityMessage = 0x8002;
     private bool _flash;
     private readonly bool _animate;
+    private readonly bool _solidRed;
+    private readonly string _affinityResultPath;
     private readonly System.Windows.Forms.Timer? _animationTimer;
     private int _animationFrame;
-    internal PatternWindow(Rectangle bounds, bool animate)
+    internal PatternWindow(Rectangle bounds, bool animate, bool solidRed, string affinityResultPath)
     {
-        _animate = animate;
+        _animate = animate; _solidRed = solidRed; _affinityResultPath = affinityResultPath;
         FormBorderStyle = FormBorderStyle.None; StartPosition = FormStartPosition.Manual; Bounds = bounds;
         Text = "FrameTrail Capture Probe Pattern";
-        TopMost = true; ShowInTaskbar = false; BackColor = Color.FromArgb(12, 20, 36);
+        TopMost = true; ShowInTaskbar = false; BackColor = solidRed ? Color.Red : Color.FromArgb(12, 20, 36);
         DoubleBuffered = true;
         if (animate)
         {
@@ -632,11 +747,20 @@ internal sealed class PatternWindow : Form
     protected override void WndProc(ref Message m)
     {
         if (m.Msg == FlashMessage) { _flash = m.WParam != IntPtr.Zero; Invalidate(); }
+        else if (m.Msg == DisplayAffinityMessage)
+        {
+            var requested = unchecked((uint)m.WParam.ToInt64());
+            var succeeded = SetWindowDisplayAffinity(Handle, requested);
+            var error = succeeded ? 0 : Marshal.GetLastWin32Error();
+            var readSucceeded = GetWindowDisplayAffinity(Handle, out var actual);
+            File.WriteAllText(_affinityResultPath, JsonSerializer.Serialize(new WindowAffinityAck(requested, succeeded, error, readSucceeded, actual)));
+        }
         base.WndProc(ref m);
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        if (_solidRed) { e.Graphics.Clear(Color.Red); return; }
         e.Graphics.Clear(_flash ? Color.White : Color.FromArgb(12, 20, 36));
         using var brush = new SolidBrush(_flash ? Color.Black : Color.LimeGreen);
         var x = _animate ? (_animationFrame * 13) % Math.Max(1, Width - Width / 5) : Width / 3;
@@ -644,13 +768,16 @@ internal sealed class PatternWindow : Form
         using var font = new Font("Segoe UI", 18, FontStyle.Bold);
         e.Graphics.DrawString(_flash ? "PULSE" : "CAPTURE PROBE", font, _flash ? Brushes.Black : Brushes.White, 12, 12);
     }
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowDisplayAffinity(IntPtr hwnd, uint affinity);
+    [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowDisplayAffinity(IntPtr hwnd, out uint affinity);
 }
 
 internal static class PatternWindowHost
 {
-    internal static async Task<PatternWindowController> StartAsync(Rectangle bounds, bool animate = false)
+    internal static async Task<PatternWindowController> StartAsync(Rectangle bounds, bool animate = false, bool solidRed = false)
     {
         var readyPath = Path.Combine(Path.GetTempPath(), $"frametrail-pattern-{Guid.NewGuid():N}.txt");
+        var affinityResultPath = readyPath + ".affinity.json";
         var processPath = Environment.ProcessPath ?? throw new InvalidOperationException("Current executable path is unavailable.");
         var info = new ProcessStartInfo(processPath) { UseShellExecute = false, CreateNoWindow = true };
         var commandLine = Environment.GetCommandLineArgs();
@@ -661,6 +788,8 @@ internal static class PatternWindowHost
         info.ArgumentList.Add(bounds.X.ToString()); info.ArgumentList.Add(bounds.Y.ToString());
         info.ArgumentList.Add(bounds.Width.ToString()); info.ArgumentList.Add(bounds.Height.ToString());
         info.ArgumentList.Add(animate ? "--animate" : "--static");
+        info.ArgumentList.Add(solidRed ? "--solid-red" : "--pattern");
+        info.ArgumentList.Add(affinityResultPath);
         var process = Process.Start(info) ?? throw new InvalidOperationException("Could not start the controlled test window process.");
         var timeout = Stopwatch.StartNew();
         while (!File.Exists(readyPath) && !process.HasExited && timeout.Elapsed < TimeSpan.FromSeconds(10))
@@ -669,7 +798,7 @@ internal static class PatternWindowHost
         {
             if (!File.Exists(readyPath)) throw new InvalidOperationException("The controlled test window did not become ready.");
             var handle = new IntPtr(Convert.ToInt64(await File.ReadAllTextAsync(readyPath).ConfigureAwait(false), 16));
-            return new PatternWindowController(process, handle);
+            return new PatternWindowController(process, handle, affinityResultPath);
         }
         catch { try { process.Kill(true); } catch { } process.Dispose(); throw; }
         finally { try { File.Delete(readyPath); } catch { } }
@@ -680,13 +809,15 @@ internal static class PatternWindowHost
         var readyPath = args[1];
         var bounds = new Rectangle(int.Parse(args[2]), int.Parse(args[3]), int.Parse(args[4]), int.Parse(args[5]));
         var animate = args.Length > 6 && args[6] == "--animate";
-        var window = new PatternWindow(bounds, animate);
+        var solidRed = args.Length > 7 && args[7] == "--solid-red";
+        var affinityResultPath = args.Length > 8 ? args[8] : Path.Combine(Path.GetTempPath(), $"frametrail-affinity-{Guid.NewGuid():N}.json");
+        var window = new PatternWindow(bounds, animate, solidRed, affinityResultPath);
         window.Shown += (_, _) => File.WriteAllText(readyPath, window.Handle.ToInt64().ToString("X"));
         Application.Run(window);
     }
 }
 
-internal sealed class PatternWindowController(Process process, IntPtr handle) : IAsyncDisposable
+internal sealed class PatternWindowController(Process process, IntPtr handle, string affinityResultPath) : IAsyncDisposable
 {
     private const uint WmClose = 0x0010;
     private const uint WmApp = 0x8000;
@@ -709,6 +840,18 @@ internal sealed class PatternWindowController(Process process, IntPtr handle) : 
     {
         if (!PostMessageW(Handle, WmApp + 1, flash ? new IntPtr(1) : IntPtr.Zero, IntPtr.Zero)) throw new InvalidOperationException("Could not signal the controlled test window.");
         return Task.CompletedTask;
+    }
+    internal async Task<WindowAffinityAck> SetDisplayAffinityAsync(uint affinity)
+    {
+        try { File.Delete(affinityResultPath); } catch { }
+        if (!PostMessageW(Handle, PatternWindow.DisplayAffinityMessage, new IntPtr(unchecked((long)affinity)), IntPtr.Zero))
+            throw new InvalidOperationException("Could not request display affinity from the controlled window process.");
+        var timeout = Stopwatch.StartNew();
+        while (!File.Exists(affinityResultPath) && !process.HasExited && timeout.Elapsed < TimeSpan.FromSeconds(3))
+            await Task.Delay(20).ConfigureAwait(false);
+        if (!File.Exists(affinityResultPath)) throw new TimeoutException("The controlled window did not acknowledge display-affinity change.");
+        return JsonSerializer.Deserialize<WindowAffinityAck>(await File.ReadAllTextAsync(affinityResultPath).ConfigureAwait(false))
+            ?? throw new InvalidDataException("Display-affinity acknowledgement was empty.");
     }
     internal void BringToTopWithoutActivating()
     {
@@ -747,3 +890,5 @@ internal sealed class PatternWindowController(Process process, IntPtr handle) : 
     }
     public async ValueTask DisposeAsync() { await CloseAsync().ConfigureAwait(false); }
 }
+
+internal sealed record WindowAffinityAck(uint Requested, bool SetSucceeded, int LastError, bool ReadSucceeded, uint Actual);

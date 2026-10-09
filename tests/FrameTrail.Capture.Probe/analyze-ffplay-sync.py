@@ -80,8 +80,22 @@ def main():
         x = np.array([(a + b) / 2 for a, b, _ in matches], dtype=np.float64)
         y = np.array([c for _, _, c in matches], dtype=np.float64)
         slope_ms_per_min = float(np.polyfit(x, y, 1)[0] * 60)
+        offsets = np.abs(y)
+        span = max(float(x.max() - x.min()), 1e-9)
+        thirds = []
+        for label, low, high in (("first", 0.0, 1 / 3), ("middle", 1 / 3, 2 / 3), ("last", 2 / 3, 1.000001)):
+            selected = [offset for position, offset in zip(x, y) if low <= (position - float(x.min())) / span < high]
+            if selected:
+                selected = np.asarray(selected, dtype=np.float64)
+                thirds.append({"part": label, "count": int(len(selected)), "median_audio_minus_video_ms": float(np.median(selected)),
+                               "p95_abs_audio_minus_video_ms": float(np.percentile(np.abs(selected), 95)),
+                               "max_abs_audio_minus_video_ms": float(np.max(np.abs(selected)))})
+        initial = np.asarray([offset for position, offset in zip(x, y) if position <= float(x.min()) + 20], dtype=np.float64)
     else:
         slope_ms_per_min = None
+        offsets = np.array([], dtype=np.float64)
+        thirds = []
+        initial = np.array([], dtype=np.float64)
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("w", encoding="utf-8", newline="") as f:
         writer = csv.writer(f)
@@ -89,10 +103,16 @@ def main():
         writer.writerows([[f"{v:.6f}", f"{a:.6f}", f"{o:.3f}"] for v, a, o in matches])
     report = {"video": str(media), "audio": str(audio_path), "video_frames": len(video_times),
               "flash_events": len(flash_events), "tone_events": len(tone_events), "matched_events": len(matches),
+              "match_tolerance_ms": 250,
+              "matched_coverage_percent_of_detected_events": 100.0 * len(matches) / max(len(flash_events), len(tone_events), 1),
               "median_audio_minus_video_ms": float(np.median([m[2] for m in matches])) if matches else None,
               "p95_abs_audio_minus_video_ms": float(np.percentile(np.abs([m[2] for m in matches]), 95)) if matches else None,
+              "p99_abs_audio_minus_video_ms": float(np.percentile(offsets, 99)) if len(offsets) else None,
+              "max_abs_audio_minus_video_ms": float(np.max(offsets)) if len(offsets) else None,
+              "initial_20s": {"count": int(len(initial)), "p95_abs_audio_minus_video_ms": float(np.percentile(np.abs(initial), 95)) if len(initial) else None,
+                              "max_abs_audio_minus_video_ms": float(np.max(np.abs(initial))) if len(initial) else None},
               "drift_ms_per_minute": slope_ms_per_min, "first_match": matches[0] if matches else None,
-              "last_match": matches[-1] if matches else None, "analysis_csv": str(output)}
+              "last_match": matches[-1] if matches else None, "first_middle_last": thirds, "analysis_csv": str(output)}
     print(json.dumps(report, ensure_ascii=False, indent=2))
 
 

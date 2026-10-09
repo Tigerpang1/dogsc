@@ -10,7 +10,7 @@ if (args.Length > 0 && args[0] == "--pattern-window-standalone")
     return;
 }
 var probeOptions = ProbeOptions.Parse(args);
-if (probeOptions.SyncStimulus || probeOptions.SyncCapture || probeOptions.SyncPlayback || probeOptions.TargetTest || probeOptions.TrackTest || probeOptions.PauseCycle || probeOptions.MultiPauseCycle || probeOptions.KillRecoveryTest || probeOptions.EnumerateInputs || probeOptions.LongLoopback || probeOptions.AnimateWindow)
+if (probeOptions.SyncStimulus || probeOptions.SyncCapture || probeOptions.SyncPlayback || probeOptions.TargetTest || probeOptions.TrackTest || probeOptions.PauseCycle || probeOptions.MultiPauseCycle || probeOptions.KillRecoveryTest || probeOptions.EnumerateInputs || probeOptions.LongLoopback || probeOptions.AnimateWindow || probeOptions.ExclusionTest)
 {
     await CaptureScenarios.RunAsync(probeOptions);
     return;

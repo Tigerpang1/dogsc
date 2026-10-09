@@ -181,9 +181,9 @@ try {
     $buildInfoPath = Join-Path $repoRoot 'artifacts/release/FrameTrail-0.2.0-win-x64/BUILD-INFO.txt'
     if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
         $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw
-        $sourceKindMatch = [regex]::Match($buildInfo, '(?m)^源码类型：(.+)$')
-        $commitMatch = [regex]::Match($buildInfo, '(?m)^FrameTrail 源码提交：([0-9a-f]{40})$')
-        $upstreamMatch = [regex]::Match($buildInfo, '(?m)^DogSC 上游审计基线：([0-9a-f]{40})$')
+        $sourceKindMatch = [regex]::Match($buildInfo, '(?m)^源码类型：(.+)\r?$')
+        $commitMatch = [regex]::Match($buildInfo, '(?m)^FrameTrail 源码提交：([0-9a-f]{40})\r?$')
+        $upstreamMatch = [regex]::Match($buildInfo, '(?m)^DogSC 上游审计基线：([0-9a-f]{40})\r?$')
         $run.buildInfo = [ordered]@{
             path = $buildInfoPath
             sourceKind = if ($sourceKindMatch.Success) { $sourceKindMatch.Groups[1].Value.Trim() } else { $null }

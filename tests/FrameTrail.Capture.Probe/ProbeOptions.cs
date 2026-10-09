@@ -1,13 +1,13 @@
 using System.Globalization;
 
 internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int FrameRate, int? Width, int? Height,
-    bool Metrics, bool NoAudio, bool Software, bool FixedFrameRate, bool SyncStimulus, bool SyncCapture, bool SyncPlayback, bool LoopPlayback, bool RegionPlayback, int RegionX, int RegionY, string? FixturePath, bool TargetTest, bool TrackTest, bool PauseCycle, bool MultiPauseCycle, bool KillRecoveryTest, bool EnumerateInputs, bool LongLoopback, bool AnimateWindow)
+    bool Metrics, bool NoAudio, bool Software, bool FixedFrameRate, bool SyncStimulus, bool SyncCapture, bool SyncPlayback, bool LoopPlayback, bool RegionPlayback, int RegionX, int RegionY, string? FixturePath, bool TargetTest, bool TrackTest, bool PauseCycle, bool MultiPauseCycle, bool KillRecoveryTest, bool EnumerateInputs, bool LongLoopback, bool AnimateWindow, bool ExclusionTest)
 {
     internal static ProbeOptions Parse(string[] args)
     {
         string? output = null; var duration = 5; var fps = 30; int? width = null, height = null; var metrics = false;
         var noAudio = false; var software = false; var fixedFrameRate = false; var syncStimulus = false; var syncCapture = false; var syncPlayback = false; var loopPlayback = false; var regionPlayback = false; var regionX = 40; var regionY = 40; string? fixture = null; var targetTest = false;
-        var trackTest = false; var pauseCycle = false; var multiPauseCycle = false; var killRecoveryTest = false; var enumerateInputs = false; var longLoopback = false; var animateWindow = false;
+        var trackTest = false; var pauseCycle = false; var multiPauseCycle = false; var killRecoveryTest = false; var enumerateInputs = false; var longLoopback = false; var animateWindow = false; var exclusionTest = false;
         for (var i = 0; i < args.Length; i++)
         {
             var arg = args[i];
@@ -28,6 +28,7 @@ internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int
             if (arg == "--enumerate-inputs") { enumerateInputs = true; continue; }
             if (arg == "--long-loopback") { longLoopback = true; continue; }
             if (arg == "--animate-window") { animateWindow = true; continue; }
+            if (arg == "--exclusion-test") { exclusionTest = true; continue; }
             if (TryInlineInt(arg, "--duration", out var inlineDuration)) { duration = inlineDuration; continue; }
             if (TryInlineInt(arg, "--fps", out var inlineFps)) { fps = inlineFps; continue; }
             if (TryInlineInt(arg, "--width", out var inlineWidth)) { width = inlineWidth; continue; }
@@ -49,7 +50,7 @@ internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int
         }
         if (duration <= 0 || fps is < 1 or > 120 || width is <= 0 || height is <= 0) throw new ArgumentOutOfRangeException(nameof(args), "Duration, frame rate, and output dimensions must be positive; frame rate is capped at 120.");
         return new ProbeOptions(output is null ? null : Path.GetFullPath(output), duration, fps, width, height,
-            metrics, noAudio, software, fixedFrameRate, syncStimulus, syncCapture, syncPlayback, loopPlayback, regionPlayback, regionX, regionY, fixture is null ? null : Path.GetFullPath(fixture), targetTest, trackTest, pauseCycle, multiPauseCycle, killRecoveryTest, enumerateInputs, longLoopback, animateWindow);
+            metrics, noAudio, software, fixedFrameRate, syncStimulus, syncCapture, syncPlayback, loopPlayback, regionPlayback, regionX, regionY, fixture is null ? null : Path.GetFullPath(fixture), targetTest, trackTest, pauseCycle, multiPauseCycle, killRecoveryTest, enumerateInputs, longLoopback, animateWindow, exclusionTest);
     }
     private static bool TryInlineInt(string value, string prefix, out int number)
     {

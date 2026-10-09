@@ -1,15 +1,23 @@
-# FrameTrail 0.1.0 本机打包验证
+# FrameTrail 0.2.0 本机打包验证
 
-本记录对应固定应用代码提交 `159e17bbf8b8db250358b30363dc16ba97c23180` 构建的本机验证包。包用于本地功能验收，包含 Gyan FFmpeg 8.1.1 GPLv3 构建，不可直接公开发行。逐项路径、哈希、探测结果及源码 ZIP 无 Git 回退验证状态以 [`artifacts/validation/package-final.json`](../artifacts/validation/package-final.json) 为准。
+本轮交付为 Windows 11 x64 本地开发预览。便携包与 per-user 安装程序均已构建并经过本机运行检查，源码归档要求 Git 工作区干净。每个产物的实际提交、哈希及最后验证结果由包内 `BUILD-INFO.txt`、源码内 `SOURCE-METADATA.json` 和工作区机器可读报告确定。
 
-Release `win-x64` 自包含发布、便携 ZIP 与 Inno Setup 安装器均已生成。便携包带 `FrameTrail.exe`、`tools/ffmpeg/ffmpeg.exe`、`ffprobe.exe`、根 LICENSE、README、文档、第三方通知和每次录制 60 秒限制说明。构建元数据记录代码提交和上游 DogSC 基线；打包工作区含脚本及文档改动，因此不能标记为 Git clean。
+## 已执行的包验证
 
-隔离 PATH（只保留 Windows 系统目录）启动最终包的合成项目并运行 `--smoke` 成功，截图输出到 `artifacts/validation/package-final-open-smoke.png`。相对素材、缩略图和波形均能在样例项目中显示。本轮诊断启动的 FrameTrail 进程已退出。
+`scripts/validate-package.ps1 -Version 0.2.0` 于2026-10-09完成预检，五项检查全部通过：必要程序/原创样例/许可证齐备；便携版有声播放与暂停恢复；真实屏幕录制、暂停、编辑、重开与导出；安装版样例播放；卸载后的主程序及 HKCU 安装注册清除。预检运行于08:21:13–08:21:59 UTC。
 
-最终包的短工作流验收使用真实桌面录制作为输入，录制约 3.52 秒，采集得到一条鼠标位置事件并自动添加一个标记，执行 split、变速和重排，重载项目后导出 MP4 成功。工程输出时长约 2.64 秒；完整机器可读结果位于 `artifacts/validation/package-final-workflow/workflow-result.json`。这项短验收用于检查最终包内采集与导出工作流，不代表真人点击运镜、长时间录制稳定性或干净虚拟机结果。
+验证进程将 PATH 限制为 Windows 系统目录、将 DOTNET_ROOT 指向不存在的目录，并移除外部 FFmpeg 配置，确认包内自带工具可用。验证仍在已安装 VC++ 运行库的开发机上，不能等同于干净虚拟机。最终产物重新构建后会重复相同验证，结果覆盖于 `artifacts/validation/package-0.2.0/result.json`，具体媒体数据以该报告关联的 workflow JSON 为准。
 
-另外，媒体集成程序对真实 3840×2160、约 2.97 秒的录制及其相邻指针 JSONL 执行了项目保存/重载、编辑、取消清理、MP4/M4A 导出和探测，结果成功；对 1080p60 的合成同步素材导出 300 帧、耗时约 1.86 秒，三组音画脉冲偏差均为 20 毫秒，编码器为 `h264_nvenc`，渲染器为 Direct3D 11 GPU。合成素材数据仅用于时间线及封装同步验证，不代表真实采集同步性能。
+安装脚本只在无既有 FrameTrail 安装时运行，安装到验证目录；启动自己的卸载程序，并核验该目录内主程序和 HKCU 注册项被清除。用户项目与偏好保留。安装器只支持 Windows 11 x64，不会安装或升级系统级 VC++ 运行库。
 
-安装器此前已通过 per-user 安装与卸载检查；正式最终包复测的退出码、HKCU 卸载记录清除及安装文件检查须以 `package-final.json` 状态字段为准。安装器设置 `PrivilegesRequired=lowest`，不安装系统级 VC 运行库。本机已安装 Microsoft Visual C++ 2015–2022 Redistributable (x64)，干净虚拟机仍未验证。源码 ZIP 的元数据回退测试尚待提交最终脚本后，在临时解压副本中运行 `package.ps1 -WithoutFfmpeg -SkipInstaller`；在外部 JSON 明确通过前不标记完成。
+## 源码归档验证
 
-本机包随附 FFmpeg 核心仓库源码材料及构建信息，但 Gyan full build 静态包含的全部依赖源码、补丁和构建脚本仍未完整核实。FFmpeg 通过独立子进程调用；这不免除发行 GPLv3 构建所需的材料和义务。公开发行流程保持未启用。
+`scripts/package-source.ps1` 只归档干净 HEAD，并追加固定 DogSC 源码基线。`scripts/validate-source-package.ps1 -SourceZip <ZIP>` 将归档解压到工作区以外的 TEMP UUID 目录，检查无 `.git`、验证元数据，再运行 Core/导入器测试、App Release build 和 `package.ps1 -WithoutFfmpeg -SkipInstaller`。它检查打包元数据确实使用 `source archive` 回退，而不是误找到外层仓库。
+
+源码归档的实际验收状态由 `artifacts/validation/package-0.2.0/source-validation.json` 决定；该报告必须为 `status: passed` 才视为此项通过。日志与解压副本会保留，未通过不会自动标记成功。
+
+## 发行边界
+
+包内附带原创8秒合成样例、使用说明、架构、迁移映射、测试报告、MIT及第三方许可。无60秒录制上限；长时性能和同步验收见采集报告。Windows 实录桌面和本地重建的视觉fixture不会随包分发；源码归档包含固定上游快照自身的README示例图片。
+
+当前 Gyan FFmpeg 8.1.1 full static 构建包含 GPLv3 组件。已随包保存 FFmpeg 本体对应源码、构建配置、二进制哈希与 GPLv3 文本；静态依赖的全部对应源码、补丁和构建脚本仍未完整核实。此包用于本地交付，公开发布保持未启用。没有商业代码签名、干净虚拟机或全部物理设备矩阵通过的声明。

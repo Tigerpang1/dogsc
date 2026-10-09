@@ -1,54 +1,41 @@
-# 本机验证报告
+# FrameTrail 0.2.0 验证报告
 
-验证日期：2026-10-08（用户时区 America/Guatemala）。JSON 和 CSV 诊断中的时间使用 UTC ISO 8601，部分文件名因此为 20261009。
+验证日期：2026-10-09。当前结论：Core、GPU合成、实时预览、主要编辑流程和数项真实录制闭环已有本机自动与桌面验收；单机长时视频采集、WASAPI测量及正确区域视听长测达到各自记录的阈值。其他硬件/音源组合、干净环境和最终发行包仍待验收。
 
-当前结论：**阶段 1 的首个录制—编辑—运镜—导出闭环可以运行；完整迁移、长录制稳定性和所有设备验收未完成。**
+## 验证环境
 
-## 测试环境
+Windows 11 Pro x64（`10.0.26200`），AMD Ryzen 7 9850X3D、NVIDIA GeForce RTX 5070 Ti，主显示器3840×2160，.NET SDK 8.0.303、Vortice 3.8.3、FFmpeg 8.1.1。测试使用硬件 D3D11、NVENC 及本机 Gyan FFmpeg；这不是可直接再分发的发行依赖组合。未在干净虚拟机或其他显卡上验证。
 
-- Windows 11 Pro x64，版本 `10.0.26200`。
-- AMD Ryzen 7 9850X3D；NVIDIA GeForce RTX 5070 Ti，驱动 `32.0.16.1088`；物理内存约 30.88GiB。
-- 主显示器 3840×2160；系统另有 ToDesk/Oray 虚拟显示适配器，尚未作为多屏通过证据。
-- 构建 .NET SDK 8.0.303；应用目标 net8.0-windows / win-x64。
-- ScreenRecorderLib 7.0.1；Vortice 3.8.3；FFmpeg 8.1.1 Gyan full build。
-- 本机已有 VC++ Runtime 与 Media Foundation。未提供干净虚拟机结果。
+## 自动与桌面验证
 
-## 已执行的自动验证
+| 范围 | 结果与证据 |
+|---|---|
+| Core 时间线和持久化 | `dotnet run --project tests/FrameTrail.Core.Tests/FrameTrail.Core.Tests.csproj -c Release` 通过。覆盖分割、裁短、变速、重排、重复/不连续源区间映射、鼠标时钟校准、自动缩放、项目备份恢复、路径安全，全源鼠标焦点到 `Canvas.Crop` 的转换，以及摄像头暂停分段、重排映射、分段裁切/滑移和备份恢复序列化。RecordingTimelineMapper覆盖首帧偏移、启动延迟、三次暂停及重叠暂停合并、首尾裁切和空交集。源视频帧率元数据要求有限且 `0 < fps ≤ 240`，旧项目缺字段时读取为30fps。 |
+| 动画 | 同一 Core 测试通过相邻和重叠 zoom、ScreenMotion、CameraMotion 接缝；核对 Cubic、Quintic 和默认 Spring 数值样本，并检查重排后的目标源时间。Opening的8种预设均检查初始画面、元素错开顺序和完成状态。这些是根据上游Swift源码语义建立的C#样本；本机没有运行Swift实现，不能称为跨语言逐帧golden对照。 |
+| GPU与场景 | `dotnet run --project tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj -c Release` 通过，报告后端为 `Direct3D 11 GPU hardware`。覆盖裁切/缩放/圆角/光标、Phone与Tablet各自的机身和边框像素、焦点透视点反算、屏幕标题和窗口控制点透视、背景视频真实帧变化、循环与非循环末帧行为、预览与导出共享视频背景帧。GPU帧合成加回读40帧平均0.15ms；仅代表该小尺寸probe。 |
+| 实时预览 | Render.Probe的静态与动态1080p源缩至960输出，stdout背压期间decoder Private Bytes分别179→179MiB、181→181MiB；均值1.90/1.67ms，p95 2.77/2.12ms，对照30fps的33.33ms预算。Probe还覆盖seek、倒退seek、取消和Dispose清理。此结果来自本机合成输入和硬件，不保证复杂真实素材在所有机器上的实时帧率。 |
+| 媒体导出 | Render.Probe通过范围MP4的ffprobe、抽帧顺序和音频范围检查；1440p与4K、30/60fps矩阵通过。组合场景导出36帧，独立音频及全部场景层通过。暂停后同一WAV映射出的多个音频片段，经2倍速和重排后可正常导出M4A；无主素材音轨时，相机容器音轨按多个同步片段导出AudioOnly M4A通过。Integration的NVENC/D3D11 1080p60同步样片输出300帧，三处闪帧时间为0.5/2/4秒，音频脉冲为0.48/1.98/3.98秒，最大测得偏差20ms。真实70秒录制工程编辑后导出52.9秒工程长度的MP4通过；此前复跑工程的53.200秒输出为另一份旧编辑状态。Integration还生成117帧、320×180、30fps、3.9秒MP4及同长M4A，ffprobe确认音频流和时长。另有1920×1080、60fps、360帧、6秒NVENC/D3D11输出，耗时2.106秒。 |
+| 长时区域视听采集 | `artifacts/validation/long-capture/ffplay-sync-correct-region-30m-report.json` 与对应媒体记录：正确区域同时采集30分钟，H.264 320×180、60/1 CFR、1800.683333秒、108041帧；WAV 1800.532472秒。检测到1072组闪帧/音频cue，1072组均一一配对（配对容差±250ms），覆盖名义1080组的99.26%；另有8组未检出，原因未分类。音频相对视频中位−45.790ms、绝对P95 70.790ms、P99 79.606ms、最大94.123ms，漂移估计+0.02696ms/min，满足本次长时100ms验收阈值。该试验的音频来自系统回环，FFplay fixture 同时播放画面和声音，可能混入桌面其他声源，不能当作无污染独立声源测试。启动前20秒12组的P95为65.623ms，未满足短测50ms阈值；另一15秒短探针9组最大47.594ms仅说明该次结果，不能据此泛化。 |
+| 预览与导出构图 | Integration在四个成片时间点比较真实 `PreviewPlaybackSession` 帧与导出帧，源时间完全对齐；PSNR为24.06–25.58dB，MAE为3.78–5.03。阈值按低分辨率H.264压缩设置为PSNR≥23.5dB且MAE≤8；这是有损编码容差，不是逐像素相等。 |
+| 用户界面编辑 | `artifacts/validation/editor-regression-v6.json` 28/28通过，覆盖60fps媒体逐帧前进/后退、多选重排及撤销、音轨多选删除、剪贴板效果、分段摄像头移动/裁切/滑移、1秒范围MP4和保存重开。`playback-regression-v4.json` 验证54帧/1.766秒暂停后续播18帧至2.333秒。缩略图/波形截图见 `editor-with-thumbnails.png`。 |
+| DogSC导入 | `dotnet run --project tests/FrameTrail.DogScImport.Tests/FrameTrail.DogScImport.Tests.csproj -c Release` 的构造schema fixtures通过，覆盖版本字段、素材复制安全和当前已映射效果。未用真实Mac工程互操作；导入报告逐项保留损失，Windows自有工程格式不伪装成原格式完全兼容。 |
+| 原创样例 | `scripts/create-sample.ps1` 重新生成相对路径工程、合成屏幕/摄像头视频、独立tone、角标和8秒导出；脚本保存并重开工程后调用实际ExportEngine，再由ffprobe确认1280×720、30fps、8秒且有音轨。成品与来源说明位于 `artifacts/sample/FrameTrail-Demo/`。 |
+| 便携版包内验证 | `artifacts/validation/package-0.2.0/result.json` 通过：隔离开发环境的 `PATH` 与 `DOTNET_ROOT` 后，便携版有声播放、暂停恢复，以及真实录制/暂停/编辑/重开/导出均通过。每次workflow的时长、指针与点击数以同目录当前workflow-result.json为准；真实受控点击运镜已有另一个input-workflow-final证据。此验证仍在开发机Windows 11上，不等价于无运行库干净虚拟机；per-user安装版样例播放与卸载清理也通过；最终源码归档另由source-validation.json核验。 |
+| 桌面录制闭环 | `artifacts/validation/input-workflow-final/workflow-result.json` 通过：真实输入录制7.9秒，检测27个指针事件、2次鼠标点击和1个自动缩放片段；暂停后编辑为2倍速并重排，工程时长为5.925秒，导出成功。`artifacts/validation/ddagrab-app-70s-final/workflow-result.json` 通过：70.533秒显示器录制编辑为52.9秒并导出。此前 `final-workflow` 的短桌面流程也保留。 |
 
-| 项目 | 实际结果 | 证据 |
-|---|---|---|
-| Core 算法与存储 | 时间线分割、变速、重排、接点、重复源区间、鼠标校准、自动缩放、备份恢复、未来版本和路径验证通过 | `tests/FrameTrail.Core.Tests` |
-| GPU 合成 | 硬件 D3D11；背景、圆角、缩放、裁切外光标隐藏、点击环、不同输出尺寸的光标比例通过 | `tests/FrameTrail.Render.Probe`；40 帧小尺寸平均约 0.19ms，不能外推为完整导出性能 |
-| 桌面闭环 | 主程序实际录制 3.519979s，分割、后半段 2 倍速并前移、保存重开，导出 2.63998425s | `artifacts/validation/final-workflow/workflow-result.json` 与 `desktop-edited.mp4` |
-| 固定点击与运镜 | 6s 自制 testsrc2 与固定指针事件生成 2 段自动缩放，项目重载、MP4/M4A 成功 | `artifacts/validation/synthetic-testsrc2-20261009-043947-563/result.json` |
-| 预览/成片构图 | 四个精确帧时刻使用相同 GPU 代码生成参考，压缩后 PSNR 25.07–25.85dB、MAE 3.75–4.69；按测试容差通过 | 同上；这是有损编码容差验证，不能理解为逐像素完全相同 |
-| 1080p60 导出 | 完整 6 秒、360 帧，实际 `h264_nvenc` 与 D3D11 硬件；约 1.709 秒 | 同上；源图是 320×180 合成素材，输出为 1920×1080，不等价于复杂原生 1080p 素材压力测试 |
-| 时间线音画对齐 | 三段重排/变速后输出 5s/300帧；闪屏上升 0.5/2/4s，音频脉冲上升 0.48/1.98/3.98s，三处偏差均 20ms | `artifacts/validation/sync-1080p60-20261009-043915-980/sync-result.json` |
-| 取消后再次导出 | 在合成帧阶段取消，检查临时文件消失，再导出成功 | Integration 默认与真实素材两模式 |
-| 系统回环素材 | Probe 播放本机生成的 440Hz 音调并录制默认输出，成片含音轨；真实录制再次剪辑导出成功 | `artifacts/validation/real-recording-20261009-042508-244/result.json` |
-| 程序界面 | 主程序初始化、录制、编辑后生成实际 WPF 诊断快照；合成项目的缩略图与波形已经截图检查 | `artifacts/validation/final-workflow/editor-project.png` 与 `artifacts/validation/editor-with-thumbnails.png` |
-
-桌面闭环样片的鼠标基本静止，只有 1 条位置事件；点击运镜验证来自明确标识的合成事件。未将合成测试当作人工真实点击验收。
-
-## 采集诊断与仍需测量的指标
-
-ScreenRecorderLib 的 Recording 通知相对开始调用约 0.4–0.74 秒，但不公开首帧 PTS 的 Stopwatch 锚点。通知延迟不是已知同步偏差，不能直接将其用于校准。源视频与鼠标事件均保留时钟信息，UI 提供独立毫秒校准。
-
-最初的录制 private bytes 在约 130 秒达到 990MiB，诊断中止。关闭 faststart 后输出文件持续增长，碎片 MP4 未直接解决前段内存增长。后续低延迟 300 秒测试正常完成：H.264 1920×1080、17,982 帧、300.007033s；AAC 300.010646s；private bytes 在约 140 秒后稳定于 1,278–1,283MiB。这说明前段增长不能直接判定为线性泄漏，仍需优化并完成 30 分钟验证；视频与音轨总时长接近也不能代替实际音画同步测量。
-
-主程序保护性停录已实测：原始 4K 模式约 12.074646s 达到内存增长阈值，程序自动结束、保存项目，再重排变速导出 9.0559845s 成片。证据为 `artifacts/validation/protective-stop/workflow-result.json`。默认录制尺寸现为最高 1080p，可选择原始尺寸；60 秒、内存增长 512MiB 和磁盘保护仍保留于此技术预览。
-
-测试工具记录进程 CPU、工作集、private bytes、线程数、文件增长与可用物理内存。GPU 利用率、驱动级丢帧、真实首帧/采集声音偏差、长期漂移尚未得到完整可重复报告。文件的标称 FPS 不能代表没有重复帧或采集丢帧。
-
-## 复现命令
+复现Core、GPU和集成检查：
 
 ```powershell
 dotnet run --project tests/FrameTrail.Core.Tests/FrameTrail.Core.Tests.csproj -c Release
+dotnet run --project tests/FrameTrail.DogScImport.Tests/FrameTrail.DogScImport.Tests.csproj -c Release
 dotnet run --project tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj -c Release
 dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj -c Release
-dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj -c Release -- --sync
 ```
 
-主程序诊断参数 `--workflow-smoke <output-directory>` 会实际短录当前桌面、编辑并导出；只在允许录屏的本机会话使用，录制内容保存在指定目录，不上传。`--open <project.frametrail> --smoke <snapshot.png>` 可做指定项目打开与界面快照检查。正常使用无需这些参数。
+## 仍有限或待验的验收
 
-安装包结果单独见 `package-validation.md`。全部真实素材只保留在本机 `artifacts`，没有公开发布。
+ScreenRecorderLib旧后端完成的30分钟样片有4,095帧、1800.049秒视频，平均约2.27fps；private bytes先增长后稳定在约1.28GiB。它不能算60fps通过。新的 FFmpeg Desktop Duplication/NVENC 全屏视频压测已通过：4K显示器采集缩放到1920×1080/60fps，持续1800秒并编码108000帧，该测试没有音轨或同步刺激。独立WASAPI loopback WAV也完成30分钟测量，时长1800.037188秒、221/221受控脉冲检测、音频相对触发中位1.979ms、绝对P95 7.671ms、估算漂移0.0944ms/min；这仅代表本机端点。另一次正确区域的视听同时30分钟试验使用320×180 ROI视频和独立WAV，机器可读报告显示1072/1072检测事件配对，P95绝对偏差70.790ms、最大94.123ms、漂移+0.02696ms/min，达到本次长时100ms阈值。名义1080组中8组未检测，原因未分类；系统回环声源可能混入桌面音频。这些限制及短测50ms结果未达标见上表和 `capture-validation.md`。该单次长测不代表所有设备或短时启动边界都达到同一阈值。
+
+显示器短测、区域及窗口路径已有实现和本机探针；麦克风未实际采集，物理摄像头未实际打开。长时区域音画结果已在上方报告；首20秒未达到短时50ms目标，不能宣称采集启动边界也满足短时阈值。App恢复验收由 `recovery-parts-app-final/app-recovery.json` 确认通过，并生成 UUID 工程 `recovered-20261009-014446-971.frametrail`（projectId `08779c62-6d16-4d18-a8f1-9d3b0c71b133`）；工程引用 `media/screen.mp4`。对应恢复媒体 `media/screen-recovered.mp4` 为203,497 bytes，ffprobe为H.264 1280×720、30/1fps、2.066667秒、62帧；工程中的音轨、标记和指针事件均为0，符合此无音频、无输入探针的配置。另一次 API 级 display-only 恢复的日志位于 `probe-logs/display-id-regression/`，其 `screen-recovered.mp4` 为207,598 bytes、2.100秒、63帧；这是独立探针结果，不是上述 App UUID 工程媒体。窗口排除测试于Windows 10.0.26200.0的受控红色窗口ROI `(640,300,320,180)`验证通过：`WDA_EXCLUDEFROMCAPTURE (0x11)`设置并回读成功；DDA中心像素从`#FD0000`变为`#181818`，FFmpeg gdigrab从`#FF0000`变为`#181818`。机器可读结果和样片位于`artifacts/validation/window-exclusion-20261009b/affinity.exclusion.json`及同目录MP4；这只证明本机这两条捕获路径遵守设置。没有干净VM；`WindowsSandbox.exe` 不存在，不能报告干净系统安装验收。便携版已在隔离 `PATH` 和 `DOTNET_ROOT` 的开发机环境通过播放及真实录制导出，安装版播放与卸载清理亦已通过；源码归档单独验收。当前FFmpeg验证构建含GPL组件，FFmpeg全静态依赖许可材料仍有公开发行缺口；本机安装验收不代表干净机器。
+
+本报告和测试结果不代表完整DogSC兼容或整个迁移阶段结束。平台光标资源、部分原生采集时钟精度、真实设备矩阵以及长录制质量仍有限制。

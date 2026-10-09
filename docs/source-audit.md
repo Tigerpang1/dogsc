@@ -2,7 +2,7 @@
 
 ## 审计范围与基线
 
-审计对象为只读子模块 `upstream/dogsc`，基线提交 `e207d11b111c5e58152238fb64115b2009850547`。上游工作区无未提交改动。`README.md` 将 DogSC 描述为面向 Apple Silicon、macOS 14+ 的原生录屏与轻量剪辑应用；`Package.swift` 使用 Swift 6、macOS 14，核心拆为 `RecorderCore` 和 `DogSCApp`，并固定依赖 Sparkle 2.9.4（见 `Package.resolved`）。迁移技术选型已明确为 .NET 8 WPF、ScreenRecorderLib 7.0.1（DXGI/WGC、WASAPI、Media Foundation 录制）、Vortice.Direct3D11 3.8.3（GPU 共享像素与 shader 合成）及 FFmpeg 子进程（解码、H.264/AAC 封装）。本机 FFmpeg 8.1.1 Gyan GPLv3 full build 仅用于本地验证。此处记录的是方案和审计约束，不代表任何 Windows 功能已实现。
+审计对象为只读子模块 `upstream/dogsc`，基线提交 `e207d11b111c5e58152238fb64115b2009850547`。上游工作区无未提交改动。`README.md` 将 DogSC 描述为面向 Apple Silicon、macOS 14+ 的原生录屏与轻量剪辑应用；`Package.swift` 使用 Swift 6、macOS 14，核心拆为 `RecorderCore` 和 `DogSCApp`，并固定依赖 Sparkle 2.9.4（见 `Package.resolved`）。最初采集验证采用 ScreenRecorderLib 7.0.1；0.2.0 最终方案为 .NET 8 WPF、FFmpeg ddagrab（显示器/区域 Desktop Duplication）、ScreenRecorderLib（窗口可见矩形及摄像头 Media Foundation）、独立 NAudio WASAPI 音轨，以及 Vortice.Direct3D11 3.8.3 GPU 合成。FFmpeg 子进程负责解码、硬件编码与 H.264/AAC 封装，首帧和暂停映射见架构说明。本机 FFmpeg 8.1.1 Gyan GPLv3 full build 仅用于本地验证。此处记录的是方案和审计约束，不代表任何 Windows 功能已实现。
 
 ## 关键模块及语义
 
