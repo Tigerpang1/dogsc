@@ -118,3 +118,11 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 
 - 主素材重定位 UIA `ui-relink-audit-v5.json` 为2/2通过：缺失素材重新选择后复制入工程、哈希一致、原文件未改、可解码、关闭重开不再提示缺失。
 - `fault-lifecycle-probe/synthetic-runtime-fault.mp4` 在真实受控窗口录制中注入服务故障通知，再执行实际 StopAsync。结果 Completed、完成事件仅一次、录制器释放，ffprobe为H.264、640×360、31帧、1.0333秒。这证明服务故障收尾路径，不代表原生设备故障、热拔或损坏残片恢复已实测。屏幕/摄像头Faulted状态可停止，主界面会停止独立轨道；在验证主视频前即保存独立轨道时钟，媒体成功打开后才删除恢复记录。
+## 0.2.3附加后台验收
+
+- `captured-project-synthetic-cli-v2/validation-summary.json` 记录完整合成metadata驱动的素材复制、实际App音轨映射、保存重开、M4A导出与派生分析输入；5秒素材的3个合成视听脉冲全部配对。这是CLI正向接线验证，尚不能替代真实录制的完整metadata随工程恢复。
+- `analyze-ffplay-sync-v2.py` 改用ffprobe JSON读取帧时间戳，忽略H.264 SEI side data；解析器纯测与H.264合成3/3验证通过。原30秒实录离线重分析仍为1820帧、18/18配对，原始中位数/P95/P99/最大值逐项不变，见 `capture-audio-clock-appsync-30s-v1/analyzer-json-fix-v1/comparison.json`。未改变cue判定或偏差阈值。
+- 麦克风时钟段纯测接受暂停前后两段及增加合法重锚段的情况，拒绝时间或帧倒序、重叠、缺口、活动覆盖不足和暂停内容泄漏；它不访问麦克风。真实输入信号和物理设备复位仍待实录。
+- `runtime-lock-stability-v1.json` 确认13份NuGet锁文件在后台测试后哈希不变。发布使用锁定恢复。源码身份测试也覆盖深层解压路径与父Git仓库，独立源码构建的每轮报告保存在对应日志目录中。
+
+当前程序包和源码包的最终文件、提交、哈希及验收范围以 `artifacts/release/FrameTrail-0.2.3-candidate-manifest.json`、`artifacts/validation/package-0.2.3/source-validation.json` 和 `content-result.json` 为准；候选清单不表示实际安装、卸载或设备录制已经通过。

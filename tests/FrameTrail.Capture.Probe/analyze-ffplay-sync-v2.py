@@ -25,6 +25,25 @@ def run(args):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout
 
 
+def parse_video_timestamps_json(payload):
+    """Read frame PTS fields from ffprobe JSON and ignore frame side-data objects."""
+    probe = json.loads(payload.decode("utf-8"))
+    frames = probe.get("frames")
+    if not isinstance(frames, list):
+        raise ValueError("ffprobe JSON has no frames array")
+    timestamps = []
+    for index, frame in enumerate(frames):
+        value = frame.get("best_effort_timestamp_time")
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ffprobe frame {index} has no valid best_effort_timestamp_time") from exc
+        if not np.isfinite(timestamp):
+            raise ValueError(f"ffprobe frame {index} has a non-finite best_effort_timestamp_time")
+        timestamps.append(timestamp)
+    return np.asarray(timestamps, dtype=np.float64)
+
+
 def main():
     if len(sys.argv) != 6:
         raise SystemExit("Usage: analyze-ffplay-sync-v2.py <ffmpeg.exe> <ffprobe.exe> <capture.mp4> <summary.json> <analysis.csv>")
@@ -32,8 +51,8 @@ def main():
     media, summary_path, output = pathlib.Path(media_arg), pathlib.Path(summary_arg), pathlib.Path(output_arg)
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     pts_raw = run([ffprobe, "-v", "error", "-select_streams", "v:0", "-show_frames",
-                   "-show_entries", "frame=best_effort_timestamp_time", "-of", "csv=p=0", str(media)])
-    video_times = np.array([float(line) for line in pts_raw.decode("ascii", "ignore").splitlines() if line.strip()])
+                   "-show_entries", "frame=best_effort_timestamp_time", "-of", "json", str(media)])
+    video_times = parse_video_timestamps_json(pts_raw)
     pixels = 16 * 9
     video_raw = run([ffmpeg, "-v", "error", "-i", str(media), "-vf", "scale=16:9:flags=area,format=gray",
                      "-an", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "gray", "-"])

@@ -52,7 +52,7 @@ try {
         }
         & dotnet build $captureProbe --configuration $Configuration -p:Platform=x64
         if ($LASTEXITCODE -ne 0) { throw "采集探针构建失败，退出码 $LASTEXITCODE" }
-        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test')) {
+        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test', '--microphone-clock-segment-test')) {
             & dotnet run --no-build --project $captureProbe --configuration $Configuration -p:Platform=x64 -- $pureProbe
             if ($LASTEXITCODE -ne 0) { throw "采集纯逻辑探针 $pureProbe 失败，退出码 $LASTEXITCODE" }
         }

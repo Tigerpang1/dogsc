@@ -143,7 +143,8 @@ internal static class MicrophoneCaptureProbe
             failures.Add($"WAV sample rate {wave.SampleRate} does not match CaptureTrackResult.AudioSampleRate {result.AudioSampleRate}.");
         if (result.AudioFramesWritten is not long || frameDifference != 0)
             failures.Add($"WAV frame count {wave.Frames} does not match CaptureTrackResult.AudioFramesWritten {result.AudioFramesWritten}.");
-        if (segments.Count != 2) failures.Add($"Expected exactly two active AudioClockSegments around the pause, got {segments.Count}.");
+        failures.AddRange(ValidateClockSegmentLayout(result.Handle.StartStopwatchTicks, result.StopStopwatchTicks,
+            frequency, pauses, segments, wave.SampleRate, result.AudioFramesWritten));
         if (pauses.Count != 1 || expectedPauseDuration is not double pausedSeconds || pausedSeconds is < 1.5 or > 2.5)
             failures.Add($"Expected one measured pause near 2 seconds, got count={pauses.Count}, duration={expectedPauseDuration}.");
         if (!double.IsFinite(wallDuration) || wallDuration is < 14.7 or > 16.0)
@@ -156,12 +157,163 @@ internal static class MicrophoneCaptureProbe
             failures.Add($"AudioClockSegments wall span {clockSegmentWallDuration:F3}s did not match active capture wall time {activeWallDuration:F3}s.");
         if (Math.Abs(wave.DurationSeconds - activeWallDuration) > 0.5)
             failures.Add($"WAV duration {wave.DurationSeconds:F3}s differed from active wall duration {activeWallDuration:F3}s by more than 0.5s.");
-        if (segments.Any(segment => segment.SampleRate != wave.SampleRate || segment.SourceEndFrame <= segment.SourceStartFrame || segment.SourceRate <= 0 || !double.IsFinite(segment.SourceRate)))
-            failures.Add("One or more AudioClockSegments have invalid sample rate, frame bounds, or source rate.");
-
         return new CaptureValidation(failures.Count == 0, failures, wallDuration, pauseDuration, activeWallDuration,
             clockSegmentWallDuration, wave.DurationSeconds, frameDifference, pauses.Count, segments.Count,
             expectedPauseDuration);
+    }
+
+    internal static IReadOnlyList<string> ValidateClockSegmentLayout(long recordingStartTicks, long recordingStopTicks,
+        long stopwatchFrequency, IReadOnlyList<CapturePauseInterval> pauses,
+        IReadOnlyList<CaptureAudioClockSegment> segments, int sampleRate, long? expectedFrames)
+    {
+        var failures = new List<string>();
+        if (stopwatchFrequency <= 0 || recordingStopTicks <= recordingStartTicks)
+            failures.Add("Recording clock bounds or Stopwatch frequency are invalid.");
+        if (sampleRate <= 0) failures.Add("Expected WAV sample rate is invalid.");
+        if (segments.Count < 2)
+            failures.Add($"Expected at least two active AudioClockSegments around the pause, got {segments.Count}.");
+        if (segments.Count == 0) return failures;
+
+        var previous = (CaptureAudioClockSegment?)null;
+        foreach (var segment in segments)
+        {
+            if (segment.StartStopwatchTicks < recordingStartTicks || segment.EndStopwatchTicks > recordingStopTicks ||
+                segment.EndStopwatchTicks <= segment.StartStopwatchTicks)
+                failures.Add("An AudioClockSegment has an invalid or out-of-recording Stopwatch range.");
+            if (segment.SampleRate != sampleRate || segment.SourceStartFrame < 0 ||
+                segment.SourceEndFrame <= segment.SourceStartFrame || segment.SourceRate <= 0 || !double.IsFinite(segment.SourceRate))
+                failures.Add("An AudioClockSegment has invalid sample rate, frame bounds, or source rate.");
+            if (previous is { } prior)
+            {
+                if (segment.StartStopwatchTicks < prior.StartStopwatchTicks ||
+                    segment.StartStopwatchTicks < prior.EndStopwatchTicks)
+                    failures.Add("AudioClockSegments are out of order or overlap in Stopwatch time.");
+                if (segment.SourceStartFrame < prior.SourceStartFrame || segment.SourceStartFrame < prior.SourceEndFrame)
+                    failures.Add("AudioClockSegments are out of order or overlap in WAV frame coordinates.");
+                else if (segment.SourceStartFrame != prior.SourceEndFrame)
+                    failures.Add("AudioClockSegments leave an unmapped gap in WAV frame coordinates.");
+            }
+            previous = segment;
+        }
+
+        var orderedPauses = pauses.OrderBy(pause => pause.PauseStartStopwatchTicks).ToArray();
+        long priorPauseEnd = recordingStartTicks;
+        foreach (var pause in orderedPauses)
+        {
+            if (pause.PauseStartStopwatchTicks < recordingStartTicks ||
+                pause.ResumeStopwatchTicks > recordingStopTicks ||
+                pause.ResumeStopwatchTicks <= pause.PauseStartStopwatchTicks ||
+                pause.PauseStartStopwatchTicks < priorPauseEnd)
+            {
+                failures.Add("Pause intervals are invalid, out of recording bounds, or overlap each other.");
+                continue;
+            }
+            priorPauseEnd = pause.ResumeStopwatchTicks;
+            foreach (var segment in segments)
+            {
+                if (segment.StartStopwatchTicks < pause.ResumeStopwatchTicks &&
+                    segment.EndStopwatchTicks > pause.PauseStartStopwatchTicks)
+                    failures.Add("An AudioClockSegment covers part of a paused Stopwatch interval.");
+                if (pause.AudioOutputFrame is long pauseOutputFrame &&
+                    segment.SourceStartFrame < pauseOutputFrame && segment.SourceEndFrame > pauseOutputFrame)
+                    failures.Add("An AudioClockSegment crosses the WAV output-frame boundary removed for a pause.");
+            }
+        }
+
+        if (stopwatchFrequency > 0 && recordingStopTicks > recordingStartTicks)
+        {
+            var activeIntervals = new List<(long Start, long End)>();
+            var cursor = recordingStartTicks;
+            foreach (var pause in orderedPauses)
+            {
+                if (pause.PauseStartStopwatchTicks >= cursor)
+                    activeIntervals.Add((cursor, pause.PauseStartStopwatchTicks));
+                cursor = Math.Max(cursor, pause.ResumeStopwatchTicks);
+            }
+            if (cursor <= recordingStopTicks) activeIntervals.Add((cursor, recordingStopTicks));
+            var toleranceTicks = stopwatchFrequency / 4;
+            foreach (var active in activeIntervals)
+            {
+                var coveredTicks = segments.Sum(segment => Math.Max(0,
+                    Math.Min(active.End, segment.EndStopwatchTicks) - Math.Max(active.Start, segment.StartStopwatchTicks)));
+                if (Math.Abs(coveredTicks - (active.End - active.Start)) > toleranceTicks)
+                    failures.Add("AudioClockSegments do not cover an active Stopwatch interval outside the pause ranges.");
+            }
+        }
+
+        if (segments[0].SourceStartFrame != 0)
+            failures.Add("AudioClockSegments do not begin at the first WAV frame.");
+        if (expectedFrames is long frameCount && frameCount > 0 && segments[^1].SourceEndFrame != frameCount)
+            failures.Add($"AudioClockSegments end at frame {segments[^1].SourceEndFrame}, but WAV metadata reports {frameCount} frames.");
+        if (expectedFrames is < 0) failures.Add("Expected WAV frame count is negative.");
+        return failures;
+    }
+
+    internal static void RunClockSegmentValidationTests()
+    {
+        const long frequency = 1_000;
+        const int sampleRate = 48_000;
+        const long recordingStart = 1_000;
+        const long pauseStart = 6_000;
+        const long resume = 8_000;
+        const long recordingStop = 16_000;
+        const long pauseOutputFrame = 240_000;
+        const long finalFrame = 624_000;
+        var pause = new CapturePauseInterval(pauseStart, resume, 240_000, 336_000,
+            sampleRate, 0, pauseOutputFrame);
+        var normalTwoSegments = new[]
+        {
+            new CaptureAudioClockSegment(recordingStart, pauseStart, 0, pauseOutputFrame, sampleRate, 1),
+            new CaptureAudioClockSegment(resume, recordingStop, pauseOutputFrame, finalFrame, sampleRate, 1)
+        };
+        var reanchoredThreeSegments = new[]
+        {
+            normalTwoSegments[0],
+            new CaptureAudioClockSegment(resume, 12_000, pauseOutputFrame, 432_000, sampleRate, 1),
+            new CaptureAudioClockSegment(12_000, recordingStop, 432_000, finalFrame, sampleRate, 1)
+        };
+        RequireClockSegmentsPass(recordingStart, recordingStop, frequency, [pause], normalTwoSegments,
+            sampleRate, finalFrame, "normal two-segment capture");
+        RequireClockSegmentsPass(recordingStart, recordingStop, frequency, [pause], reanchoredThreeSegments,
+            sampleRate, finalFrame, "capture with an additional legal reanchor segment");
+
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[1], normalTwoSegments[0]], sampleRate, finalFrame, "reversed segment order");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0], normalTwoSegments[1] with { StartStopwatchTicks = pauseStart - 1 }],
+            sampleRate, finalFrame, "Stopwatch overlap");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0], normalTwoSegments[1] with { SourceStartFrame = pauseOutputFrame - 1 }],
+            sampleRate, finalFrame, "WAV frame overlap");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0], normalTwoSegments[1] with { SourceStartFrame = pauseOutputFrame + 1 }],
+            sampleRate, finalFrame, "WAV frame gap");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0] with { EndStopwatchTicks = 5_500 }, normalTwoSegments[1]],
+            sampleRate, finalFrame, "uncovered active capture interval");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0] with { EndStopwatchTicks = resume }, normalTwoSegments[1]],
+            sampleRate, finalFrame, "segment covering the pause wall-time");
+        RejectClockSegments(recordingStart, recordingStop, frequency, [pause],
+            [normalTwoSegments[0] with { SourceEndFrame = pauseOutputFrame + 1 }, normalTwoSegments[1] with { SourceStartFrame = pauseOutputFrame + 1 }],
+            sampleRate, finalFrame + 1, "pause samples leaking into the WAV frame mapping");
+        Console.WriteLine("Microphone clock-segment tests passed: valid two/three-segment capture; reversed and overlapping ranges, unmapped frames, pause-time coverage, and pause-frame leakage rejected.");
+    }
+
+    private static void RequireClockSegmentsPass(long start, long stop, long frequency,
+        IReadOnlyList<CapturePauseInterval> pauses, IReadOnlyList<CaptureAudioClockSegment> segments,
+        int sampleRate, long frames, string label)
+    {
+        var errors = ValidateClockSegmentLayout(start, stop, frequency, pauses, segments, sampleRate, frames);
+        if (errors.Count != 0) throw new InvalidOperationException($"{label} should pass: {string.Join(" | ", errors)}");
+    }
+
+    private static void RejectClockSegments(long start, long stop, long frequency,
+        IReadOnlyList<CapturePauseInterval> pauses, IReadOnlyList<CaptureAudioClockSegment> segments,
+        int sampleRate, long frames, string label)
+    {
+        var errors = ValidateClockSegmentLayout(start, stop, frequency, pauses, segments, sampleRate, frames);
+        if (errors.Count == 0) throw new InvalidOperationException($"{label} should fail validation.");
     }
 
     private static WaveStatistics ReadWaveStatistics(string path)

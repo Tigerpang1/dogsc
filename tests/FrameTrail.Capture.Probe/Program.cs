@@ -4,6 +4,11 @@ using FrameTrail.Capture;
 
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Length == 1 && args[0] == "--microphone-clock-segment-test")
+{
+    MicrophoneCaptureProbe.RunClockSegmentValidationTests();
+    return;
+}
 if (args.Length > 0 && args[0] == "--microphone-capture")
 {
     if (args.Length != 3 || args[2] != "--interactive-desktop")

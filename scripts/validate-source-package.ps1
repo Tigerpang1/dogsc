@@ -85,6 +85,8 @@ function Invoke-LoggedProcess(
         $startInfo.CreateNoWindow = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+        $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
         foreach ($argument in $Arguments) { $null = $startInfo.ArgumentList.Add($argument) }
 
         $process = [System.Diagnostics.Process]::new()
@@ -213,6 +215,7 @@ finally {
     $run.completedUtc = [DateTime]::UtcNow.ToString('o')
     $json = $run | ConvertTo-Json -Depth 12
     [System.IO.File]::WriteAllText($resultPath, $json, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText((Join-Path $logsDirectory 'result.json'), $json, [System.Text.UTF8Encoding]::new($false))
 }
 
 Write-Host "Source package validation: $($run.status)"

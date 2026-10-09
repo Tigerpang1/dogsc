@@ -20,7 +20,7 @@
 .\scripts\test.ps1
 ```
 
-`build.ps1` 构建 WPF 应用；`test.ps1` 运行 Core 与 DogSC 导入测试，`-IncludeMediaProbe` 运行真实 GPU/编码矩阵及逐片段音量、辅助媒体时钟探针，`-IncludeIntegration` 运行完整剪辑导出集成和合成音画脉冲同步。可传 `-Configuration Debug`。`-IncludeCaptureProbe` 构建采集探针并运行包时钟、诊断分桶、启动/释放并发、故障收尾、参数校验和模拟会话恢复的七组纯逻辑检查；不会访问设备、开始录制或申请权限。真实采集须按 `capture-validation.md` 的命令另行运行。 `-IncludeVisualProbe` 在不创建桌面窗口、不访问设备的条件下渲染实际WPF界面，验证浅/深主题文字对比度和时间线标签像素；这是可重复的后台回归，不替代真实焦点、弹层、DPI和动效验收。`-IncludeReleaseProbe` 用隔离合成报告验证发行清单会拒绝缺项、失败、重复检查、错误版本、脏工作区与包哈希变化，并检查源码归档不会误用父Git仓库身份；不运行应用或安装器。发行规则测试需要Git来创建隔离的测试仓库；源码归档验证也会执行这些检查。
+`build.ps1` 构建 WPF 应用；`test.ps1` 运行 Core 与 DogSC 导入测试，`-IncludeMediaProbe` 运行真实 GPU/编码矩阵及逐片段音量、辅助媒体时钟探针，`-IncludeIntegration` 运行完整剪辑导出集成和合成音画脉冲同步。可传 `-Configuration Debug`。`-IncludeCaptureProbe` 构建采集探针并运行包时钟、诊断分桶、启动/释放并发、故障收尾、参数校验、模拟会话恢复和麦克风时钟段验收规则的八组纯逻辑检查；不会访问设备、开始录制或申请权限。真实采集须按 `capture-validation.md` 的命令另行运行。 `-IncludeVisualProbe` 在不创建桌面窗口、不访问设备的条件下渲染实际WPF界面，验证浅/深主题文字对比度和时间线标签像素；这是可重复的后台回归，不替代真实焦点、弹层、DPI和动效验收。`-IncludeReleaseProbe` 用隔离合成报告验证发行清单会拒绝缺项、失败、重复检查、错误版本、脏工作区与包哈希变化，并检查源码归档不会误用父Git仓库身份；不运行应用或安装器。发行规则测试需要Git来创建隔离的测试仓库；源码归档验证也会执行这些检查。
 
 ## 本地验证包
 
