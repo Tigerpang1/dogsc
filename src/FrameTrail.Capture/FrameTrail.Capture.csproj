@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Platform Condition="'$(Platform)' == 'AnyCPU'">x64</Platform>
+    <ScreenRecorderLibVersion>7.0.1</ScreenRecorderLibVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ScreenRecorderLib" Version="$(ScreenRecorderLibVersion)" ExcludeAssets="build;buildTransitive" />
+    <Reference Include="ScreenRecorderLib">
+      <HintPath>$(NuGetPackageRoot)screenrecorderlib\$(ScreenRecorderLibVersion)\build\x64\ScreenRecorderLib.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <None Update="ScreenRecorderLib.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
+

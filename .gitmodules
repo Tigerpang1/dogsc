@@ -1,0 +1,3 @@
+[submodule "upstream/dogsc"]
+	path = upstream/dogsc
+	url = https://github.com/laogou717/dogsc.git

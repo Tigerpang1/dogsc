@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net8.0-windows7.0": {
+      "ScreenRecorderLib": {
+        "type": "Transitive",
+        "resolved": "7.0.1",
+        "contentHash": "QwDAc3IpTgjaRAw3HLLc+pnznQp+D5W3us9VckpPPasszpCOs5C1lAScc6AOGaEtssjSlKfHKHeI61p4djWXOA=="
+      },
+      "frametrail.capture": {
+        "type": "Project",
+        "dependencies": {
+          "ScreenRecorderLib": "[7.0.1, )"
+        }
+      }
+    }
+  }
+}
