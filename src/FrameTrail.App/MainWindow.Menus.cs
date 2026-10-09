@@ -26,7 +26,16 @@ public partial class MainWindow
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
         {
-            var item = new MenuItem { Header = Path.GetFileName(Path.GetDirectoryName(path)) + "  ·  " + path, ToolTip = path };
+            var name = Path.GetFileName(Path.GetDirectoryName(path));
+            var heading = new StackPanel { Width = 340, Margin = new Thickness(0, 2, 0, 2) };
+            heading.Children.Add(new TextBlock { Text = name, FontWeight = FontWeights.Medium, TextTrimming = TextTrimming.CharacterEllipsis });
+            heading.Children.Add(new TextBlock
+            {
+                Text = Path.GetDirectoryName(path), FontSize = 11, Opacity = .72,
+                Margin = new Thickness(0, 3, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis
+            });
+            var item = new MenuItem { Header = heading, ToolTip = path };
+            System.Windows.Automation.AutomationProperties.SetName(item, name + "  ·  " + path);
             item.Click += async (_, _) => await Guard(async () => { await OpenProject(path); RecentProjects.Add(path); });
             recent.Items.Add(item);
         }
@@ -108,7 +117,7 @@ public partial class MainWindow
             RecentProjects.Add(imported.ProjectFilePath);
             Status.Text = "已导入 DogSC 项目副本；原项目未修改。未映射字段请查看 dogsc-import-report.json。";
             if (imported.Report.Warnings.Count > 0)
-                MessageBox.Show(this, "项目已导入，部分设置未映射：\n\n" + string.Join("\n", imported.Report.Warnings.Take(12)) + (imported.Report.Warnings.Count > 12 ? "\n…详见导入报告。" : ""), "DogSC 导入提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                SurfaceDialog.Show(this, "项目已导入，部分设置未映射：\n\n" + string.Join("\n", imported.Report.Warnings.Take(12)) + (imported.Report.Warnings.Count > 12 ? "\n…详见导入报告。" : ""), "DogSC 导入提示", MessageBoxButton.OK, MessageBoxImage.Information);
         });
     }
 
@@ -133,15 +142,15 @@ public partial class MainWindow
         var name = PromptText(this, "重命名项目", "项目名称", current);
         if (name is null) return;
         name = name.Trim();
-        if (name.Length is 0 or > 240) { MessageBox.Show(this, "项目名称长度应为 1–240 个字符。", "无法重命名", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        if (name.Length is 0 or > 240) { SurfaceDialog.Show(this, "项目名称长度应为 1–240 个字符。", "无法重命名", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
         try { project.DisplayName = name; SaveProject(); ProjectTitle.Text = name; }
-        catch (Exception ex) { MessageBox.Show(this, ex.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, ex.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void DeleteProjectClick(object sender, RoutedEventArgs e)
     {
         if (project is null || projectFile is null) { Status.Text = "当前没有打开的项目。"; return; }
-        var answer = MessageBox.Show(this, "只会把当前 .frametrail 项目文件移入回收站。项目文件夹中的原始视频、音频和其他素材都会保留。是否继续？", "移除项目文件", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        var answer = SurfaceDialog.Show(this, "只会把当前 .frametrail 项目文件移入回收站。项目文件夹中的原始视频、音频和其他素材都会保留。是否继续？", "移除项目文件", MessageBoxButton.YesNo, MessageBoxImage.Warning);
         if (answer != MessageBoxResult.Yes) return;
         try
         {
@@ -152,19 +161,23 @@ public partial class MainWindow
             EmptyState.Visibility = Visibility.Visible; ProjectTitle.Text = "未命名项目"; TimelineInfo.Text = ""; Status.Text = "项目文件已移入回收站，原始素材仍保留在磁盘。";
             BuildInspector();
         }
-        catch (Exception ex) { MessageBox.Show(this, "移除失败：" + ex.Message, "项目文件未移动", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "移除失败：" + ex.Message, "项目文件未移动", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private static string? PromptText(Window owner, string title, string label, string initialValue)
     {
-        var dialog = new Window { Title = title, Owner = owner, Width = 390, Height = 172, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, Background = owner.Background, Foreground = owner.Foreground };
+        // Keep enough client height for the label, input and action row at 100–150% DPI.
+        // WPF measures these dimensions in DIPs, so the TextBox minimum remains readable
+        // when Windows scales the dialog.
+        var dialog = new Window { Title = title, Width = 420, Height = 236, MinHeight = 236, ShowInTaskbar = false };
+        SurfaceWindow.Configure(dialog, owner);
         var root = new DockPanel { Margin = new Thickness(20) };
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var ok = new Button { Content = "确定", IsDefault = true, MinWidth = 78, Margin = new Thickness(5, 10, 0, 0), Style = owner.TryFindResource("PrimaryButton") as Style };
         var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 78, Margin = new Thickness(5, 10, 0, 0) };
         buttons.Children.Add(cancel); buttons.Children.Add(ok); DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
         var stack = new StackPanel(); stack.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 2, 0, 4) });
-        var input = new TextBox { Text = initialValue, Padding = new Thickness(9, 7, 9, 7) }; stack.Children.Add(input); root.Children.Add(stack); dialog.Content = root;
+        var input = new TextBox { Text = initialValue, MinHeight = 38, Padding = new Thickness(9, 7, 9, 7), VerticalContentAlignment = VerticalAlignment.Center }; stack.Children.Add(input); root.Children.Add(stack); dialog.Content = SurfaceWindow.WrapContent(dialog, root, title);
         ok.Click += (_, _) => { dialog.DialogResult = true; dialog.Close(); }; dialog.Loaded += (_, _) => { input.Focus(); input.SelectAll(); };
         return dialog.ShowDialog() == true ? input.Text : null;
     }
@@ -210,7 +223,7 @@ public partial class MainWindow
             var value = PromptText(this, "自定义画布比例", "输入宽:高，例如 1920:1080", $"{project.Settings.CanvasWidth}:{project.Settings.CanvasHeight}");
             if (value is null) return;
             var parts = value.Split(':');
-            if (parts.Length != 2 || !int.TryParse(parts[0], out var w) || !int.TryParse(parts[1], out var h) || w is < 2 or > 7680 || h is < 2 or > 4320) { MessageBox.Show(this, "请输入范围内的整数比例，例如 1920:1080。", "比例无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            if (parts.Length != 2 || !int.TryParse(parts[0], out var w) || !int.TryParse(parts[1], out var h) || w is < 2 or > 7680 || h is < 2 or > 4320) { SurfaceDialog.Show(this, "请输入范围内的整数比例，例如 1920:1080。", "比例无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
             SetAspect(w, h);
         };
         menu.Items.Add(new Separator()); menu.Items.Add(custom); menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
@@ -279,7 +292,7 @@ public partial class MainWindow
         if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
         var name = PromptText(this, "保存场景预设", "预设名称", project.DisplayName ?? "我的样式");
         if (name is null) return; name = name.Trim();
-        if (name.Length is 0 or > 100) { MessageBox.Show(this, "预设名称长度应为 1–100 个字符。", "无法保存", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        if (name.Length is 0 or > 100) { SurfaceDialog.Show(this, "预设名称长度应为 1–100 个字符。", "无法保存", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
         string? temporaryDirectory = null;
         try
         {
@@ -293,7 +306,7 @@ public partial class MainWindow
             Directory.Move(temporaryDirectory, presetDirectory); temporaryDirectory = null;
             Status.Text = "已保存本机预设：" + name;
         }
-        catch (Exception ex) { MessageBox.Show(this, "保存预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "保存预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
         finally { if (temporaryDirectory is not null) TryDeleteOwnedDirectory(temporaryDirectory); }
     }
 
@@ -340,13 +353,13 @@ public partial class MainWindow
             finally { if (File.Exists(temporaryFile)) File.Delete(temporaryFile); }
             Status.Text = "已重命名本机预设：" + name;
         }
-        catch (Exception ex) { MessageBox.Show(this, "重命名预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "重命名预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void OverwriteCustomPreset(string presetFile)
     {
         if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
-        if (MessageBox.Show(this, "将用当前项目的样式替换此预设。已有预设图片会在新版本安全写入后再清理；如果写入失败，会恢复原预设。是否继续？", "覆盖本机预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (SurfaceDialog.Show(this, "将用当前项目的样式替换此预设。已有预设图片会在新版本安全写入后再清理；如果写入失败，会恢复原预设。是否继续？", "覆盖本机预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         string? temporaryDirectory = null;
         string? backupDirectory = null;
         var swapped = false;
@@ -367,7 +380,7 @@ public partial class MainWindow
             catch { Directory.Move(backupDirectory, directory); backupDirectory = null; throw; }
             Status.Text = "已用当前样式覆盖本机预设：" + existing.Name;
         }
-        catch (Exception ex) { MessageBox.Show(this, "覆盖预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "覆盖预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
         finally
         {
             if (temporaryDirectory is not null) TryDeleteOwnedDirectory(temporaryDirectory);
@@ -437,7 +450,7 @@ public partial class MainWindow
             }
             ApplyEdit(p => p.Settings = settings); Status.Text = "已应用本机预设：" + preset.Name;
         }
-        catch (Exception ex) { MessageBox.Show(this, "应用预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "应用预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private string CopyPresetAssetToProject(string presetDirectory, string assetPath, string prefix)
@@ -457,7 +470,7 @@ public partial class MainWindow
 
     private void DeleteCustomPreset(string presetFile)
     {
-        if (MessageBox.Show(this, "删除这个本机预设及其预设图片？不会更改项目素材。", "删除预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        if (SurfaceDialog.Show(this, "删除这个本机预设及其预设图片？不会更改项目素材。", "删除预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         try
         {
             var root = Path.GetFullPath(PresetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
@@ -466,7 +479,7 @@ public partial class MainWindow
             RejectReparsePath(PresetRoot, presetFile);
             Directory.Delete(folder, true); Status.Text = "已删除本机预设。";
         }
-        catch (Exception ex) { MessageBox.Show(this, "删除预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { SurfaceDialog.Show(this, "删除预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private static void RejectReparsePath(string root, string path)
@@ -494,14 +507,14 @@ public partial class MainWindow
         {
             var version = typeof(MainWindow).Assembly.GetName().Version;
             var versionText = version is null ? "未知" : $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
-            MessageBox.Show(this, $"FrameTrail {versionText}\nWindows 屏幕录制与视频编辑工具\n\n本项目以 DogSC 上游 MIT 版本为迁移基线，并使用 FrameTrail 自有名称与图标。", "关于", MessageBoxButton.OK, MessageBoxImage.Information);
+            SurfaceDialog.Show(this, $"FrameTrail {versionText}\nWindows 屏幕录制与视频编辑工具\n\n本项目以 DogSC 上游 MIT 版本为迁移基线，并使用 FrameTrail 自有名称与图标。", "关于", MessageBoxButton.OK, MessageBoxImage.Information);
         });
         AddMenu(menu, "版本与手动更新说明", () => OpenReleaseNotes());
         AddMenu(menu, "源码与许可证", () => OpenLocalPath(Path.Combine(AppContext.BaseDirectory, "licenses")));
-        AddMenu(menu, "反馈与问题报告", () => MessageBox.Show(this,
+        AddMenu(menu, "反馈与问题报告", () => SurfaceDialog.Show(this,
             "当前版本未配置在线更新或公开反馈服务。请通过获取此安装包时使用的发行渠道联系维护者。\n\n反馈时建议附上 FrameTrail 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
             "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
-        AddMenu(menu, "键盘快捷键", () => MessageBox.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\nCtrl+Alt+M　录制中添加标记\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
+        AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\nCtrl+Alt+M　录制中添加标记\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
         AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
         AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
         menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
@@ -515,7 +528,7 @@ public partial class MainWindow
             Process.Start(new ProcessStartInfo(documentation) { UseShellExecute = true });
             return;
         }
-        MessageBox.Show(this,
+        SurfaceDialog.Show(this,
             "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 FrameTrail 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
             "手动更新", MessageBoxButton.OK, MessageBoxImage.Information);
     }
@@ -633,21 +646,23 @@ public partial class MainWindow
         content.Children.Add(system); content.Children.Add(microphone); content.Children.Add(camera); content.Children.Add(dark);
         content.Children.Add(excludeEditor);
         content.Children.Add(new TextBlock { Text = "保存后会立即更新录制面板和预览质量，并在下次启动时恢复。较大的预览尺寸会增加显存占用；麦克风和摄像头设备在录制面板中选择。", TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 9, 0, 0) });
-        root.Children.Add(content);
-        var dialog = new Window { Title = "录制与界面设置", Owner = this, Width = 470, Height = 690, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, Background = Background, Foreground = Foreground, Content = root };
+        root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+        var dialog = new Window { Title = "录制与界面设置", Width = 470, Height = 752, ShowInTaskbar = false };
+        SurfaceWindow.Configure(dialog, this);
+        dialog.Content = SurfaceWindow.WrapContent(dialog, root, "录制与界面设置");
         save.Click += (_, _) =>
         {
-            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60)) { MessageBox.Show(dialog, "请选择 30 或 60 FPS。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60)) { SurfaceDialog.Show(dialog, "请选择 30 或 60 FPS。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
             var path = folder.Text.Trim();
-            if (path.Length == 0) { MessageBox.Show(dialog, "请指定默认录制保存目录。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            if (path.Length == 0) { SurfaceDialog.Show(dialog, "请指定默认录制保存目录。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
             try
             {
                 path = Path.GetFullPath(path); Directory.CreateDirectory(path);
-                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60)) { MessageBox.Show(dialog, "请选择有效的预览分辨率和帧率。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60)) { SurfaceDialog.Show(dialog, "请选择有效的预览分辨率和帧率。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
                 var updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
                 SaveUserPreferences(updated); ApplyUserPreferences(updated); dialog.DialogResult = true;
             }
-            catch (Exception ex) { MessageBox.Show(dialog, "无法保存设置：" + ex.Message, "设置", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex) { SurfaceDialog.Show(dialog, "无法保存设置：" + ex.Message, "设置", MessageBoxButton.OK, MessageBoxImage.Error); }
         };
         dialog.ShowDialog();
     }
@@ -663,7 +678,10 @@ public partial class MainWindow
             TextWrapping = TextWrapping.Wrap, LineHeight = 22
         };
         root.Children.Add(new ScrollViewer { Content = text, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
-        var dialog = new Window { Title = firstRun ? "录制权限与准备" : "录制与权限帮助", Owner = this, Width = 560, Height = 470, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize, MinWidth = 480, MinHeight = 360, ShowInTaskbar = false, Background = Background, Foreground = Foreground, Content = root };
+        var helpTitle = firstRun ? "录制权限与准备" : "录制与权限帮助";
+        var dialog = new Window { Title = helpTitle, Width = 560, Height = 532, MinWidth = 480, MinHeight = 422, ShowInTaskbar = false };
+        SurfaceWindow.Configure(dialog, this, resizable: true);
+        dialog.Content = SurfaceWindow.WrapContent(dialog, root, helpTitle);
         close.Click += (_, _) => dialog.DialogResult = true;
         dialog.ShowDialog();
     }

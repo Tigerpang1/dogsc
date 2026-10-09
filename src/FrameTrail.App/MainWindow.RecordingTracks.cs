@@ -63,6 +63,19 @@ public partial class MainWindow
  }
  private static void AttachMappedAudio(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration,AudioTrackSource source=AudioTrackSource.Other)
  {
+  if(track.AudioSampleRate is int sampleRate&&sampleRate>0&&track.AudioClockSegments is {Count:>0} clockSegments)
+  {
+   if(track.Handle.StopwatchFrequency!=screen.StopwatchFrequency)throw new InvalidDataException("屏幕和独立音频的单调时钟频率不同，无法按实测分段时钟对齐。");
+   if(clockSegments.Any(segment=>segment.SampleRate!=sampleRate||segment.SampleRate<=0||segment.SourceStartFrame<0||segment.SourceEndFrame<segment.SourceStartFrame||!double.IsFinite(segment.SourceRate)||segment.SourceRate<=0||(track.AudioFramesWritten is long frames&&segment.SourceEndFrame>frames)))
+    throw new InvalidDataException("独立音频时钟分段的采样率、帧范围或SourceRate无效，无法安全对齐。");
+   var screenPauses=(screen.PausedIntervals??[]).Select(p=>new ClockInterval(p.PauseStartStopwatchTicks,p.ResumeStopwatchTicks)).ToArray();
+   var audioSegments=clockSegments.Select(segment=>new AudioClockSegmentTicks(segment.StartStopwatchTicks,segment.EndStopwatchTicks,
+    segment.SourceStartFrame/(double)sampleRate,segment.SourceRate)).ToArray();
+   var mapped=RecordingTimelineMapper.MapAudioClockSegments(screen.FirstFrameObservedStopwatchTicks??screen.StartStopwatchTicks,
+    new(screen.StartStopwatchTicks,screen.StopStopwatchTicks),screenPauses,audioSegments,screen.StopwatchFrequency,sourceDuration,created.Media.Duration);
+   if(mapped.Count==0)return;var first=mapped[0];var last=mapped[^1];var syncSegments=mapped.Select(x=>new CameraSyncSegment(x.SourceStart,x.TimelineStart,x.Duration,x.SourceRate)).ToList();
+   created.AudioTracks.Add(new(){MediaPath=relative,SourceStart=first.SourceStart,Duration=last.TimelineStart+last.Duration-first.TimelineStart,OffsetSeconds=first.TimelineStart,SourceRate=first.SourceRate,SyncSegments=syncSegments,Source=source});return;
+  }
   foreach(var interval in MapRecordedTrack(created,screen,track,sourceDuration))created.AudioTracks.Add(new(){MediaPath=relative,SourceStart=interval.SourceStart,Duration=interval.Duration,OffsetSeconds=interval.TimelineStart,Source=source});
  }
  private static void AttachMappedCamera(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration,double assetAspectRatio)

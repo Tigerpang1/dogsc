@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Microsoft.Win32;
@@ -28,6 +29,7 @@ public sealed partial class ExportWindow : Window
     private readonly TextBlock previewDuration = new();
     private readonly TextBlock stageText = new();
     private readonly TextBlock timeText = new();
+    private readonly TextBlock progressValue = new();
     private readonly TextBlock estimate = new();
     private readonly ProgressBar progressBar = new();
     private readonly List<Button> resolutionChoices = new();
@@ -44,6 +46,8 @@ public sealed partial class ExportWindow : Window
     private RowDefinition? progressSpacerRow;
     private bool audioOnly;
     private bool running;
+    private bool closeAfterCancellation;
+    private long exportGeneration;
     private int resolutionIndex = 1;
     private int frameRateIndex;
     private string outputDirectory;
@@ -62,14 +66,11 @@ public sealed partial class ExportWindow : Window
         Title = "导出作品 · " + projectName;
         Width = 840;
         Height = 634;
-        WindowStyle = WindowStyle.None;
-        AllowsTransparency = true;
-        Background = Brushes.Transparent;
+        SurfaceWindow.Configure(this, closeOnEscape: false, captionHeight: 0);
         MinWidth = 840;
         MinHeight = 634;
         MaxWidth = 840;
         MaxHeight = 634;
-        ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ShowInTaskbar = false;
         fileName.Text = SafeStem(projectName);
@@ -77,7 +78,19 @@ public sealed partial class ExportWindow : Window
         Content = BuildLayout(projectName);
         RefreshPreview();
         UpdateMode();
-        Closed += (_, _) => cancellation?.Cancel();
+        Closing += (_, e) =>
+        {
+            if (!running) return;
+            e.Cancel = true;
+            closeAfterCancellation = true;
+            CancelExport();
+        };
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key != Key.Escape) return;
+            CancelExport();
+            e.Handled = true;
+        };
     }
 
     private UIElement BuildLayout(string projectName)
@@ -166,16 +179,22 @@ public sealed partial class ExportWindow : Window
         info.Children.Add(InfoLine("格式", previewFormat)); info.Children.Add(InfoLine("分辨率", previewSize)); info.Children.Add(InfoLine("帧率", previewRate)); info.Children.Add(InfoLine("时长", previewDuration));
         Grid.SetRow(info, 2); right.Children.Add(info);
         Grid.SetColumn(rightBorder, 1); rightBorder.Child = right; body.Children.Add(rightBorder);
-        Grid.SetRow(body, 1); root.Children.Add(body);
+        var bodyScroll = new ScrollViewer { Content = body, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto };
+        Grid.SetRow(bodyScroll, 1); root.Children.Add(bodyScroll);
 
         var footer = new Grid { Background = Brush("Chrome"), Margin = new Thickness(0) };
-        footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(17) }); progressSpacerRow = new RowDefinition { Height = new GridLength(0) }; footer.RowDefinitions.Add(progressSpacerRow); footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        var progressPanel = new Grid { Margin = new Thickness(30, 1, 30, 0) };
+        footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) }); progressSpacerRow = new RowDefinition { Height = new GridLength(0) }; footer.RowDefinitions.Add(progressSpacerRow); footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        var progressPanel = new Grid { Margin = new Thickness(30, 2, 30, 0) };
         progressPanel.ColumnDefinitions.Add(new ColumnDefinition()); progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        stageText.Text = ""; stageText.Foreground = Brush("Secondary"); progressPanel.Children.Add(stageText);
-        timeText.Text = ""; timeText.Foreground = Brush("Secondary"); Grid.SetColumn(timeText, 1); progressPanel.Children.Add(timeText);
+        progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        stageText.Text = ""; stageText.SetResourceReference(TextBlock.ForegroundProperty, "Ink"); stageText.FontSize = 12; stageText.TextTrimming = TextTrimming.CharacterEllipsis; stageText.VerticalAlignment = VerticalAlignment.Center; progressPanel.Children.Add(stageText);
+        timeText.Text = ""; timeText.SetResourceReference(TextBlock.ForegroundProperty, "Secondary"); timeText.FontSize = 11; timeText.TextTrimming = TextTrimming.CharacterEllipsis; timeText.MaxWidth = 390; timeText.Margin = new Thickness(14, 0, 0, 0); timeText.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(timeText, 1); progressPanel.Children.Add(timeText);
+        progressValue.FontSize = 11; progressValue.SetResourceReference(TextBlock.ForegroundProperty, "Secondary"); progressValue.Margin = new Thickness(12, 0, 0, 0); progressValue.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(progressValue, 2); progressPanel.Children.Add(progressValue);
+        System.Windows.Automation.AutomationProperties.SetName(progressValue, "导出进度百分比");
+        System.Windows.Automation.AutomationProperties.SetLiveSetting(stageText, System.Windows.Automation.AutomationLiveSetting.Polite);
         Grid.SetRow(progressPanel, 0); footer.Children.Add(progressPanel);
         progressBar.Minimum = 0; progressBar.Maximum = 1; progressBar.Height = 4; progressBar.Margin = new Thickness(30, 0, 30, 0); progressBar.Visibility = Visibility.Collapsed;
+        System.Windows.Automation.AutomationProperties.SetName(progressBar, "导出进度");
         Grid.SetRow(progressBar, 1); Grid.SetColumnSpan(progressBar, 2); footer.Children.Add(progressBar);
         var actions = new Grid { Height = 42, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(27, 1, 27, 0) };
         actions.ColumnDefinitions.Add(new ColumnDefinition()); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -360,36 +379,49 @@ public sealed partial class ExportWindow : Window
         var stem = SafeStem(fileName.Text);
         if (string.IsNullOrWhiteSpace(fileName.Text)) { stageText.Text = "请输入文件名。"; return; }
         var outputPath = Path.Combine(outputDirectory, stem + (audioOnly ? ".m4a" : ".mp4"));
-        if (File.Exists(outputPath) && MessageBox.Show(this, "目标文件已存在，导出完成后将替换它。是否继续？", "确认覆盖", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        running = true; completedPath = null; cancellation = new CancellationTokenSource();
+        if (File.Exists(outputPath) && SurfaceDialog.Show(this, "目标文件已存在，导出完成后将替换它。是否继续？", "确认覆盖", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        running = true; completedPath = null; closeAfterCancellation = false; cancellation = new CancellationTokenSource();
+        var generation = ++exportGeneration;
         if (progressSpacerRow is not null) progressSpacerRow.Height = new GridLength(5);
-        progressBar.Visibility = Visibility.Visible; progressBar.Value = 0; stageText.Text = "正在准备…"; timeText.Text = "";
+        progressBar.Visibility = Visibility.Visible; progressBar.Value = 0; progressBar.Opacity = 1; stageText.Text = "正在准备…"; stageText.ToolTip = null; timeText.Text = ""; timeText.ToolTip = null; progressValue.Text = "";
         exportButton.IsEnabled = false; openFileButton.Visibility = Visibility.Collapsed; openFolderButton.Visibility = Visibility.Collapsed; UpdateMode();
         var reporter = new Progress<ExportProgress>(p =>
         {
-            progressBar.Value = Math.Clamp(p.Fraction, 0, 1); stageText.Text = p.Stage;
-            timeText.Text = "已用 " + p.Elapsed.ToString(@"m\:ss", CultureInfo.InvariantCulture) + (p.Remaining is { } remaining ? " · 预计剩余 " + remaining.ToString(@"m\:ss", CultureInfo.InvariantCulture) : "");
+            // Progress<T> posts to the dispatcher. Ignore reports queued before cancel,
+            // completion, or a subsequent retry so terminal states remain stable.
+            if (!running || generation != exportGeneration || cancellation?.IsCancellationRequested != false) return;
+            if (double.IsFinite(p.Fraction))
+            {
+                progressBar.Value = Math.Clamp(p.Fraction, 0, .995);
+                progressValue.Text = $"{Math.Floor(progressBar.Value * 100):0}%";
+            }
+            stageText.Text = p.Stage.Split(" · ", 2, StringSplitOptions.None)[0];
+            stageText.ToolTip = p.Stage;
+            timeText.Text = "已用 " + FormatElapsed(p.Elapsed) + (p.Remaining is { Ticks: >= 0 } remaining ? " · 预计剩余 " + FormatElapsed(remaining) : "");
         });
         try
         {
             var (w, h) = GetSize(); var options = new ExportOptions(w, h, frameRateIndex == 1 ? 60 : 30, hardware.IsChecked == true, audioOnly);
             var result = await execute(outputPath, options, reporter, cancellation.Token);
-            completedPath = result.Path; progressBar.Value = 1; stageText.Text = $"导出完成 · {result.Encoder} · {result.Elapsed.TotalSeconds:0.0} 秒";
+            completedPath = result.Path; progressBar.Value = 1; progressValue.Text = "100%"; stageText.Text = "导出完成";
+            stageText.ToolTip = $"{result.Encoder} · {result.Elapsed.TotalSeconds:0.0} 秒";
             timeText.Text = "文件已保存"; openFileButton.Visibility = Visibility.Visible; openFolderButton.Visibility = Visibility.Visible;
         }
-        catch (OperationCanceledException) { stageText.Text = "已取消导出"; timeText.Text = "临时文件已由导出引擎清理"; }
-        catch (Exception ex) { stageText.Text = "导出失败，可修改设置后重试"; timeText.Text = ex.Message; }
+        catch (OperationCanceledException) { progressBar.Opacity = .4; progressValue.Text = ""; stageText.Text = "已取消导出"; timeText.Text = "可以调整设置后重新导出"; }
+        catch (Exception ex) { progressBar.Opacity = .4; progressValue.Text = ""; stageText.Text = "导出失败，可修改设置后重试"; timeText.Text = ex.Message; timeText.ToolTip = ex.Message; }
         finally
         {
             cancellation?.Dispose(); cancellation = null; running = false; exportButton.IsEnabled = true; UpdateMode();
+            if (closeAfterCancellation) Close();
         }
     }
 
     private void CancelExport()
     {
         if (!running) { Close(); return; }
-        cancellation?.Cancel(); cancelButton.IsEnabled = false; stageText.Text = "正在取消…";
+        cancellation?.Cancel(); cancelButton.IsEnabled = false; stageText.Text = "正在取消…"; timeText.Text = "正在收尾并清理临时文件";
     }
+    private static string FormatElapsed(TimeSpan value) => value.ToString(value.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss", CultureInfo.InvariantCulture);
     private StackPanel ExportButtonContent(string label, bool showIcon)
     {
         var content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };

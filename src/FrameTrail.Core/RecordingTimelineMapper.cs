@@ -6,9 +6,67 @@ public readonly record struct ClockInterval(long StartTicks, long EndTicks);
 /// <summary>An audio source interval and its matching location on the screen timeline, in seconds.</summary>
 public readonly record struct MappedAudioInterval(double SourceStart, double Duration, double TimelineStart);
 
+/// <summary>A piecewise audio source clock segment measured on the capture Stopwatch domain.</summary>
+public readonly record struct AudioClockSegmentTicks(long StartTicks, long EndTicks, double SourceStart, double SourceRate);
+
+/// <summary>An audio interval clipped to screen-active time while retaining the measured source rate.</summary>
+public readonly record struct MappedAudioClockInterval(double SourceStart, double Duration, double TimelineStart, double SourceRate);
+
 /// <summary>Maps independently recorded audio through screen and audio pauses onto the screen timeline.</summary>
 public static class RecordingTimelineMapper
 {
+    /// <summary>
+    /// Intersects piecewise audio source-clock segments with each active screen interval.
+    /// Audio samples captured while the screen was paused are omitted from the project mapping.
+    /// </summary>
+    public static IReadOnlyList<MappedAudioClockInterval> MapAudioClockSegments(
+        long screenOriginTicks,
+        ClockInterval screenCapture,
+        IReadOnlyList<ClockInterval> screenPauses,
+        IReadOnlyList<AudioClockSegmentTicks> audioSegments,
+        long ticksFrequency,
+        double sourceDuration,
+        double timelineDuration)
+    {
+        ArgumentNullException.ThrowIfNull(screenPauses);
+        ArgumentNullException.ThrowIfNull(audioSegments);
+        if (ticksFrequency <= 0) throw new ArgumentOutOfRangeException(nameof(ticksFrequency), "时钟频率必须大于零。");
+        if (!double.IsFinite(sourceDuration) || sourceDuration < 0) throw new ArgumentOutOfRangeException(nameof(sourceDuration));
+        if (!double.IsFinite(timelineDuration) || timelineDuration < 0) throw new ArgumentOutOfRangeException(nameof(timelineDuration));
+        ValidateCapture(screenCapture, nameof(screenCapture));
+
+        var screenStart = Math.Max(screenCapture.StartTicks, screenOriginTicks);
+        if (screenStart >= screenCapture.EndTicks || sourceDuration <= 0 || timelineDuration <= 0) return [];
+        var screenActive = SubtractPauses(new(screenStart, screenCapture.EndTicks), screenPauses);
+        if (screenActive.Count == 0) return [];
+
+        var result = new List<MappedAudioClockInterval>();
+        foreach (var audio in audioSegments.OrderBy(segment => segment.StartTicks))
+        {
+            ValidateCapture(new(audio.StartTicks, audio.EndTicks), nameof(audioSegments));
+            if (!double.IsFinite(audio.SourceStart) || audio.SourceStart < 0 ||
+                !double.IsFinite(audio.SourceRate) || audio.SourceRate <= 0 || audio.StartTicks == audio.EndTicks)
+                continue;
+
+            foreach (var screen in screenActive)
+            {
+                var start = Math.Max(screen.StartTicks, audio.StartTicks);
+                var end = Math.Min(screen.EndTicks, audio.EndTicks);
+                if (start >= end) continue;
+
+                var sourceStart = audio.SourceStart + (double)((decimal)start - audio.StartTicks) / ticksFrequency * audio.SourceRate;
+                var timelineStart = (double)(ActiveTicksBefore(screenActive, start) / ticksFrequency);
+                var duration = (double)(((decimal)end - start) / ticksFrequency);
+                duration = Math.Min(duration, (sourceDuration - sourceStart) / audio.SourceRate);
+                duration = Math.Min(duration, timelineDuration - timelineStart);
+                if (duration <= 0) continue;
+                result.Add(new MappedAudioClockInterval(sourceStart, duration, timelineStart, audio.SourceRate));
+            }
+        }
+
+        return result.OrderBy(interval => interval.TimelineStart).ToArray();
+    }
+
     /// <param name="screenOriginTicks">Estimated first-screen-frame time; earlier screen data is excluded.</param>
     /// <param name="screenCapture">Screen recorder wall-clock start and stop ticks.</param>
     /// <param name="screenPauses">Wall-clock intervals during which the screen recorder was paused.</param>

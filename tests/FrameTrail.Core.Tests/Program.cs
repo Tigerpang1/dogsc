@@ -20,6 +20,7 @@ ZoomHandoffReturnProbe.Run();
 SpotlightProbe.Run();
 FrameTrail.Core.Tests.LegacySyncSegmentProbe.Run();
 FrameTrail.Core.Tests.EffectTimelineSplitProbe.Run();
+RecordingAudioClockSegmentProbe.Run();
 
 Check(JsonSerializer.Deserialize<MediaAsset>("{\"width\":1920,\"height\":1080,\"duration\":4}")!.FrameRate == 30,
     "legacy projects without source frame rate default to 30fps");

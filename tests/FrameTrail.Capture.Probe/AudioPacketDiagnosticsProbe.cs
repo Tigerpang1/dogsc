@@ -42,6 +42,22 @@ internal static class AudioPacketDiagnosticsProbe
         using var json = JsonDocument.Parse(JsonSerializer.Serialize(snapshot));
         Require(json.RootElement.GetProperty("PacketCount").GetInt64() == 3 &&
             json.RootElement.GetProperty("Buckets").GetArrayLength() == 3, "sidecar JSON fields are serializable and retained");
+        var positionDiagnostics = new AudioPacketDiagnostics(start, frequency, bucketSeconds: 10, maximumBuckets: 3);
+        positionDiagnostics.Packet(start + 1_000_000, 480, false, 0, false, false, false, false,
+            qpcPositionResidualMs: 0.25, deviceClockDriftPpm: 100);
+        positionDiagnostics.Packet(start + 2_000_000, 480, false, 0, false, false, true, true,
+            devicePositionReset: true, qpcPositionResidualMs: -0.5, deviceClockDriftPpm: -50);
+        positionDiagnostics.PauseBoundaryMapped(start + 2_500_000, 4);
+        var positionSnapshot = positionDiagnostics.Snapshot(start + 3_000_000);
+        Require(positionSnapshot.DevicePositionResets == 1, "position resets are counted");
+        Require(Math.Abs(positionSnapshot.QpcPositionResidualAbsMaxMs - 0.5) < 1e-9, "absolute QPC residual maximum");
+        Require(positionSnapshot.DeviceClockDriftPpmLatest == -50, "latest device clock drift");
+        Require(positionSnapshot.PauseBoundaryCount == 1 && positionSnapshot.PauseBoundaryNominalOffsetMaxFrames == 4 &&
+                positionSnapshot.Buckets.Any(bucket => bucket.PauseBoundaryCount == 1 && bucket.PauseBoundaryNominalOffsetMaxFrames == 4),
+            "pause boundary offset from nominal Stopwatch time is visible in total and time bucket");
+        Require(positionSnapshot.Buckets.Any(bucket => bucket.DevicePositionResets == 1 &&
+                    bucket.DeviceClockDriftPpmMin == -50 && bucket.DeviceClockDriftPpmMax == 100),
+            "per-bucket reset and device clock drift range");
         Console.WriteLine("Audio packet diagnostics pure test passed: silent endpoint packets, missing-packet fill, overlap drops, QPC/arrival range, discontinuity flags, last packet time, and ring bound.");
     }
 

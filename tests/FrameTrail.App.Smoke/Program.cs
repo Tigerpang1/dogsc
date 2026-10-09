@@ -31,7 +31,7 @@ if (!InteractiveDesktopGuard.HasExplicitConsent(args))
 }
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop");
+    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop [--reopen-only|--transient-surfaces-only]");
     return 2;
 }
 
@@ -76,7 +76,7 @@ try
     if (args.Contains("--relink-only"))
     {
         RunRelinkOnly(appPath, sourceProject, projectCopyFile, results);
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     PrepareFeatureFixture(projectCopyFile);
     if ((args.Contains("--effects-only") && !args.Contains("--preserve-reordered-timeline")) || args.Contains("--full-uncut-effects") || args.Contains("--timeline-shortcuts-only"))
@@ -106,6 +106,68 @@ try
     var projectTitle = WaitForProjectTitle(window, TimeSpan.FromSeconds(20));
     var projectLoaded = projectTitle is not null && projectTitle.Current.Name != "未命名项目";
     AddResult(new("命令行项目确实已打开", projectLoaded, projectLoaded ? projectTitle!.Current.Name : "标题仍为未命名项目；本轮后续交互结果只作界面诊断，不计功能通过。"));
+    if (args.Contains("--transient-surfaces-only", StringComparer.Ordinal))
+    {
+        if (!WaitForFrameTrailVisualReady(window, TimeSpan.FromSeconds(90), out var readyDetail))
+        {
+            SmokeProgress.MarkIncomplete("预览或时间线尚未报告ready；未生成浮层视觉截图。" + readyDetail);
+            throw new SmokeEarlyExitException();
+        }
+        var captureDirectory = Path.Combine(Path.GetDirectoryName(reportPath)!, Path.GetFileNameWithoutExtension(reportPath) + ".surfaces-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(captureDirectory);
+        RunTransientSurfacesUiTests(window, app, projectCopyFile, captureDirectory, results);
+        if (!InteractiveDesktopGuard.IsAborted && !app.HasExited)
+        {
+            app.CloseMainWindow();
+            if (app.WaitForExit(10000)) { app.Dispose(); app = null; }
+        }
+        throw new SmokeEarlyExitException();
+    }
+    if (args.Contains("--reopen-only", StringComparer.Ordinal))
+    {
+        FocusWindow(window);
+        SendKey(0x53, true); // Ctrl+S
+        var saveCompleted = !InteractiveDesktopGuard.IsAborted
+            && SpinWaitUntil(() => FrameTrailProjectStoreProbe(projectCopyFile), TimeSpan.FromSeconds(5));
+        var savedState = saveCompleted ? JsonNode.Parse(File.ReadAllText(projectCopyFile))?.AsObject() : null;
+        var reopenOnlyExpectedSettings = savedState?["settings"]?.ToJsonString();
+        var reopenOnlyExpectedCamera = savedState?["camera"]?.ToJsonString();
+        var reopenOnlyExpectedMouseClock = savedState?["mouseClock"]?.ToJsonString();
+        var expectedScreenMotions = ReadArrayCount(projectCopyFile, "screenMotions");
+
+        var closeRequested = app.CloseMainWindow();
+        var firstExited = closeRequested && app.WaitForExit(10000);
+        AddResult(new("保存后请求关闭并等待首实例退出", saveCompleted && firstExited,
+            $"保存可读={saveCompleted}，CloseMainWindow={closeRequested}，正常退出={firstExited}，PID={app.Id}。"));
+        if (!firstExited || InteractiveDesktopGuard.IsAborted) throw new SmokeEarlyExitException();
+        app.Dispose(); app = null;
+
+        app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } });
+        var reopenOnlyWindow = app is null ? null : WaitForWindow(app, TimeSpan.FromSeconds(25));
+        var reopenOnlyStartupReady = reopenOnlyWindow is not null && (args.Contains("--wait-for-foreground", StringComparer.Ordinal)
+            ? InteractiveDesktopGuard.WaitForTargetForegroundAtStartup((IntPtr)reopenOnlyWindow.Current.NativeWindowHandle, TimeSpan.FromSeconds(180))
+            : InteractiveDesktopGuard.ActivateTargetOnceAtStartup((IntPtr)reopenOnlyWindow.Current.NativeWindowHandle));
+        var reopenOnlyTitle = reopenOnlyStartupReady && reopenOnlyWindow is not null
+            ? WaitForProjectTitle(reopenOnlyWindow, TimeSpan.FromSeconds(15)) : null;
+        var actualState = JsonNode.Parse(File.ReadAllText(projectCopyFile))?.AsObject();
+        var reopenOnlyValues = actualState?["settings"]?.ToJsonString() == reopenOnlyExpectedSettings
+            && actualState?["camera"]?.ToJsonString() == reopenOnlyExpectedCamera
+            && actualState?["mouseClock"]?.ToJsonString() == reopenOnlyExpectedMouseClock
+            && ReadArrayCount(projectCopyFile, "screenMotions") == expectedScreenMotions;
+        var reopenOnlyOkay = saveCompleted && firstExited && reopenOnlyStartupReady
+            && reopenOnlyWindow is not null && reopenOnlyTitle is not null && reopenOnlyValues;
+        AddResult(new("保存项目重开并保留面板更改", reopenOnlyOkay,
+            $"重开窗口={reopenOnlyWindow is not null}，启动守卫={reopenOnlyStartupReady}，标题={reopenOnlyTitle?.Current.Name ?? "未加载"}，配置/摄像头/鼠标时钟一致={reopenOnlyValues}，屏幕运镜数={ReadArrayCount(projectCopyFile, "screenMotions")}。"));
+        if (app is not null && !app.HasExited)
+        {
+            var finalCloseRequested = app.CloseMainWindow();
+            var finalExited = finalCloseRequested && app.WaitForExit(10000);
+            AddResult(new("重开实例正常退出", finalExited,
+                $"CloseMainWindow={finalCloseRequested}，正常退出={finalExited}，PID={app.Id}。"));
+            if (finalExited) { app.Dispose(); app = null; }
+        }
+        throw new SmokeEarlyExitException();
+    }
     if (args.Contains("--timeline-shortcuts-only"))
     {
         RunTimelineShortcutUiTests(window, projectCopyFile, results);
@@ -114,7 +176,18 @@ try
         AddResult(new("编辑与逐帧操作后正常关闭", exitedNormally,
             exitedNormally ? "应用完成预览取消与资源释放后自行退出，未强制终止。" : "关闭请求后应用未在10秒内自行退出。"));
         if (exitedNormally) { app.Dispose(); app = null; }
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
+    }
+    if (args.Contains("--presets-only", StringComparer.Ordinal))
+    {
+        var presetLifecyclePassed = TestCustomPresetLifecycle(window, app.Id, projectCopyFile, results);
+        if (presetLifecyclePassed)
+        {
+            app.CloseMainWindow();
+            if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+            app.Dispose(); app = null;
+        }
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--effects-only"))
     {
@@ -122,7 +195,7 @@ try
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--new-panels-only"))
     {
@@ -130,7 +203,7 @@ try
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--motion-curves-only"))
     {
@@ -161,7 +234,7 @@ try
         AddResult(new("曲线与开场/光标参数保存后重开", persisted,
             $"重开窗口={curveReopenedWindow is not null}，缩放X1={ReadJsonArrayNumber(projectCopyFile, "zoomClips", 0, "customCurve", "x1"):0.###}，屏幕3D Y2={ReadJsonArrayNumber(projectCopyFile, "screenMotions", 0, "customCurve", "y2"):0.###}，摄像运动X2={ReadJsonArrayNumber(projectCopyFile, "cameraMotions", ReadArrayCount(projectCopyFile, "cameraMotions") - 1, "customCurve", "x2"):0.###}，弹簧质量={ReadJsonNumber(projectCopyFile, "settings", "spring", "mass"):0.###}，慢放={ReadTimelineSegmentRate(projectCopyFile, 0):0.##}×，光标={ReadJsonString(projectCopyFile, "settings", "cursor", "style")}，开场={ReadJsonString(projectCopyFile, "settings", "opening", "preset")}/{ReadJsonString(projectCopyFile, "settings", "opening", "elementCurve")}，点击效果={ReadJsonString(projectCopyFile, "settings", "cursor", "clickEffect")}。"));
         if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--advanced-styles-only"))
     {
@@ -193,7 +266,7 @@ try
         AddResult(new("ZoomFocus、摄像头目标与贴图样式保存后重开", reopenedSaved,
             $"窗口={advancedReopenedWindow is not null}，Focus={ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "shape")}/{ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "target")}/角度{ReadJsonArrayNumber(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "angleDegrees"):0.##}，摄像头={ReadJsonArrayString(projectCopyFile, "cameraMotions", cameraIndex, "targetLayout")}/圆角{ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetRoundness"):0.##}/透明度{ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetOpacity"):0.##}，贴图描边{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "borderWidth"):0.##}/阴影{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowOpacity"):0.##},{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowRadius"):0.##}/曲线{ReadJsonArrayString(projectCopyFile, "overlays", 0, "animationCurve")}。"));
         if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--spotlight-audio-only"))
     {
@@ -215,12 +288,12 @@ try
         AddResult(new("聚光与屏幕片段音量覆盖保存后重开", persisted,
             $"窗口={spotlightReopenedWindow is not null}，聚光={ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "kind")}，区域外压暗={ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "spotlightDimming"):0.##}，转场={ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "transitionStyle")}，进/出={ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "enterDuration"):0.##}/{ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "exitDuration"):0.##}，第 1 屏幕片段系统声音={segmentVolume:0.##}。"));
         if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--memo-only"))
     {
         TestMemoPersistence(window, app.Id, results);
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--motion-screenshot"))
     {
@@ -234,7 +307,7 @@ try
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
-        return results.All(x => x.Passed) ? 0 : 1;
+        throw new SmokeEarlyExitException();
     }
     if (args.Contains("--timeline-probe"))
     {
@@ -269,11 +342,18 @@ try
             catch (Exception ex) { ancestry.Add("scroll test=" + ex.GetType().Name + ":" + ex.Message); }
         }
         Console.WriteLine("TIMELINE_PROBE=" + string.Join(Environment.NewLine, ancestry));
-        return 0;
+        throw new SmokeEarlyExitException();
     }
-    var screenshotPath = Path.ChangeExtension(reportPath, ".png");
-    CaptureWindow(window, screenshotPath);
-    AddResult(new("主窗口实际截图已保存", File.Exists(screenshotPath), screenshotPath));
+    if (WaitForFrameTrailVisualReady(window, TimeSpan.FromSeconds(90), out var screenshotReadyDetail))
+    {
+        var screenshotPath = Path.ChangeExtension(reportPath, ".png");
+        CaptureWindow(window, screenshotPath);
+        AddResult(new("主窗口实际截图已保存", File.Exists(screenshotPath), screenshotPath + "；" + screenshotReadyDetail));
+    }
+    else
+    {
+        SmokeProgress.MarkIncomplete("预览或时间线尚未报告ready；跳过主窗口截图。" + screenshotReadyDetail);
+    }
 
     var cameraTab = FindRailButton(window, "摄像头");
     var cameraOpened = cameraTab is not null && TryClickPhysical(cameraTab);
@@ -286,7 +366,11 @@ try
     var cameraDrag = cameraSaved && TryDragCameraOnCanvas(window, projectCopyFile, out cameraDragDetail);
     AddResult(new("预览画布拖动摄像头并持久化位置", cameraDrag, cameraSaved ? cameraDragDetail : "摄像头设置未完成，跳过画布拖动。"));
 
-    TestCustomPresetLifecycle(window, app.Id, projectCopyFile, results);
+    if (!TestCustomPresetLifecycle(window, app.Id, projectCopyFile, results))
+    {
+        if (InteractiveDesktopGuard.IsAborted) throw new SmokeEarlyExitException();
+        throw new InvalidOperationException("场景预设交互未完整结束；已停止后续 UIA 步骤，避免在未关闭的模态窗口上级联误报。");
+    }
     window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
 
     var frameTab = FindRailButton(window, "画面");
@@ -382,7 +466,7 @@ try
     var projectMenuOpened = projectMenuButton is not null && TryInvoke(projectMenuButton);
     var dogScMenuItem = projectMenuOpened ? WaitForName("导入 DogSC 项目…", app.Id, TimeSpan.FromSeconds(3)) : null;
     AddResult(new("项目菜单及 DogSC 导入入口可访问", dogScMenuItem is not null, dogScMenuItem is null ? "未能从 UIA 菜单找到 DogSC 导入入口。" : "打开项目菜单后发现 DogSC 导入命令。"));
-    if (projectMenuOpened) SendKey(0x1B, false);
+    if (projectMenuOpened) _ = CloseOwnedTransientPopups(app.Id, window);
 
     var aspectLabel = FindById(window, "AspectLabel");
     var aspectButton = aspectLabel is null ? null : AncestorOfType(aspectLabel, ControlType.Button);
@@ -504,9 +588,9 @@ try
         var exportWindowClosed = idleCancelClicked && WaitForWindowName(app.Id, "导出作品", TimeSpan.FromSeconds(2)) is null;
         AddResult(new("导出窗口空闲时可关闭", idleCancelEnabled && exportWindowClosed,
             $"取消按钮启用={idleCancelEnabled}，点击={idleCancelClicked}，窗口关闭={exportWindowClosed}"));
-        if (!exportWindowClosed && exportWindow is not null) { FocusWindow(exportWindow); SendAltF4(); }
+        if (!exportWindowClosed && exportWindow is not null) _ = CloseWindowWithoutKeyboard(exportWindow);
     }
-    else SendKey(0x1B, false); // 关闭旧版系统“另存为”对话框，避免后续保存操作被模态窗口拦截。
+    else _ = CloseOwnedTransientPopups(app.Id, window); // 关闭旧版系统“另存为”对话框，不向关闭后的窗口发送按键释放。
 
     FocusWindow(window);
     SendKey(0x53, true); // Ctrl+S
@@ -537,8 +621,8 @@ try
             settingsSaved = WaitForPreferenceValues(settingFile, 960, 60, TimeSpan.FromSeconds(4));
         }
     }
-    if (prefsWindow is not null) { FocusWindow(prefsWindow); SendAltF4(); }
-    AddResult(new("预览质量和排除偏好可保存", settingsSaved, settingsSaved ? "设置页将预览宽度写为960、帧率写为60；测试结束会恢复本机原设置文件。" : $"设置窗口={prefsWindow is not null}，预览分辨率控件={prefWidth is not null}，帧率控件={prefFps is not null}，选项={widthSet}/{fpsSet}。"));
+    var prefsClosed = prefsWindow is null || CloseWindowWithoutKeyboard(prefsWindow);
+    AddResult(new("预览质量和排除偏好可保存", settingsSaved && prefsClosed, settingsSaved && prefsClosed ? "设置页将预览宽度写为960、帧率写为60，并通过窗口关闭请求退出；测试结束会恢复本机原设置文件。" : $"设置窗口={prefsWindow is not null}，预览分辨率控件={prefWidth is not null}，帧率控件={prefFps is not null}，选项={widthSet}/{fpsSet}，窗口关闭={prefsClosed}。"));
 
     app.CloseMainWindow();
     if (!app.WaitForExit(5000)) { app.Kill(entireProcessTree: true); app.WaitForExit(); }
@@ -547,6 +631,10 @@ try
     var memoWindow = app is null ? null : WaitForWindow(app, TimeSpan.FromSeconds(20));
     if (memoWindow is not null)
     {
+        var memoStartupReady = InteractiveDesktopGuard.ActivateTargetOnceAtStartup((IntPtr)memoWindow.Current.NativeWindowHandle);
+        AddResult(new("备忘录重启实例完成一次性前台交接", memoStartupReady,
+            $"新 PID={app!.Id}，启动激活={memoStartupReady}；未成功时不执行备忘录输入。"));
+        if (!memoStartupReady) throw new SmokeEarlyExitException();
         NativeMethods.SetWindowPos((IntPtr)memoWindow.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004 | 0x0010);
         _ = WaitForProjectTitle(memoWindow, TimeSpan.FromSeconds(10));
         TestMemoPersistence(memoWindow, app!.Id, results);
@@ -575,6 +663,7 @@ try
     AddResult(new("保存项目重开并保留面板更改", reopenOkay, reopenedWindow is null ? "关闭后未能重新打开保存的项目。" : $"标题={reopenedTitle?.Current.Name ?? "未加载"}；关闭前设置与应用场景预设后的最终 JSON 快照一致，3D片段数={ReadArrayCount(projectCopyFile,"screenMotions")}。"));
     if (reopen is not null) { reopen.CloseMainWindow(); if (!reopen.WaitForExit(5000)) reopen.Kill(entireProcessTree: true); reopen.Dispose(); }
 }
+catch (SmokeEarlyExitException) { }
 catch (ApplicationErrorDialogException ex)
 {
     AddResult(new("FrameTrail 错误对话框已中止测试", false, ex.Message));
@@ -585,20 +674,63 @@ catch (Exception ex)
 }
 finally
 {
-    InteractiveDesktopGuard.Complete();
-    if (app is { HasExited: false }) { app.CloseMainWindow(); if (!app.WaitForExit(3000)) app.Kill(entireProcessTree: true); }
-    app?.Dispose();
+    var cleanupErrors = new List<string>();
+    try { InteractiveDesktopGuard.Complete(); }
+    catch (Exception ex) { cleanupErrors.Add($"守卫释放输入：{ex.GetType().Name}: {ex.Message}"); }
+    try
+    {
+        if (app is not null)
+        {
+            try
+            {
+                if (!app.HasExited)
+                {
+                    try { app.CloseMainWindow(); }
+                    catch (Exception ex) { cleanupErrors.Add($"请求应用正常关闭：{ex.GetType().Name}: {ex.Message}"); }
+                    try
+                    {
+                        if (!app.HasExited && !app.WaitForExit(3000))
+                        {
+                            try { app.Kill(entireProcessTree: true); }
+                            catch (Exception ex) { cleanupErrors.Add($"终止测试应用：{ex.GetType().Name}: {ex.Message}"); }
+                            try { if (!app.HasExited) app.WaitForExit(3000); }
+                            catch (Exception ex) { cleanupErrors.Add($"等待测试应用退出：{ex.GetType().Name}: {ex.Message}"); }
+                        }
+                    }
+                    catch (Exception ex) { cleanupErrors.Add($"等待应用关闭：{ex.GetType().Name}: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { cleanupErrors.Add($"检查测试应用状态：{ex.GetType().Name}: {ex.Message}"); }
+        }
+    }
+    finally
+    {
+        try { app?.Dispose(); }
+        catch (Exception ex) { cleanupErrors.Add($"释放应用进程句柄：{ex.GetType().Name}: {ex.Message}"); }
+    }
+    if (cleanupErrors.Count > 0)
+        AddResult(new("Smoke 应用清理", false, string.Join("；", cleanupErrors)));
     if (InteractiveDesktopGuard.IsAborted)
         AddResult(new("交互中止（本轮结果不完整，需复核）", false, InteractiveDesktopGuard.AbortReason));
     var userDataRestored = true;
+    var failedRestorePaths = new List<string>();
     foreach (var snapshot in userDataSnapshots)
-        userDataRestored &= RestoreUserFile(snapshot.Key, snapshot.Value);
+    {
+        var restored = RestoreUserFile(snapshot.Key, snapshot.Value);
+        userDataRestored &= restored;
+        if (!restored) failedRestorePaths.Add(snapshot.Key);
+    }
     if (userDataRestored)
     {
-        try { if (File.Exists(userDataSnapshotPath)) File.Delete(userDataSnapshotPath); } catch { userDataRestored = false; }
+        try { if (File.Exists(userDataSnapshotPath)) File.Delete(userDataSnapshotPath); }
+        catch { userDataRestored = false; failedRestorePaths.Add(userDataSnapshotPath); }
     }
     if (!userDataRestored)
+    {
+        AddResult(new("恢复 Smoke 前的用户偏好", false,
+            $"文件恢复或校验失败=[{string.Join(", ", failedRestorePaths)}]；恢复快照保留于 {userDataSnapshotPath}。"));
         SmokeProgress.AppendMessage($"用户数据恢复未能完整确认；请使用 FrameTrail.App.Smoke.exe --restore-user-data \"{testRoot}\"，快照保留于 {userDataSnapshotPath}");
+    }
     Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
     File.WriteAllText(reportPath, JsonSerializer.Serialize(new
     {
@@ -607,13 +739,17 @@ finally
         isolatedProjectCopy = projectCopyFile,
         generatedUtc = DateTimeOffset.UtcNow,
         results,
-        passed = results.Count > 0 && results.All(x => x.Passed)
+        productStepsPassed = results.Count > 0 && !results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）"),
+        complete = SmokeProgress.IsComplete,
+        status = results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）") ? "failed" : InteractiveDesktopGuard.IsAborted || !SmokeProgress.IsComplete ? "incomplete" : "passed",
+        passed = results.Count > 0 && !results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）") && SmokeProgress.IsComplete && !InteractiveDesktopGuard.IsAborted
     }, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"UIA_REPORT={reportPath}");
     foreach (var result in results) Console.WriteLine($"{(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}");
-    if (userDataRestored && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
+    if (userDataRestored && cleanupErrors.Count == 0 && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
 }
-return results.Count > 0 && results.All(x => x.Passed) ? 0 : 1;
+return results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）") ? 1
+    : results.Count == 0 || !SmokeProgress.IsComplete || InteractiveDesktopGuard.IsAborted ? 2 : 0;
 
 static void RunNewPanelUiTests(AutomationElement window, Process app, string appPath, string projectFile, List<StepResult> results)
 {
@@ -1216,6 +1352,599 @@ static AutomationElement? WaitForWindow(Process process, TimeSpan timeout)
     }
     return null;
 }
+static bool WaitForFrameTrailVisualReady(AutomationElement mainWindow, TimeSpan timeout, out string detail)
+{
+    var until = DateTime.UtcNow + timeout;
+    var preview = FindById(mainWindow, "PreviewImage");
+    var timeline = FindById(mainWindow, "TimelineView");
+    string previewState = "missing";
+    string timelineState = "missing";
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        try { previewState = preview?.Current.ItemStatus ?? "missing"; } catch (ElementNotAvailableException) { previewState = "unavailable"; }
+        try { timelineState = timeline?.Current.ItemStatus ?? "missing"; } catch (ElementNotAvailableException) { timelineState = "unavailable"; }
+        if (previewState.Equals("error", StringComparison.OrdinalIgnoreCase)
+            || timelineState.Equals("error", StringComparison.OrdinalIgnoreCase))
+        {
+            detail = $"PreviewImage={previewState}，TimelineView={timelineState}。";
+            return false;
+        }
+        if (previewState.Equals("ready", StringComparison.OrdinalIgnoreCase)
+            && timelineState.Equals("ready", StringComparison.OrdinalIgnoreCase))
+        {
+            var windowBounds = mainWindow.Current.BoundingRectangle;
+            var previewBounds = preview?.Current.BoundingRectangle ?? Rect.Empty;
+            var timelineBounds = timeline?.Current.BoundingRectangle ?? Rect.Empty;
+            var viewportDetail = "TimelineView UIA 元素缺失。";
+            var timelineViewport = timeline is null ? Rect.Empty : FindTimelineViewportBounds(mainWindow, timeline, out viewportDetail);
+            var visibleTimelineBounds = IntersectRects(timelineBounds, timelineViewport);
+            var boundsValid = IsUsableRect(windowBounds) && IsUsableRect(previewBounds) && IsUsableRect(timelineBounds)
+                && RectContains(windowBounds, previewBounds) && IsUsableRect(visibleTimelineBounds);
+            detail = $"PreviewImage={previewState} bounds=({previewBounds.Left:0},{previewBounds.Top:0},{previewBounds.Width:0},{previewBounds.Height:0})，TimelineView={timelineState} full=({timelineBounds.Left:0},{timelineBounds.Top:0},{timelineBounds.Width:0},{timelineBounds.Height:0}) visible=({visibleTimelineBounds.Left:0},{visibleTimelineBounds.Top:0},{visibleTimelineBounds.Width:0},{visibleTimelineBounds.Height:0})，viewport={viewportDetail}，位于窗口可见区={boundsValid}。";
+            return boundsValid;
+        }
+        Thread.Sleep(150);
+    }
+    detail = $"等待超时或守卫中止：PreviewImage={previewState}，TimelineView={timelineState}。";
+    return false;
+}
+static bool IsUsableRect(Rect rect) => !rect.IsEmpty && double.IsFinite(rect.Left) && double.IsFinite(rect.Top)
+    && double.IsFinite(rect.Width) && double.IsFinite(rect.Height) && rect.Width >= 2 && rect.Height >= 2;
+static bool RectContains(Rect container, Rect child) => IsUsableRect(container) && IsUsableRect(child)
+    && child.Left >= container.Left - 2 && child.Top >= container.Top - 2
+    && child.Right <= container.Right + 2 && child.Bottom <= container.Bottom + 2;
+static Rect IntersectRects(Rect first, Rect second)
+{
+    if (!IsUsableRect(first) || !IsUsableRect(second)) return Rect.Empty;
+    var left = Math.Max(first.Left, second.Left);
+    var top = Math.Max(first.Top, second.Top);
+    var right = Math.Min(first.Right, second.Right);
+    var bottom = Math.Min(first.Bottom, second.Bottom);
+    return right > left && bottom > top ? new Rect(left, top, right - left, bottom - top) : Rect.Empty;
+}
+static Rect FindTimelineViewportBounds(AutomationElement mainWindow, AutomationElement timeline, out string detail)
+{
+    var mainBounds = mainWindow.Current.BoundingRectangle;
+    var parent = TreeWalker.ControlViewWalker.GetParent(timeline);
+    for (var depth = 0; parent is not null && depth < 24; depth++)
+    {
+        try
+        {
+            if (parent.Current.ControlType == ControlType.Pane)
+            {
+                var pane = parent.Current.BoundingRectangle;
+                var clippedPane = IntersectRects(pane, mainBounds);
+                if (IsUsableRect(clippedPane))
+                {
+                    detail = $"最近Pane视口({clippedPane.Left:0},{clippedPane.Top:0},{clippedPane.Width:0},{clippedPane.Height:0})";
+                    return clippedPane;
+                }
+            }
+            if ((IntPtr)parent.Current.NativeWindowHandle == (IntPtr)mainWindow.Current.NativeWindowHandle) break;
+            parent = TreeWalker.ControlViewWalker.GetParent(parent);
+        }
+        catch (ElementNotAvailableException) { break; }
+    }
+    detail = $"未发现ScrollViewer Pane，退回主窗可视区({mainBounds.Left:0},{mainBounds.Top:0},{mainBounds.Width:0},{mainBounds.Height:0})";
+    return mainBounds;
+}
+static bool CaptureElementRegion(AutomationElement element, string path, out string detail, Rect? clipBounds = null)
+{
+    detail = "";
+    if (!InteractiveDesktopGuard.BeforeInput("读取测试界面区域截图")) { detail = "前台守卫拒绝截图。"; return false; }
+    Rect bounds;
+    try { bounds = element.Current.BoundingRectangle; }
+    catch (ElementNotAvailableException) { detail = "UIA元素已失效。"; return false; }
+    if (!IsUsableRect(bounds)) { detail = $"区域无效：{bounds}。"; return false; }
+    if (clipBounds is { } clip) bounds = IntersectRects(bounds, clip);
+    if (!IsUsableRect(bounds) || (clipBounds is null && element.Current.IsOffscreen)) { detail = $"区域无效或不可见：{bounds}。"; return false; }
+    var x = (int)Math.Floor(bounds.Left); var y = (int)Math.Floor(bounds.Top);
+    var width = (int)Math.Ceiling(bounds.Right) - x; var height = (int)Math.Ceiling(bounds.Bottom) - y;
+    var screenLeft = NativeMethods.GetSystemMetrics(76); var screenTop = NativeMethods.GetSystemMetrics(77);
+    var screenWidth = NativeMethods.GetSystemMetrics(78); var screenHeight = NativeMethods.GetSystemMetrics(79);
+    var withinVirtualDesktop = x >= screenLeft && y >= screenTop && x + width <= screenLeft + screenWidth && y + height <= screenTop + screenHeight;
+    if (width < 2 || height < 2 || !withinVirtualDesktop) { detail = $"区域越出虚拟桌面或尺寸无效：({x},{y},{width},{height})，桌面=({screenLeft},{screenTop},{screenWidth},{screenHeight})。"; return false; }
+    var source = NativeMethods.GetDC(IntPtr.Zero); var memory = NativeMethods.CreateCompatibleDC(source);
+    var bitmap = NativeMethods.CreateCompatibleBitmap(source, width, height); var previous = NativeMethods.SelectObject(memory, bitmap);
+    try
+    {
+        if (!NativeMethods.BitBlt(memory, 0, 0, width, height, source, x, y, 0x00CC0020)) { detail = "BitBlt失败。"; return false; }
+        var image = Imaging.CreateBitmapSourceFromHBitmap(bitmap, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+        image.Freeze(); Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(image));
+        using (var file = File.Create(path)) encoder.Save(file);
+        bool validPng;
+        using (var verify = File.OpenRead(path))
+        {
+            var frame = BitmapFrame.Create(verify, BitmapCreateOptions.None, BitmapCacheOption.OnLoad);
+            validPng = verify.Length > 256 && frame.PixelWidth == width && frame.PixelHeight == height;
+        }
+        detail = $"路径={path}，bounds=({x},{y},{width},{height})，桌面范围内={withinVirtualDesktop}，PNG={validPng}。";
+        return validPng;
+    }
+    finally { NativeMethods.SelectObject(memory, previous); NativeMethods.DeleteObject(bitmap); NativeMethods.DeleteDC(memory); NativeMethods.ReleaseWindowDC(IntPtr.Zero, source); }
+}
+static bool CaptureWindowToFile(AutomationElement window, string path)
+{
+    try { CaptureWindow(window, path); return File.Exists(path); }
+    catch (InvalidOperationException) { return false; }
+}
+static bool CaptureVisibleOwnedMenus(int processId, string pathPrefix, out string details, out int capturedRegions, AutomationElement? ownerWindow = null)
+{
+    var menuCondition = new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Menu);
+    var candidates = new List<(AutomationElement Element, Rect Bounds, string Kind)>();
+    var seenBounds = new HashSet<string>(StringComparer.Ordinal);
+    void Add(AutomationElement element, string kind)
+    {
+        try
+        {
+            if (!IsElementVisible(element)) return;
+            var bounds = element.Current.BoundingRectangle;
+            var key = $"{Math.Round(bounds.Left)}:{Math.Round(bounds.Top)}:{Math.Round(bounds.Width)}:{Math.Round(bounds.Height)}";
+            if (seenBounds.Add(key)) candidates.Add((element, bounds, kind));
+        }
+        catch (ElementNotAvailableException) { }
+    }
+    foreach (var menu in FindOwnedProcessDescendants(processId, menuCondition)) Add(menu, "Menu UIA");
+
+    var ownerHandle = IntPtr.Zero;
+    try { if (ownerWindow is not null) ownerHandle = (IntPtr)ownerWindow.Current.NativeWindowHandle; } catch { }
+    var popupWindows = 0;
+    foreach (var window in FindOwnedProcessWindows(processId))
+    {
+        try
+        {
+            var handle = (IntPtr)window.Current.NativeWindowHandle;
+            if (handle == IntPtr.Zero || handle == ownerHandle || !IsOwnedWindowVisible(window, processId)) continue;
+            var menuItems = window.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem));
+            if (!menuItems.Cast<AutomationElement>().Any(IsElementVisible)) continue;
+            popupWindows++;
+            Add(window, "独立弹出窗口");
+        }
+        catch (ElementNotAvailableException) { }
+    }
+
+    if (candidates.Count == 0) { details = "未发现可见且归属测试进程的菜单区域。"; capturedRegions = 0; return false; }
+    capturedRegions = 0; var lines = new List<string>();
+    for (var i = 0; i < candidates.Count; i++)
+    {
+        var candidate = candidates[i];
+        var path = $"{pathPrefix}-{i + 1}.png";
+        if (CaptureElementRegion(candidate.Element, path, out var detail)) capturedRegions++;
+        lines.Add($"{candidate.Kind} bounds=({candidate.Bounds.Left:0},{candidate.Bounds.Top:0},{candidate.Bounds.Width:0},{candidate.Bounds.Height:0}) {detail}");
+    }
+    details = $"去重可见菜单区域={candidates.Count}，独立弹出窗口={popupWindows}，截图={capturedRegions}，" + string.Join("；", lines);
+    return capturedRegions == candidates.Count;
+}
+
+static void RunTransientSurfacesUiTests(AutomationElement initialWindow, Process app, string projectFile, string outputDirectory, List<StepResult> results)
+{
+    var processId = app.Id;
+    var settingsFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "settings.json");
+    var currentDark = ReadUserDarkTheme(settingsFile);
+    var originalDark = currentDark;
+    var success = true;
+    try
+    {
+    foreach (var targetDark in new[] { false, true })
+    {
+        if (InteractiveDesktopGuard.IsAborted) return;
+        var main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? initialWindow;
+        if (currentDark != targetDark)
+        {
+            var themeButton = FindButtonByHint(main, "明暗切换");
+            var changed = themeButton is not null && TryClickPhysical(themeButton);
+            currentDark = targetDark;
+            AddStep(results, new(targetDark ? "切换深色浮层主题" : "切换浅色浮层主题", changed,
+                $"主题按钮={themeButton is not null}，已点击={changed}。"));
+            success &= changed;
+            if (!changed || InteractiveDesktopGuard.IsAborted) return;
+            Thread.Sleep(350);
+            main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? main;
+        }
+        var theme = targetDark ? "dark" : "light";
+        var mainShot = Path.Combine(outputDirectory, $"{theme}-main.png");
+        var previewShot = Path.Combine(outputDirectory, $"{theme}-preview.png");
+        var timelineShot = Path.Combine(outputDirectory, $"{theme}-timeline.png");
+        CaptureWindow(main, mainShot);
+        var previewElement = FindById(main, "PreviewImage");
+        var timelineElement = FindById(main, "TimelineView");
+        var previewDetail = "预览 UIA 元素缺失。"; var timelineDetail = "时间线 UIA 元素缺失。";
+        var previewCaptured = previewElement is not null && CaptureElementRegion(previewElement, previewShot, out previewDetail);
+        var timelineViewport = timelineElement is null ? Rect.Empty : FindTimelineViewportBounds(main, timelineElement, out timelineDetail);
+        if (timelineElement is null) timelineDetail = "时间线 UIA 元素缺失。";
+        var timelineCaptured = timelineElement is not null && CaptureElementRegion(timelineElement, timelineShot, out timelineDetail, timelineViewport);
+        var regionsCaptured = File.Exists(mainShot) && previewCaptured && timelineCaptured;
+        AddStep(results, new($"{(targetDark ? "深色" : "浅色")}主界面、预览和时间线截图", regionsCaptured,
+            $"主窗={mainShot}，预览={previewDetail}，时间线={timelineDetail}。"));
+        success &= regionsCaptured;
+
+        // The Settings menu contains a nested settings/help surface and opens a real modal window.
+        var settingsButton = FindButtonByHint(main, "设置");
+        var menuOpened = settingsButton is not null && TryClickPhysical(settingsButton);
+        var settingsItem = menuOpened ? WaitForMenuItem(processId, "录制与界面设置", TimeSpan.FromSeconds(3)) : null;
+        var menuShot = Path.Combine(outputDirectory, $"{theme}-settings-menu.png");
+        var settingsMenuDetail = "设置菜单未打开。";
+        var settingsMenuCaptured = menuOpened && CaptureVisibleOwnedMenus(processId, Path.Combine(outputDirectory, $"{theme}-settings-menu"), out settingsMenuDetail, out _, main);
+        if (menuOpened && !settingsMenuCaptured) _ = CaptureWindowToFile(main, menuShot);
+        var settingsOpened = settingsItem is not null && TryInvoke(settingsItem);
+        var dialog = settingsOpened ? WaitForWindowName(processId, "录制与界面设置", TimeSpan.FromSeconds(4)) : null;
+        var combo = dialog is null ? null : WaitForComboByName(dialog, "预览分辨率", TimeSpan.FromSeconds(3));
+        var comboExpanded = combo is not null && TryExpand(combo);
+        var comboStable = comboExpanded && combo is not null && WaitForStableComboPopup(combo, TimeSpan.FromSeconds(3));
+        var comboShot = Path.Combine(outputDirectory, $"{theme}-combo-open.png");
+        if (comboStable && dialog is not null) CaptureWindow(dialog, comboShot);
+        var comboPopupShot = Path.Combine(outputDirectory, $"{theme}-combo-popup.png");
+        var comboPopupDetail = comboExpanded ? "未发现可见下拉选项区域。" : "下拉未展开。";
+        var comboPopupCaptured = comboStable && combo is not null
+            && CaptureVisibleComboPopup(combo, comboPopupShot, out comboPopupDetail);
+        var comboFocus = comboExpanded && combo is not null && TrySetAutomationFocus(combo);
+        if (comboFocus) SendEscapeToVisibleOwnedWindow(combo!, dialog!, processId, "ComboBox popup priority");
+        var comboCollapsed = combo is not null && IsComboCollapsed(combo);
+        var dialogRemains = dialog is not null && IsOwnedWindowVisible(dialog, processId);
+        var comboEscPriority = settingsMenuCaptured && comboStable && File.Exists(comboShot) && comboPopupCaptured
+            && comboFocus && comboCollapsed && dialogRemains && !InteractiveDesktopGuard.IsAborted;
+        AddStep(results, new($"{(targetDark ? "深色" : "浅色")}下拉框 Escape 先关闭子弹层", comboEscPriority,
+            $"设置菜单={menuOpened}，菜单截图={settingsMenuDetail}，设置窗={dialog is not null}，combo展开={comboExpanded}，弹层稳定250ms={comboStable}，焦点={comboFocus}，选项截图={comboPopupDetail}，下拉已收起={comboCollapsed}，设置窗仍开={dialogRemains}，截图={Path.Combine(outputDirectory, $"{theme}-combo-open.png")}。"));
+        success &= comboEscPriority;
+        if (dialog is not null && dialogRemains)
+        {
+            var secondEscape = SendEscapeToVisibleOwnedWindow(dialog, dialog, processId, "Settings dialog close");
+            var dialogClosed = secondEscape && WaitForWindowClosed(processId, "录制与界面设置", TimeSpan.FromSeconds(3));
+            AddStep(results, new($"{(targetDark ? "深色" : "浅色")}第二次 Escape 关闭设置对话框", dialogClosed,
+                $"第二次Escape={secondEscape}，对话框关闭={dialogClosed}。"));
+            success &= dialogClosed;
+        }
+        else if (dialog is not null) CloseWindowWithoutKeyboard(dialog);
+        if (InteractiveDesktopGuard.IsAborted) return;
+
+        // Exercise the nested Recent Projects submenu; opening the submenu must not dismiss its parent.
+        main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? main;
+        var projectMenu = FindButtonByHint(main, "项目");
+        var projectMenuOpened = projectMenu is not null && TryClickPhysical(projectMenu);
+        var recentItem = projectMenuOpened ? WaitForMenuItem(processId, "最近项目", TimeSpan.FromSeconds(3)) : null;
+        var recentExpanded = recentItem is not null && (TryExpand(recentItem) || HoverOwnedElement(recentItem, processId));
+        var recentChild = recentExpanded ? WaitForMenuItem(processId, Path.GetFileNameWithoutExtension(projectFile), TimeSpan.FromSeconds(3)) : null;
+        if (recentChild is null && recentExpanded) recentChild = WaitForMenuItem(processId, Path.GetFileName(Path.GetDirectoryName(projectFile)!), TimeSpan.FromSeconds(2));
+        var nestedShot = Path.Combine(outputDirectory, $"{theme}-nested-menu-open.png");
+        var nestedMenuDetail = "最近项目子菜单未展开。";
+        var nestedMenuCaptured = recentExpanded && CaptureVisibleOwnedMenus(processId, Path.Combine(outputDirectory, $"{theme}-nested-menu"), out nestedMenuDetail, out var nestedRegions, main) && nestedRegions >= 2;
+        if (recentExpanded && !nestedMenuCaptured) _ = CaptureWindowToFile(main, nestedShot);
+        var recentVisible = recentItem is not null && IsElementVisible(recentItem);
+        var childVisible = recentChild is not null && IsElementVisible(recentChild);
+        var nestedEscapeSent = recentItem is not null && SendEscapeToVisibleOwnedWindow(recentItem, main, processId, "Nested context menu child close");
+        var parentRemains = recentItem is not null && IsElementVisible(recentItem);
+        var childClosedFirst = recentChild is null || !IsElementVisible(recentChild);
+        var nestedEscapePass = projectMenuOpened && recentItem is not null && recentExpanded && nestedMenuCaptured && recentVisible
+            && nestedEscapeSent && parentRemains && childClosedFirst && !InteractiveDesktopGuard.IsAborted;
+        AddStep(results, new($"{(targetDark ? "深色" : "浅色")}嵌套最近项目菜单 Escape 优先级", nestedEscapePass,
+            $"项目菜单={projectMenuOpened}，最近项目={recentItem is not null}，子项目={recentChild is not null}，打开后可见={childVisible}，菜单截图={nestedMenuDetail}，Escape={nestedEscapeSent}，父菜单保留={parentRemains}，子菜单已收起={childClosedFirst}，截图={nestedShot}。"));
+        success &= nestedEscapePass;
+        if (InteractiveDesktopGuard.IsAborted) return;
+        if (parentRemains)
+        {
+            var parentEscape = SendEscapeToVisibleOwnedWindow(recentItem!, main, processId, "Parent context menu close");
+            var parentClosed = parentEscape && WaitForMenuItemClosed(processId, "最近项目", TimeSpan.FromSeconds(2));
+            AddStep(results, new($"{(targetDark ? "深色" : "浅色")}第二次 Escape 关闭父菜单", parentClosed,
+                $"第二次Escape={parentEscape}，父菜单关闭={parentClosed}。"));
+            success &= parentClosed;
+        }
+    else _ = CloseOwnedTransientPopups(processId, main);
+        if (InteractiveDesktopGuard.IsAborted) return;
+
+        // ToolTip is shown by pointing at the theme control; the pointer move is guarded and uses no click.
+        main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? main;
+        var tooltipTarget = FindButtonByHint(main, "明暗切换");
+        var hovered = tooltipTarget is not null && HoverOwnedElement(tooltipTarget, processId);
+        var tooltip = hovered ? WaitForOwnedToolTip(processId, TimeSpan.FromSeconds(3)) : null;
+        var tooltipShot = Path.Combine(outputDirectory, $"{theme}-tooltip.png");
+        var tooltipDetail = "未发现 ToolTip。";
+        var tooltipCaptured = tooltip is not null && CaptureElementRegion(tooltip, tooltipShot, out tooltipDetail);
+        AddStep(results, new($"{(targetDark ? "深色" : "浅色")}悬停提示截图", hovered && tooltipCaptured,
+            $"悬停={hovered}，ToolTip UIA={tooltip is not null}，{tooltipDetail}。"));
+        success &= hovered && tooltipCaptured;
+        if (InteractiveDesktopGuard.IsAborted) return;
+        if (tooltip is not null) HoverOwnedElement(main, processId);
+
+        // The rename prompt is cancelled with Escape after a screenshot, so project data stays unchanged.
+        main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? main;
+        var originalTitle = ReadProjectDisplayName(projectFile);
+        var renameButton = FindButtonByHint(main, "重命名项目");
+        var promptOpened = renameButton is not null && TryClickPhysical(renameButton);
+        var prompt = promptOpened ? WaitForWindowName(processId, "重命名项目", TimeSpan.FromSeconds(3)) : null;
+        var promptShot = Path.Combine(outputDirectory, $"{theme}-text-dialog.png");
+        var promptCaptured = false;
+        if (prompt is not null)
+        {
+            CaptureWindow(prompt, promptShot);
+            promptCaptured = File.Exists(promptShot) && WindowIsWithinVirtualDesktop(prompt);
+        }
+        var promptEscape = prompt is not null && SendEscapeToVisibleOwnedWindow(prompt, prompt, processId, "Text prompt cancel");
+        var promptClosed = promptEscape && WaitForWindowClosed(processId, "重命名项目", TimeSpan.FromSeconds(3));
+        var titleUnchanged = string.Equals(ReadProjectDisplayName(projectFile), originalTitle, StringComparison.Ordinal);
+        var promptPass = promptOpened && promptCaptured && promptEscape && promptClosed && titleUnchanged && !InteractiveDesktopGuard.IsAborted;
+        AddStep(results, new($"{(targetDark ? "深色" : "浅色")}文字对话框截图与取消", promptPass,
+            $"窗口={prompt is not null}，截图={promptShot}，Escape={promptEscape}，关闭={promptClosed}，项目名未变={titleUnchanged}。"));
+        success &= promptPass;
+        if (prompt is not null && !promptClosed) CloseWindowWithoutKeyboard(prompt);
+    }
+
+    // Create a disposable preset so the real Yes/No confirmation can be shown and
+    // cancelled without touching any existing user preset.
+    var disposableName = "UIA-Surface-" + Guid.NewGuid().ToString("N")[..10];
+    string? disposablePreset = null;
+    var confirmPass = false;
+    var confirmDetail = "未能创建本轮专用临时预设。";
+    try
+    {
+        var main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? initialWindow;
+        var saveMenuOpened = OpenPresetMenu(main);
+        var saveFound = false;
+        var savePromptCompleted = false;
+        if (saveMenuOpened)
+        {
+            var save = WaitForMenuItem(processId, "将当前样式保存为本机预设", TimeSpan.FromSeconds(3));
+            saveFound = save is not null;
+            if (save is not null && TryInvoke(save))
+                savePromptCompleted = CompleteTextPrompt(processId, "保存场景预设", disposableName, out _);
+            if (savePromptCompleted)
+                disposablePreset = WaitForPresetFile(disposableName, TimeSpan.FromSeconds(5));
+        }
+        if (disposablePreset is not null)
+        {
+            main = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? main;
+            var deleteMenuOpened = OpenPresetMenu(main);
+            var submenuOpen = false;
+            AutomationElement? remove = null;
+            var confirmationCommandInvoked = false;
+            var confirmationWindowFound = false;
+            if (deleteMenuOpened)
+            {
+                var entry = WaitForMenuItem(processId, disposableName, TimeSpan.FromSeconds(3));
+                submenuOpen = entry is not null && (TryExpand(entry) || TryClickPhysical(entry));
+                remove = submenuOpen ? WaitForMenuItem(processId, "删除本机预设", TimeSpan.FromSeconds(2)) : null;
+                confirmationCommandInvoked = remove is not null && TryInvoke(remove);
+                var confirmation = confirmationCommandInvoked ? WaitForWindowName(processId, "删除预设", TimeSpan.FromSeconds(3)) : null;
+                confirmationWindowFound = confirmation is not null;
+                var screenshot = Path.Combine(outputDirectory, "disposable-preset-confirmation.png");
+                var captured = false;
+                if (confirmation is not null)
+                {
+                    CaptureWindow(confirmation, screenshot);
+                    captured = File.Exists(screenshot) && new FileInfo(screenshot).Length > 256
+                        && WindowIsWithinVirtualDesktop(confirmation);
+                }
+                var cancelSent = confirmation is not null
+                    && SendEscapeToVisibleOwnedWindow(confirmation, confirmation, processId, "Disposable preset confirmation cancel");
+                var closed = cancelSent && WaitForWindowClosed(processId, "删除预设", TimeSpan.FromSeconds(3));
+                var presetPreserved = File.Exists(disposablePreset);
+                confirmPass = confirmationCommandInvoked && captured && cancelSent && closed && presetPreserved && !InteractiveDesktopGuard.IsAborted;
+                confirmDetail = $"窗口={confirmation is not null}，截图={screenshot}，Escape={cancelSent}，关闭={closed}，临时预设仍在={presetPreserved}。";
+            }
+            if (!deleteMenuOpened || !submenuOpen || remove is null || !confirmationCommandInvoked || !confirmationWindowFound)
+                confirmDetail = $"删除菜单={deleteMenuOpened}，预设子菜单={submenuOpen}，删除命令={remove is not null}，命令调用={confirmationCommandInvoked}，确认窗={confirmationWindowFound}，预设文件={disposablePreset}。";
+        }
+        else confirmDetail = $"保存菜单={saveMenuOpened}，命令={saveFound}，名称对话框已确认={savePromptCompleted}，预设文件={disposablePreset}。";
+    }
+    catch (ApplicationErrorDialogException) { throw; }
+    catch (Exception ex)
+    {
+        confirmDetail = $"临时预设确认流程异常：{ex.GetType().Name}: {ex.Message}。";
+        if (InteractiveDesktopGuard.IsAborted) SmokeProgress.MarkIncomplete(confirmDetail);
+    }
+    finally
+    {
+        if (disposablePreset is not null && File.Exists(disposablePreset))
+        {
+            try { Directory.Delete(Path.GetDirectoryName(disposablePreset)!, recursive: true); }
+            catch (Exception ex) { SmokeProgress.AppendMessage($"无法清理本轮自建临时预设：{disposableName}；{ex.GetType().Name}: {ex.Message}"); }
+        }
+        _ = CloseOwnedTransientPopups(processId, WaitForMainWindow(processId, TimeSpan.FromSeconds(2)) ?? initialWindow);
+    }
+    AddStep(results, new("临时预设删除确认框截图与 Escape 取消", confirmPass, confirmDetail));
+    success &= confirmPass;
+    var files = Directory.EnumerateFiles(outputDirectory, "*.png").ToArray();
+    AddStep(results, new("浮层视觉模式已归档截图", success && files.Length >= 10,
+        $"目录={outputDirectory}，PNG数量={files.Length}，浅/深主题包含主界面、预览、时间线、设置菜单、下拉、嵌套菜单、提示框和对话框；另有临时预设确认框截图。"));
+    }
+    finally
+    {
+        var restored = ReadUserDarkTheme(settingsFile) == originalDark;
+        if (!restored && !InteractiveDesktopGuard.IsAborted && !app.HasExited)
+        {
+            var main = WaitForMainWindow(processId, TimeSpan.FromSeconds(2)) ?? initialWindow;
+            var themeButton = FindButtonByHint(main, "明暗切换");
+            var clicked = themeButton is not null && TryClickPhysical(themeButton);
+            restored = clicked && SpinWaitUntil(() => ReadUserDarkTheme(settingsFile) == originalDark, TimeSpan.FromSeconds(3));
+            if (restored) currentDark = originalDark;
+        }
+        if (!restored)
+            SmokeProgress.AppendMessage($"浮层测试主题恢复状态：成功={restored}，原值={originalDark}，当前={currentDark}，守卫中止={InteractiveDesktopGuard.IsAborted}。用户设置快照由Smoke结束清理处理。");
+    }
+}
+
+static bool ReadUserDarkTheme(string settingsFile)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(settingsFile));
+        return TryGetPropertyIgnoreCase(doc.RootElement, "DarkTheme", out var value) && value.ValueKind == JsonValueKind.True;
+    }
+    catch { return false; }
+}
+static bool IsComboCollapsed(AutomationElement combo)
+{
+    try { return ((ExpandCollapsePattern)combo.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Current.ExpandCollapseState == ExpandCollapseState.Collapsed; }
+    catch { return false; }
+}
+static bool CaptureVisibleComboPopup(AutomationElement combo, string path, out string detail)
+{
+    var candidates = new List<AutomationElement>();
+    foreach (var type in new[] { ControlType.List, ControlType.ListItem })
+    {
+        try
+        {
+            candidates.AddRange(combo.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, type))
+                .Cast<AutomationElement>().Where(IsElementVisible));
+        }
+        catch (ElementNotAvailableException) { }
+    }
+    var captured = 0;
+    var bounds = new List<string>();
+    for (var i = 0; i < candidates.Count; i++)
+    {
+        var candidatePath = candidates.Count == 1 ? path : Path.Combine(Path.GetDirectoryName(path)!, Path.GetFileNameWithoutExtension(path) + $"-{i + 1}.png");
+        if (CaptureElementRegion(candidates[i], candidatePath, out var captureDetail)) captured++;
+        try
+        {
+            var rect = candidates[i].Current.BoundingRectangle;
+            bounds.Add($"({rect.Left:0},{rect.Top:0},{rect.Width:0},{rect.Height:0})");
+        }
+        catch { }
+    }
+    detail = $"可见列表项={candidates.Count}，截图={captured}，bounds=[{string.Join(";", bounds)}]。";
+    return candidates.Count > 0 && captured == candidates.Count;
+}
+static bool WaitForStableComboPopup(AutomationElement combo, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        var first = GetComboPopupBounds(combo);
+        if (IsUsableRect(first))
+        {
+            Thread.Sleep(250);
+            var second = GetComboPopupBounds(combo);
+            if (IsUsableRect(second)
+                && Math.Abs(first.Left - second.Left) <= 2
+                && Math.Abs(first.Top - second.Top) <= 2
+                && Math.Abs(first.Width - second.Width) <= 2
+                && Math.Abs(first.Height - second.Height) <= 2)
+                return true;
+        }
+        Thread.Sleep(60);
+    }
+    return false;
+}
+static Rect GetComboPopupBounds(AutomationElement combo)
+{
+    foreach (var type in new[] { ControlType.List, ControlType.ListItem })
+    {
+        try
+        {
+            var bounds = combo.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, type))
+                .Cast<AutomationElement>().Where(IsElementVisible).Select(x => x.Current.BoundingRectangle).Where(IsUsableRect).ToArray();
+            if (bounds.Length == 0) continue;
+            return bounds.Aggregate(Rect.Union);
+        }
+        catch (ElementNotAvailableException) { }
+    }
+    return Rect.Empty;
+}
+static bool IsElementVisible(AutomationElement element)
+{
+    try { return !element.Current.IsOffscreen && IsUsableRect(element.Current.BoundingRectangle); }
+    catch { return false; }
+}
+static bool IsOwnedWindowVisible(AutomationElement window, int processId)
+{
+    try
+    {
+        var handle = (IntPtr)window.Current.NativeWindowHandle;
+        NativeMethods.GetWindowThreadProcessId(handle, out var ownerPid);
+        return handle != IntPtr.Zero && ownerPid == (uint)processId && NativeMethods.IsWindow(handle) && NativeMethods.IsWindowVisible(handle);
+    }
+    catch { return false; }
+}
+static bool WindowIsWithinVirtualDesktop(AutomationElement window)
+{
+    try
+    {
+        var bounds = window.Current.BoundingRectangle;
+        var left = NativeMethods.GetSystemMetrics(76); var top = NativeMethods.GetSystemMetrics(77);
+        var width = NativeMethods.GetSystemMetrics(78); var height = NativeMethods.GetSystemMetrics(79);
+        return IsUsableRect(bounds) && bounds.Left >= left && bounds.Top >= top && bounds.Right <= left + width && bounds.Bottom <= top + height;
+    }
+    catch { return false; }
+}
+static bool SendEscapeToVisibleOwnedWindow(AutomationElement target, AutomationElement owner, int processId, string purpose)
+{
+    if (!InteractiveDesktopGuard.IsOwnedProcessId(processId) || !IsOwnedWindowVisible(owner, processId)
+        || !IsElementVisible(target)) return false;
+    try
+    {
+        if ((int)target.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) != processId) return false;
+    }
+    catch { return false; }
+    if (!TrySetAutomationFocus(target) || InteractiveDesktopGuard.IsAborted) return false;
+    SmokeProgress.AppendMessage($"在可见的测试窗口中发送Escape：{purpose}，PID={processId}。");
+    SendKey(0x1B, false);
+    return !InteractiveDesktopGuard.IsAborted;
+}
+static bool HoverOwnedElement(AutomationElement element, int processId)
+{
+    try
+    {
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "悬停测试控件")
+            || !IsElementVisible(element)) return false;
+        var bounds = element.Current.BoundingRectangle;
+        var x = (int)(bounds.Left + bounds.Width / 2); var y = (int)(bounds.Top + bounds.Height / 2);
+        if (!NativeMethods.SetCursorPos(x, y)) return false;
+        Thread.Sleep(650);
+        var point = new PointNative { X = x, Y = y };
+        var hwnd = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(point), 2);
+        NativeMethods.GetWindowThreadProcessId(hwnd, out var ownerPid);
+        return ownerPid == (uint)processId && InteractiveDesktopGuard.IsOwnedProcessId((int)ownerPid);
+    }
+    catch { return false; }
+}
+static AutomationElement? WaitForOwnedToolTip(int processId, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        var tooltip = FindOwnedProcessDescendants(processId, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ToolTip))
+            .FirstOrDefault(IsElementVisible);
+        if (tooltip is not null) return tooltip;
+        foreach (var window in FindOwnedProcessWindows(processId))
+            if (SafeName(window).Length > 0 && SafeName(window).Contains("提示", StringComparison.Ordinal) && IsElementVisible(window)) return window;
+        Thread.Sleep(100);
+    }
+    return null;
+}
+static bool WaitForMenuItemClosed(int processId, string namePart, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        if (!FindOwnedProcessDescendants(processId, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem))
+            .Any(x => SafeName(x).Contains(namePart, StringComparison.OrdinalIgnoreCase) && IsElementVisible(x))) return true;
+        Thread.Sleep(80);
+    }
+    return !FindOwnedProcessDescendants(processId, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem))
+        .Any(x => SafeName(x).Contains(namePart, StringComparison.OrdinalIgnoreCase) && IsElementVisible(x));
+}
+static string ReadProjectDisplayName(string projectFile)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(projectFile));
+        return TryGetPropertyIgnoreCase(doc.RootElement, "displayName", out var value) ? value.GetString() ?? "" : "";
+    }
+    catch { return ""; }
+}
+static bool SpinWaitUntil(Func<bool> condition, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        try { if (condition()) return true; }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+        Thread.Sleep(50);
+    }
+    return false;
+}
 static AutomationElement? WaitForMainWindow(int processId, TimeSpan timeout)
 {
     InteractiveDesktopGuard.BindTargetProcess(processId);
@@ -1399,12 +2128,19 @@ static AutomationElement? WaitForWindowName(int processId, string namePart, Time
 {
     InteractiveDesktopGuard.BindTargetProcess(processId);
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    while (!InteractiveDesktopGuard.IsAborted)
     {
-        foreach (var item in FindOwnedProcessWindows(processId))
-            if (item.Current.Name.Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item;
+        var found = FindOwnedWindowName(processId, namePart);
+        if (found is not null) return found;
+        if (DateTime.UtcNow >= until) break;
         Thread.Sleep(200);
     }
+    return null;
+}
+static AutomationElement? FindOwnedWindowName(int processId, string namePart)
+{
+    foreach (var item in FindOwnedProcessWindows(processId))
+        if (SafeName(item).Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item;
     return null;
 }
 static AutomationElement[] FindOwnedProcessWindows(int processId)
@@ -1412,13 +2148,43 @@ static AutomationElement[] FindOwnedProcessWindows(int processId)
     if (!InteractiveDesktopGuard.IsOwnedProcessId(processId)) return [];
     try
     {
-        return AutomationElement.RootElement.FindAll(TreeScope.Children, System.Windows.Automation.Condition.TrueCondition)
-            .Cast<AutomationElement>()
-            .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId
-                && x.Current.ControlType == ControlType.Window)
+        var roots = new List<AutomationElement>();
+        foreach (AutomationElement candidate in AutomationElement.RootElement.FindAll(TreeScope.Children, System.Windows.Automation.Condition.TrueCondition))
+        {
+            try
+            {
+                if ((int)candidate.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId
+                    && candidate.Current.ControlType == ControlType.Window) roots.Add(candidate);
+            }
+            catch { }
+        }
+        var windows = new List<AutomationElement>(roots);
+        foreach (var root in roots)
+        {
+            try
+            {
+                windows.AddRange(root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window))
+                    .Cast<AutomationElement>()
+                    .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId));
+            }
+            catch { }
+        }
+        return windows
+            .GroupBy(x => SafeWindowIdentity(x), StringComparer.Ordinal)
+            .Select(g => g.First())
             .ToArray();
     }
     catch { return []; }
+}
+static string SafeWindowIdentity(AutomationElement element)
+{
+    try
+    {
+        var handle = element.Current.NativeWindowHandle;
+        if (handle != 0) return "hwnd:" + handle.ToString("X");
+        return "runtime:" + string.Join(".", element.GetRuntimeId());
+    }
+    catch { return "unavailable:" + element.GetHashCode(); }
 }
 static AutomationElement[] FindOwnedProcessDescendants(int processId, System.Windows.Automation.Condition condition)
 {
@@ -1690,7 +2456,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     if (memo is null)
     {
         AddStep(results, new("备忘录位置、字号与透明度重开", false, $"启动按钮={launcher is not null}，启动点击={openedRecorder}，录制工具窗口={recorderWindow is not null}，备忘录按钮={memoButton is not null}，备忘录点击={openedMemo}，窗口={openedMemo}。"));
-        if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
+        if (recorderWindow is not null) _ = CloseWindowWithoutKeyboard(recorderWindow);
         return;
     }
 
@@ -1706,7 +2472,12 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var movedWindow = initial.IsEmpty == false && NativeMethods.SetWindowPos((IntPtr)memo.Current.NativeWindowHandle, IntPtr.Zero, (int)moved.Left, (int)moved.Top, 0, 0, 0x0001 | 0x0004 | 0x0010);
     Thread.Sleep(400);
     var afterMove = memo.Current.BoundingRectangle;
-    FocusWindow(memo); SendAltF4(); Thread.Sleep(500);
+    var memoClosed = CloseWindowWithoutKeyboard(memo);
+    if (!memoClosed)
+    {
+        AddStep(results, new("备忘录移动、字号与透明度保存重启", false, "备忘录未能通过窗口关闭请求正常关闭，停止重复打开步骤。"));
+        return;
+    }
     recorderWindow = WaitForWindowName(processId, "FrameTrail · 录制", TimeSpan.FromSeconds(3));
     var reopenedRecorder = recorderWindow is not null;
     memoButton = recorderWindow is null ? null : FindButtonByHint(recorderWindow, "备忘录");
@@ -1714,7 +2485,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     if (reopened is null)
     {
         AddStep(results, new("备忘录位置、字号与透明度重开", false, $"文本={textSet}，字号={sizeSet}，透明度={opacitySet}，移动={movedWindow}；重开窗口未出现。"));
-        if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
+        if (recorderWindow is not null) _ = CloseWindowWithoutKeyboard(recorderWindow);
         return;
     }
     Thread.Sleep(350);
@@ -1727,25 +2498,27 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var opacityOkay = ranges.Length > 1 && Math.Abs(((RangeValuePattern)ranges[1].GetCurrentPattern(RangeValuePattern.Pattern)).Current.Value - .61) < .02;
     var positionOkay = !afterMove.IsEmpty && !reopenedRect.IsEmpty && Math.Abs(afterMove.Left - reopenedRect.Left) < 16 && Math.Abs(afterMove.Top - reopenedRect.Top) < 16;
     var all = textSet && sizeSet && opacitySet && movedWindow && textOkay && sizeOkay && opacityOkay && positionOkay;
-    AddStep(results, new("备忘录移动、字号与透明度保存重启", all, $"文本={textOkay}，字号={sizeOkay}，透明度={opacityOkay}，位置={positionOkay}；首次移动={movedWindow}，重开坐标差=({reopenedRect.Left-afterMove.Left:0},{reopenedRect.Top-afterMove.Top:0})。"));
-    FocusWindow(reopened); SendAltF4();
-    if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
+    AddStep(results, new("备忘录移动、字号与透明度保存重启", all && memoClosed, $"文本={textOkay}，字号={sizeOkay}，透明度={opacityOkay}，位置={positionOkay}，首次窗口正常关闭={memoClosed}；首次移动={movedWindow}，重开坐标差=({reopenedRect.Left-afterMove.Left:0},{reopenedRect.Top-afterMove.Top:0})。"));
+    _ = CloseWindowWithoutKeyboard(reopened);
+    if (recorderWindow is not null) _ = CloseWindowWithoutKeyboard(recorderWindow);
 }
-static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processId, string projectFile, List<StepResult> results)
+static bool TestCustomPresetLifecycle(AutomationElement mainWindow, int processId, string projectFile, List<StepResult> results)
 {
     var name = "UIA-" + Guid.NewGuid().ToString("N")[..8];
     string? ownedPresetFile = null;
     var stage = "打开预设菜单";
+    var lifecyclePassed = false;
     try
     {
         if (!OpenPresetMenu(mainWindow)) throw new InvalidOperationException("无法打开场景预设菜单。");
         var save = WaitForMenuItem(processId, "将当前样式保存为本机预设", TimeSpan.FromSeconds(3));
-        if (save is null || !TryInvoke(save) || !CompleteTextPrompt(processId, "保存场景预设", name))
-            throw new InvalidOperationException("新建预设的名称对话框未完成。");
+        if (save is null || !TryInvoke(save)) throw new InvalidOperationException("未能打开保存预设命令。");
+        if (!CompleteTextPrompt(processId, "保存场景预设", name, out var savePromptTrace))
+            throw new InvalidOperationException("新建预设名称对话框未完成；" + savePromptTrace);
         ownedPresetFile = WaitForPresetFile(name, TimeSpan.FromSeconds(5));
         var saved = ownedPresetFile is not null;
-        AddStep(results, new("本机场景预设可新建", saved, saved ? "本机预设目录中出现独立 manifest。" : $"未发现新建预设 manifest；输入名称={name}；现有名称=[{string.Join(", ", EnumeratePresetNames())}]。"));
-        if (!saved) return;
+        AddStep(results, new("本机场景预设可新建", saved, saved ? $"本机预设目录中出现独立 manifest；{savePromptTrace}。" : $"未发现新建预设 manifest；输入名称={name}；{savePromptTrace}；现有名称=[{string.Join(", ", EnumeratePresetNames())}]。"));
+        if (!saved) return false;
 
         var crossProjectApplied = false;
         string crossProjectDetail;
@@ -1810,7 +2583,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
                 }
                 crossProjectApplied = crossWindow is not null && crossTitle is not null && clicked && validAsset && presetAssetCopied && !string.Equals(relativeAsset, originalImagePath, StringComparison.OrdinalIgnoreCase);
                 crossProjectDetail = $"预设内素材已独立复制={presetAssetCopied}，第二个项目打开={crossTitle is not null}，应用命令={crossApply is not null}，源路径={originalImagePath}，预设路径={presetImagePath}，目标项目路径={relativeAsset}，目标文件存在={validAsset}。";
-                if (crossWindow is not null) { FocusWindow(crossWindow); SendAltF4(); }
+                if (crossWindow is not null) _ = CloseWindowWithoutKeyboard(crossWindow);
                 if (!crossProcess.WaitForExit(5000)) crossProcess.Kill(entireProcessTree: true);
             }
             finally
@@ -1822,6 +2595,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         catch (Exception ex) { crossProjectDetail = "跨项目素材检查异常：" + ex.Message; }
         FocusWindow(mainWindow);
         AddStep(results, new("本机预设跨项目复制背景素材", crossProjectApplied, crossProjectDetail));
+        if (!crossProjectApplied) throw new InvalidOperationException("跨项目应用预设未完成；已停止后续生命周期步骤。");
 
         stage = "重命名预设";
         if (!OpenPresetMenu(mainWindow)) throw new InvalidOperationException("重命名前无法打开场景预设菜单。");
@@ -1829,11 +2603,14 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         var submenuOpened = entry is not null && (TryExpand(entry) || TryClickPhysical(entry));
         var rename = submenuOpened ? WaitForMenuItem(processId, "重命名本机预设", TimeSpan.FromSeconds(2)) : null;
         var renamedName = name + "-renamed";
-        var renamed = rename is not null && TryInvoke(rename) && CompleteTextPrompt(processId, "重命名本机预设", renamedName);
+        var renamed = false;
+        var renamePromptTrace = "重命名命令未打开名称对话框。";
+        if (rename is not null && TryInvoke(rename))
+            renamed = CompleteTextPrompt(processId, "重命名本机预设", renamedName, out renamePromptTrace);
         var renamedFile = renamed ? WaitForPresetFile(renamedName, TimeSpan.FromSeconds(5)) : null;
         if (renamedFile is not null) ownedPresetFile = renamedFile;
-        AddStep(results, new("本机场景预设可改名", renamed && renamedFile is not null, renamed && renamedFile is not null ? "manifest 名称已更新，预设资产目录保持原位。" : $"子菜单={submenuOpened}，重命名命令={rename is not null}。"));
-        if (!renamed || renamedFile is null) return;
+        AddStep(results, new("本机场景预设可改名", renamed && renamedFile is not null, renamed && renamedFile is not null ? $"manifest 名称已更新，预设资产目录保持原位；{renamePromptTrace}。" : $"子菜单={submenuOpened}，重命名命令={rename is not null}，对话框={renamePromptTrace}"));
+        if (!renamed || renamedFile is null) throw new InvalidOperationException("预设重命名未完成；已停止后续生命周期步骤。" + renamePromptTrace);
 
         stage = "切换预设覆盖的对照样式";
         if (!OpenPresetMenu(mainWindow)) throw new InvalidOperationException("覆盖前无法打开场景预设菜单。");
@@ -1863,49 +2640,77 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         submenuOpened = entry is not null && (TryExpand(entry) || TryClickPhysical(entry));
         var apply = submenuOpened ? WaitForMenuItem(processId, "应用此预设", TimeSpan.FromSeconds(2)) : null;
         var applied = apply is not null && TryInvoke(apply) && WaitForBackground(projectFile, "#F4F6F6", TimeSpan.FromSeconds(4));
-        if (!applied) { FocusWindow(mainWindow); SendKey(0x1B, false); }
+        if (!applied) _ = CloseOwnedTransientPopups(processId, mainWindow);
         AddStep(results, new("本机预设可应用到项目", applied, applied ? "项目先切换到深色，再由本机预设恢复为浅色，写入行为已验证。" : $"先切换深色={darkApplied}，应用命令={apply is not null}，项目背景={ReadBackground(projectFile)}。"));
+        lifecyclePassed = applied;
     }
     catch (ApplicationErrorDialogException) { throw; }
-    catch (Exception ex) { AddStep(results, new("本机预设生命周期 UIA", false, $"阶段={stage}；{ex.Message}")); }
+    catch (Exception ex)
+    {
+        if (InteractiveDesktopGuard.IsAborted) SmokeProgress.MarkIncomplete($"守卫中止本机预设生命周期；阶段={stage}；{ex.Message}");
+        else AddStep(results, new("本机预设生命周期 UIA", false, $"阶段={stage}；{ex.Message}"));
+    }
     finally
     {
-        DismissOwnedDialog(processId, "覆盖本机预设");
-        DismissOwnedDialog(processId, "保存场景预设");
-        DismissOwnedDialog(processId, "重命名本机预设");
-        if (ownedPresetFile is not null && File.Exists(ownedPresetFile))
+        var overwriteClosed = DismissOwnedDialog(processId, "覆盖本机预设");
+        var saveClosed = DismissOwnedDialog(processId, "保存场景预设");
+        var renameClosed = DismissOwnedDialog(processId, "重命名本机预设");
+        var dialogsClosed = overwriteClosed && saveClosed && renameClosed;
+        if (!dialogsClosed)
+        {
+            lifecyclePassed = false;
+            SmokeProgress.AppendMessage("场景预设模态窗口未确认关闭；保留相关预设文件并停止后续测试。");
+        }
+        else if (ownedPresetFile is not null && File.Exists(ownedPresetFile))
         {
             try { Directory.Delete(Path.GetDirectoryName(ownedPresetFile)!, true); } catch { }
         }
     }
+    return lifecyclePassed;
 }
 
 static bool WaitForWindowClosed(int processId, string namePart, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    while (!InteractiveDesktopGuard.IsAborted)
     {
-        if (WaitForWindowName(processId, namePart, TimeSpan.Zero) is null) return true;
+        if (FindOwnedWindowName(processId, namePart) is null) return true;
+        if (DateTime.UtcNow >= until) break;
         Thread.Sleep(100);
     }
-    return WaitForWindowName(processId, namePart, TimeSpan.Zero) is null;
+    return FindOwnedWindowName(processId, namePart) is null;
 }
 
-static void DismissOwnedDialog(int processId, string namePart)
+static bool DismissOwnedDialog(int processId, string namePart)
 {
-    var dialog = WaitForWindowName(processId, namePart, TimeSpan.FromMilliseconds(50));
-    if (dialog is null) return;
-    var cancel = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button))
-        .Cast<AutomationElement>().FirstOrDefault(x => SafeName(x) is "否" or "取消" or "No" or "Cancel");
-    if (cancel is not null) TryClickPhysical(cancel, preferAutomationInvoke: false);
-    else { FocusWindow(dialog); SendKey(0x1B, false); }
-    WaitForWindowClosed(processId, namePart, TimeSpan.FromSeconds(2));
+    var dialog = FindOwnedWindowName(processId, namePart);
+    if (dialog is null) return true;
+    if (InteractiveDesktopGuard.IsAborted) return false;
+    AutomationElement? cancel = null;
+    var cancelInvoked = false;
+    try
+    {
+        cancel = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button))
+            .Cast<AutomationElement>().FirstOrDefault(x => SafeName(x) is "否" or "取消" or "No" or "Cancel");
+        if (cancel is not null) cancelInvoked = TryClickPhysical(cancel, preferAutomationInvoke: false);
+    }
+    catch (ElementNotAvailableException) { }
+    var closed = WaitForWindowClosed(processId, namePart, TimeSpan.FromSeconds(1));
+    if (!closed && !InteractiveDesktopGuard.IsAborted)
+    {
+        _ = CloseWindowWithoutKeyboard(dialog);
+        closed = WaitForWindowClosed(processId, namePart, TimeSpan.FromSeconds(2));
+    }
+    SmokeProgress.AppendMessage($"模态窗口清理：{namePart}，找到=true，取消按钮={cancel is not null}，取消输入={cancelInvoked}，程序关闭请求={closed}，已关闭={closed}。");
+    return closed;
 }
 
 static bool OpenPresetMenu(AutomationElement mainWindow)
 {
     var button = FindButtonByHint(mainWindow, "场景预设");
-    FocusWindow(mainWindow); SendKey(0x1B, false);
+    var processId = (int)mainWindow.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+    _ = CloseOwnedTransientPopups(processId, mainWindow);
+    FocusWindow(mainWindow);
     return button is not null && TryClickPhysical(button);
 }
 
@@ -1921,15 +2726,80 @@ static AutomationElement? WaitForMenuItem(int processId, string namePart, TimeSp
     return null;
 }
 
-static bool CompleteTextPrompt(int processId, string title, string value)
+static bool CompleteTextPrompt(int processId, string title, string value, out string diagnostic)
 {
     var dialog = WaitForWindowName(processId, title, TimeSpan.FromSeconds(3));
-    if (dialog is null) return false;
+    var found = dialog is not null;
+    if (dialog is null)
+    {
+        diagnostic = "found=false, editFound=false, set=false, readback=false, confirm=false, closed=false";
+        SmokeProgress.AppendMessage($"文字对话框结果：{title}；{diagnostic}");
+        return false;
+    }
     var edits = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit)).Cast<AutomationElement>().ToArray();
     var okay = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>().FirstOrDefault(x => SafeName(x) == "确定");
-    try { if (edits.Length == 0 || !TrySetValue(edits[0], value)) return false; }
-    catch { return false; }
-    return okay is not null && TryInvoke(okay);
+    var set = false;
+    var readback = false;
+    if (edits.Length > 0)
+    {
+        try
+        {
+            set = TrySetValue(edits[0], value);
+            if (set && edits[0].TryGetCurrentPattern(ValuePattern.Pattern, out var pattern) && pattern is ValuePattern valuePattern)
+                readback = string.Equals(valuePattern.Current.Value, value, StringComparison.Ordinal);
+        }
+        catch (Exception ex) { SmokeProgress.AppendMessage($"文字对话框写入异常：{title}；{ex.GetType().Name}: {ex.Message}"); }
+    }
+    var snapshotSaved = false;
+    var layoutDiagnostic = "layout=unavailable";
+    if (set && readback)
+        layoutDiagnostic = CaptureTextPromptSnapshot(dialog, edits[0], title, out snapshotSaved);
+    if (!snapshotSaved) layoutDiagnostic += ", screenshotEvidence=incomplete";
+    var confirm = set && readback && okay is not null && !InteractiveDesktopGuard.IsAborted && TryInvoke(okay);
+    var closed = confirm && WaitForWindowClosed(processId, title, TimeSpan.FromSeconds(4));
+    var dismissed = false;
+    if (!closed)
+    {
+        dismissed = DismissOwnedDialog(processId, title);
+        closed = dismissed && WaitForWindowClosed(processId, title, TimeSpan.FromSeconds(1));
+    }
+    diagnostic = $"found={found}, editFound={edits.Length > 0}, set={set}, readback={readback}, {layoutDiagnostic}, confirm={confirm}, closed={closed}, dismissFallback={dismissed}";
+    SmokeProgress.AppendMessage($"文字对话框结果：{title}；{diagnostic}");
+    return confirm && closed;
+}
+
+static string CaptureTextPromptSnapshot(AutomationElement dialog, AutomationElement input, string title, out bool saved)
+{
+    saved = false;
+    var dialogBounds = Rect.Empty;
+    var inputBounds = Rect.Empty;
+    uint dpi = 0;
+    var hwnd = IntPtr.Zero;
+    try
+    {
+        dialogBounds = dialog.Current.BoundingRectangle;
+        inputBounds = input.Current.BoundingRectangle;
+        hwnd = (IntPtr)dialog.Current.NativeWindowHandle;
+        if (hwnd != IntPtr.Zero) dpi = NativeMethods.GetDpiForWindow(hwnd);
+        var titleToken = new string(title.Select(ch => char.IsLetterOrDigit(ch) ? ch : '-').ToArray());
+        var prefix = Path.GetFileNameWithoutExtension(SmokeProgress.Path);
+        var screenshot = Path.Combine(Path.GetDirectoryName(SmokeProgress.Path)!, $"{prefix}.prompt-{titleToken}-{Guid.NewGuid():N}.png");
+        CaptureWindow(dialog, screenshot);
+        saved = File.Exists(screenshot);
+        if (!saved) SmokeProgress.MarkIncomplete($"提示框截图未生成：{screenshot}");
+        var dpiScale = dpi > 0 ? dpi / 96d : double.NaN;
+        var inputHeightDip = double.IsFinite(dpiScale) && dpiScale > 0 && !inputBounds.IsEmpty ? inputBounds.Height / dpiScale : double.NaN;
+        var message = $"截图={screenshot}, saved={saved}, HWND=0x{hwnd.ToInt64():X}, dialogPx=({dialogBounds.Left:0.#},{dialogBounds.Top:0.#},{dialogBounds.Width:0.#},{dialogBounds.Height:0.#}), inputPx=({inputBounds.Left:0.#},{inputBounds.Top:0.#},{inputBounds.Width:0.#},{inputBounds.Height:0.#}), inputHeightPx={inputBounds.Height:0.##}, dpi={dpi}, dpiScale≈{dpiScale:0.###}, inputHeightDip≈{inputHeightDip:0.##}";
+        SmokeProgress.AppendMessage("提示框布局诊断：" + message);
+        return message;
+    }
+    catch (Exception ex)
+    {
+        SmokeProgress.MarkIncomplete($"提示框布局截图失败；截图不是产品交互断言：{ex.GetType().Name}: {ex.Message}");
+        var message = $"截图失败={ex.GetType().Name}: {ex.Message}, HWND=0x{hwnd.ToInt64():X}, dialogPx=({dialogBounds.Left:0.#},{dialogBounds.Top:0.#},{dialogBounds.Width:0.#},{dialogBounds.Height:0.#}), inputPx=({inputBounds.Left:0.#},{inputBounds.Top:0.#},{inputBounds.Width:0.#},{inputBounds.Height:0.##}), dpi={dpi}";
+        SmokeProgress.AppendMessage("提示框布局诊断：" + message);
+        return message;
+    }
 }
 
 static string? FindPresetFile(string name)
@@ -1997,13 +2867,49 @@ static void SendKey(byte key, bool control, bool shift = false)
     if (shift) NativeMethods.KeybdEvent(0xA0, 0x2A, 2, UIntPtr.Zero);
     Thread.Sleep(300);
 }
-static void SendAltF4()
+static bool CloseWindowWithoutKeyboard(AutomationElement window)
 {
-    NativeMethods.KeybdEvent(0x12, 0, 0, UIntPtr.Zero);
-    NativeMethods.KeybdEvent(0x73, 0, 0, UIntPtr.Zero);
-    NativeMethods.KeybdEvent(0x73, 0, 2, UIntPtr.Zero);
-    NativeMethods.KeybdEvent(0x12, 0, 2, UIntPtr.Zero);
-    Thread.Sleep(500);
+    try
+    {
+        var handle = (IntPtr)window.Current.NativeWindowHandle;
+        var processId = (int)window.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.IsOwnedProcessId(processId)) return false;
+        if (handle == IntPtr.Zero || !NativeMethods.IsWindow(handle)) return true;
+        var isVisible = NativeMethods.IsWindowVisible(handle);
+        NativeMethods.GetWindowThreadProcessId(handle, out var ownerPid);
+        if (ownerPid != (uint)processId) return false;
+        if (!isVisible) return true;
+        if (window.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern)
+            windowPattern.Close();
+        else if (!NativeMethods.PostMessage(handle, 0x0010, IntPtr.Zero, IntPtr.Zero))
+            return false;
+        var until = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+        while (DateTime.UtcNow < until)
+        {
+            try { if (!NativeMethods.IsWindow(handle) || !NativeMethods.IsWindowVisible(handle)) return true; }
+            catch (ElementNotAvailableException) { return true; }
+            Thread.Sleep(50);
+        }
+        return false;
+    }
+    catch (ElementNotAvailableException) { return true; }
+    catch (InvalidOperationException) { return false; }
+}
+static int CloseOwnedTransientPopups(int processId, AutomationElement ownerWindow)
+{
+    if (!InteractiveDesktopGuard.IsOwnedProcessId(processId)) return 0;
+    var ownerHandle = (IntPtr)ownerWindow.Current.NativeWindowHandle;
+    var closed = 0;
+    foreach (var candidate in FindOwnedProcessWindows(processId))
+    {
+        try
+        {
+            if ((IntPtr)candidate.Current.NativeWindowHandle == ownerHandle || !IsOwnedWindowVisible(candidate, processId)) continue;
+            if (CloseWindowWithoutKeyboard(candidate)) closed++;
+        }
+        catch (ElementNotAvailableException) { closed++; }
+    }
+    return closed;
 }
 static (int Width, int Height) ReadDimensions(string project)
 {
@@ -2681,11 +3587,42 @@ static bool TryDragCameraOnCanvas(AutomationElement window, string projectFile, 
         var image = FindById(window, "PreviewImage"); if (image is null) { diagnostic = "未找到预览画布。"; return false; }
         using var beforeDoc = JsonDocument.Parse(ReadSharedBytes(projectFile)); var camera = beforeDoc.RootElement.GetProperty("camera");
         var oldX = camera.GetProperty("position").GetProperty("x").GetDouble(); var oldY = camera.GetProperty("position").GetProperty("y").GetDouble();
-        var rect = image.Current.BoundingRectangle; if (rect.IsEmpty || rect.Width < 100 || rect.Height < 100) { diagnostic = $"预览画布尺寸无效：{rect.Width:0}×{rect.Height:0}。"; return false; }
+        if (!double.IsFinite(oldX) || !double.IsFinite(oldY)) { diagnostic = $"摄像头位置不是有限值：({oldX},{oldY})。"; return false; }
+        if (!WaitForFinitePreviewBounds(image, TimeSpan.FromSeconds(5), out var rect))
+        { diagnostic = "预览画布边界在5秒内未稳定为有限且可用的尺寸。"; return false; }
         var x = (int)(rect.Left + oldX * rect.Width); var y = (int)(rect.Top + oldY * rect.Height);
         var dx = Math.Max(18, (int)(rect.Width * .025)); var dy = -Math.Max(10, (int)(rect.Height * .015));
-        NativeMethods.SetCursorPos(x, y); Thread.Sleep(150); NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(80);
-        NativeMethods.SetCursorPos(x + dx, y + dy); Thread.Sleep(160); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero);
+        var processId = window.Current.ProcessId;
+        if (!InteractiveDesktopGuard.BeforeInput("摄像头拖动定位")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
+        NativeMethods.SetCursorPos(x, y); Thread.Sleep(120);
+        NativeMethods.GetCursorPos(out var startPoint);
+        var rootWindow = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(startPoint), 2);
+        NativeMethods.GetWindowThreadProcessId(rootWindow, out var rootProcessId);
+        if (rootProcessId != processId) { diagnostic = $"摄像头拖动起点不属于测试应用：pid={rootProcessId}，期望={processId}。"; return false; }
+        if (!InteractiveDesktopGuard.BeforeInput("摄像头拖动按下")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
+        NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero);
+        try
+        {
+            Thread.Sleep(80);
+            var destinationX = Math.Clamp(x + dx, (int)Math.Ceiling(rect.Left + 2), (int)Math.Floor(rect.Right - 2));
+            var destinationY = Math.Clamp(y + dy, (int)Math.Ceiling(rect.Top + 2), (int)Math.Floor(rect.Bottom - 2));
+            if (InteractiveDesktopGuard.BeforeInput("摄像头拖动移动"))
+            {
+                NativeMethods.SetCursorPos(destinationX, destinationY);
+                NativeMethods.GetCursorPos(out var destinationPoint);
+                var destinationRoot = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(destinationPoint), 2);
+                NativeMethods.GetWindowThreadProcessId(destinationRoot, out var destinationProcessId);
+                if (destinationProcessId != processId) diagnostic = $"摄像头拖动终点不属于测试应用：pid={destinationProcessId}，期望={processId}。";
+            }
+            else diagnostic = InteractiveDesktopGuard.AbortReason;
+            Thread.Sleep(160);
+        }
+        finally
+        {
+            // Always release the button this gesture pressed, including guard aborts.
+            NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero);
+        }
+        if (!string.IsNullOrEmpty(diagnostic)) return false;
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(5);
         while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
         {
@@ -2695,6 +3632,35 @@ static bool TryDragCameraOnCanvas(AutomationElement window, string projectFile, 
         diagnostic=$"鼠标手势未写入位置；起点=({oldX:0.###},{oldY:0.###})，输入点=({x},{y})，增量=({dx},{dy})。"; return false;
     }
     catch(Exception ex){diagnostic=ex.Message;return false;}
+}
+static bool WaitForFinitePreviewBounds(AutomationElement image, TimeSpan timeout, out Rect rect)
+{
+    rect = Rect.Empty;
+    var until = DateTime.UtcNow + timeout;
+    Rect? previous = null;
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
+    {
+        try
+        {
+            var current = image.Current.BoundingRectangle;
+            var valid = !current.IsEmpty && double.IsFinite(current.Left) && double.IsFinite(current.Top)
+                && double.IsFinite(current.Width) && double.IsFinite(current.Height)
+                && double.IsFinite(current.Right) && double.IsFinite(current.Bottom)
+                && current.Left >= int.MinValue && current.Top >= int.MinValue && current.Right <= int.MaxValue && current.Bottom <= int.MaxValue
+                && current.Width is >= 100 and <= 10000 && current.Height is >= 100 and <= 10000;
+            if (valid)
+            {
+                rect = current;
+                if (previous is { } last && Math.Abs(last.Left - current.Left) < 2 && Math.Abs(last.Top - current.Top) < 2
+                    && Math.Abs(last.Width - current.Width) < 2 && Math.Abs(last.Height - current.Height) < 2) return true;
+                previous = current;
+            }
+            else previous = null;
+        }
+        catch (ElementNotAvailableException) { previous = null; }
+        Thread.Sleep(120);
+    }
+    return false;
 }
 static bool TryDeleteZoomGroup(AutomationElement timeline, AutomationElement mainWindow, string projectFile, out string diagnostic)
 {
@@ -2722,7 +3688,7 @@ static bool TryExportRangeFromTimeline(AutomationElement timeline,AutomationElem
         var end=WaitForNameContaining("设置导出终点",processId,TimeSpan.FromSeconds(3));if(end is null||!TryInvoke(end)){diagnostic="右键菜单未提供导出终点命令。";return false;}
         var status=FindById(window,"Status");if(status is null||!WaitForStatusContains(window,"导出范围",TimeSpan.FromSeconds(3))){diagnostic=$"I/O快捷键未设置范围：{status?.Current.Name}";return false;}
         var exp=FindById(window,"ExportButton");if(exp is null||!TryClickPhysical(exp)){diagnostic="无法打开导出窗口。";return false;}var export=WaitForWindowName(processId,"导出作品",TimeSpan.FromSeconds(4));if(export is null){diagnostic="导出窗口未出现。";return false;}
-        var names=export.FindAll(TreeScope.Descendants,System.Windows.Automation.Condition.TrueCondition).Cast<AutomationElement>().Select(SafeName).ToArray();var rangeDuration=names.Contains("0:02");FocusWindow(export);SendAltF4();Thread.Sleep(250);
+        var names=export.FindAll(TreeScope.Descendants,System.Windows.Automation.Condition.TrueCondition).Cast<AutomationElement>().Select(SafeName).ToArray();var rangeDuration=names.Contains("0:02");_ = CloseWindowWithoutKeyboard(export);Thread.Sleep(250);
         if(!rangeDuration){diagnostic=$"导出摘要没有显示预期2秒范围；控件=[{string.Join(" | ",names.Where(x=>x.Contains(':')))}]。";return false;}
         if(!OpenTimelineContextAt(timeline,window,projectFile,.5)){diagnostic="无法打开清除范围菜单。";return false;}
         var clear=WaitForName("清除导出范围",processId,TimeSpan.FromSeconds(3));if(clear is null||!TryInvoke(clear)){diagnostic="2秒范围已显示，但右键菜单没有清除命令。";return false;}
@@ -2731,7 +3697,7 @@ static bool TryExportRangeFromTimeline(AutomationElement timeline,AutomationElem
         using var fullDoc=JsonDocument.Parse(ReadSharedBytes(projectFile));
         var fullSeconds=fullDoc.RootElement.GetProperty("timeline").GetProperty("duration").GetDouble();
         var expectedDuration=TimeSpan.FromSeconds(fullSeconds).ToString(@"m\:ss");
-        var fullDuration=names.Contains(expectedDuration);FocusWindow(export);SendAltF4();
+        var fullDuration=names.Contains(expectedDuration);_ = CloseWindowWithoutKeyboard(export);
         diagnostic=fullDuration?$"I/O选择2秒区间后导出摘要显示0:02；清除区间后显示完整{expectedDuration}。":$"范围清除后预期时长{expectedDuration}，摘要文本=[{string.Join(" | ",names.Where(x=>x.Contains(':')))}]。";return fullDuration;
     }
     catch(Exception ex){diagnostic=ex.Message;return false;}
@@ -2934,6 +3900,12 @@ static void AddStep(List<StepResult> results, StepResult result)
 static class SmokeProgress
 {
     public static string Path = string.Empty;
+    public static bool IsComplete { get; private set; } = true;
+    public static void MarkIncomplete(string message)
+    {
+        IsComplete = false;
+        AppendMessage("验证证据不完整：" + message);
+    }
     public static void AppendMessage(string message)
     {
         if (string.IsNullOrWhiteSpace(Path)) return;
@@ -2943,7 +3915,7 @@ static class SmokeProgress
     {
         if (string.IsNullOrWhiteSpace(Path)) return;
         var line = $"{DateTimeOffset.Now:O} {(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}{Environment.NewLine}";
-        File.AppendAllText(Path, line);
+        try { File.AppendAllText(Path, line); } catch { }
     }
 }
 
@@ -2951,6 +3923,7 @@ record StepResult(string Name, bool Passed, string Detail);
 sealed record UserDataSnapshotEntry(string Path, bool Exists, string? ContentBase64);
 sealed record UserDataSnapshotDocument(int Version, UserDataSnapshotEntry[] Files);
 sealed class ApplicationErrorDialogException(string message) : Exception(message);
+sealed class SmokeEarlyExitException : Exception { }
 
 static class NativeMethods
 {
@@ -2982,6 +3955,10 @@ static class NativeMethods
     [DllImport("user32.dll", EntryPoint = "GetDC")] internal static extern IntPtr GetDC(IntPtr hWnd);
     [DllImport("user32.dll", EntryPoint = "ReleaseDC")] internal static extern int ReleaseWindowDC(IntPtr hWnd, IntPtr hDc);
     [DllImport("user32.dll")] internal static extern bool GetWindowRect(IntPtr hWnd, out RectNative rect);
+    [DllImport("user32.dll")] internal static extern bool IsWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll", EntryPoint = "PostMessageW", SetLastError = true)] internal static extern bool PostMessage(IntPtr hWnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("gdi32.dll")] internal static extern IntPtr CreateCompatibleDC(IntPtr hDc);
     [DllImport("gdi32.dll")] internal static extern bool DeleteDC(IntPtr hDc);
     [DllImport("gdi32.dll")] internal static extern IntPtr CreateCompatibleBitmap(IntPtr hDc, int width, int height);

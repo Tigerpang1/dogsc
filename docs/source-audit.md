@@ -4,6 +4,8 @@
 
 审计对象为只读子模块 `upstream/dogsc`，基线提交 `e207d11b111c5e58152238fb64115b2009850547`。上游工作区无未提交改动。`README.md` 将 DogSC 描述为面向 Apple Silicon、macOS 14+ 的原生录屏与轻量剪辑应用；`Package.swift` 使用 Swift 6、macOS 14，核心拆为 `RecorderCore` 和 `DogSCApp`，并固定依赖 Sparkle 2.9.4（见 `Package.resolved`）。最初采集验证采用 ScreenRecorderLib 7.0.1；0.2.0 最终方案为 .NET 8 WPF、FFmpeg ddagrab（显示器/区域 Desktop Duplication）、ScreenRecorderLib（窗口可见矩形及摄像头 Media Foundation）、独立 NAudio WASAPI 音轨，以及 Vortice.Direct3D11 3.8.3 GPU 合成。FFmpeg 子进程负责解码、硬件编码与 H.264/AAC 封装，首帧和暂停映射见架构说明。本机 FFmpeg 8.1.1 Gyan GPLv3 full build 仅用于本地验证。此处记录的是方案和审计约束，不代表任何 Windows 功能已实现。
 
+当前工程已从上述历史方案升级至 .NET 10：根 `global.json` 锁定 SDK `10.0.401`，主项目目标为 `net10.0-windows`。升级构建与后台合成测试记录见 [`net10-upgrade-result.json`](../artifacts/validation/net10-upgrade-result.json)。本节中“.NET 8”仅描述0.2.0阶段的方案与历史产物，不是当前构建要求；该升级验证不等于GUI、设备或发行包验收。
+
 ## 关键模块及语义
 
 | 上游文件 | 责任与必须保留的行为 | Windows 移植风险 |

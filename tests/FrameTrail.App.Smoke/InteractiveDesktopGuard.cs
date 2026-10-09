@@ -13,7 +13,7 @@ internal static class InteractiveDesktopGuard
     private static readonly HashSet<int> OwnedProcessIds = [];
     private static string _progressPath = string.Empty;
     private static string _abortReason = string.Empty;
-    private static bool _startupActivationAttempted;
+    private static readonly HashSet<int> StartupActivationAttemptedProcessIds = [];
     private static readonly Dictionary<byte, byte> PressedKeys = [];
     private static readonly HashSet<uint> PressedMouseButtons = [];
     private static Func<uint>? _foregroundPidOverride;
@@ -33,7 +33,7 @@ internal static class InteractiveDesktopGuard
             _targetProcessId = 0;
             OwnedProcessIds.Clear();
             _abortReason = string.Empty;
-            _startupActivationAttempted = false;
+            StartupActivationAttemptedProcessIds.Clear();
             PressedKeys.Clear();
             PressedMouseButtons.Clear();
         }
@@ -143,10 +143,10 @@ internal static class InteractiveDesktopGuard
     {
         lock (Gate)
         {
-            if (!_consented || _aborted || _targetProcessId <= 0 || targetWindow == IntPtr.Zero || _startupActivationAttempted)
+            var processId = _targetProcessId;
+            if (targetWindow == IntPtr.Zero || !TryBeginStartupActivationLocked(processId))
                 return false;
-            _startupActivationAttempted = true;
-            if (IsOwnedByProcess(GetForegroundWindow(), _targetProcessId)) return true;
+            if (IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
             _ = ShowWindowNative(targetWindow, SwRestore);
             var foregroundWindow = GetForegroundWindow();
             var foregroundThread = foregroundWindow == IntPtr.Zero ? 0u : GetWindowThreadProcessId(foregroundWindow, out _);
@@ -158,13 +158,21 @@ internal static class InteractiveDesktopGuard
             var until = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             while (DateTime.UtcNow < until)
             {
-                if (IsOwnedByProcess(GetForegroundWindow(), _targetProcessId)) return true;
+                if (IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
                 Thread.Sleep(40);
             }
             GetWindowThreadProcessId(GetForegroundWindow(), out var foregroundPid);
-            AbortLocked($"启动时的一次性窗口激活未成功；已停止输入。前台进程={foregroundPid}，目标进程={_targetProcessId}。本轮结果标记为需复核。");
+            AbortLocked($"启动时的一次性窗口激活未成功；已停止输入。前台进程={foregroundPid}，目标进程={processId}。本轮结果标记为需复核。");
             return false;
         }
+    }
+
+    private static bool TryBeginStartupActivationLocked(int processId)
+    {
+        if (!_consented || _aborted || processId <= 0 || processId != _targetProcessId
+            || !OwnedProcessIds.Contains(processId))
+            return false;
+        return StartupActivationAttemptedProcessIds.Add(processId);
     }
 
     public static bool IsTargetForeground(int processId)
@@ -258,6 +266,13 @@ internal static class InteractiveDesktopGuard
         var sameProcess = ForegroundMatchesForProbe(1234, 1234);
         var differentProcess = !ForegroundMatchesForProbe(1234, 5678);
         var noTarget = !ForegroundMatchesForProbe(0, 0);
+        Initialize(consented: true, string.Empty);
+        BindTargetProcess(1234);
+        var firstActivationAllowed = TryBeginStartupActivationForProbe(1234);
+        var samePidActivationRejected = !TryBeginStartupActivationForProbe(1234);
+        BindTargetProcess(5678);
+        var secondOwnedPidActivationAllowed = TryBeginStartupActivationForProbe(5678);
+        var unownedPidActivationRejected = !TryBeginStartupActivationForProbe(9999);
         var outputs = new List<string>();
         uint foreground = 1234;
         _foregroundPidOverride = () => foreground;
@@ -305,11 +320,17 @@ internal static class InteractiveDesktopGuard
         _keySinkOverride = null;
         _mouseSinkOverride = null;
         return noConsent && explicitConsent && sameProcess && differentProcess && noTarget
+            && firstActivationAllowed && samePidActivationRejected && secondOwnedPidActivationAllowed && unownedPidActivationRejected
             && noConsentRejected
             && acceptedKeyDown && rejectedNextKeyDown && keyReleased
             && acceptedMouseDown && rejectedNextMouseAction && mouseReleased
             && ownedMismatchDoesNotAbort && ownedTransitionAllowed && ownedTargetAccepted && unrelatedForegroundRejected
             && normalCompletionReleased;
+    }
+
+    private static bool TryBeginStartupActivationForProbe(int processId)
+    {
+        lock (Gate) return TryBeginStartupActivationLocked(processId);
     }
 
     public static void Complete()

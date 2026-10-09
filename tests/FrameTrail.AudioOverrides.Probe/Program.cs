@@ -1,8 +1,19 @@
 using System.Diagnostics;
+using System.IO;
 using System.Numerics;
+using System.Reflection;
 using System.Text.Json;
 using FrameTrail;
+using FrameTrail.Capture;
 using FrameTrail.Media;
+
+if (args.Length > 0 && string.Equals(args[0], "--captured-project", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length != 3)
+        throw new ArgumentException("Usage: FrameTrail.AudioOverrides.Probe --captured-project <capture.sync-playback.json> <outdir>");
+    await CapturedProjectProbe.RunAsync(args[1], args[2]);
+    return;
+}
 
 var outputDirectory = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "audio-overrides");
 Directory.CreateDirectory(outputDirectory);
@@ -20,9 +31,77 @@ var exportSystemPath = Path.Combine(exportMediaDirectory, "system-440.wav");
 var exportMicrophonePath = Path.Combine(exportMediaDirectory, "microphone-880.wav");
 var exportProjectPath = Path.Combine(exportProjectDirectory, "project.frametrail");
 var exportMixPath = Path.Combine(outputDirectory, "export-engine-overrides.m4a");
+var attachMappedPath = Path.Combine(outputDirectory, "attach-mapped-source.wav");
+var attachMappedMixPath = Path.Combine(outputDirectory, "attach-mapped-render.wav");
+var attachProjectPath = Path.Combine(outputDirectory, "attach-project", "project.frametrail");
 await RunFfmpeg(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=6", "-c:a", "pcm_f32le", "-y", systemPath]);
 await RunFfmpeg(["-v", "error", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000:duration=6", "-c:a", "pcm_f32le", "-y", microphonePath]);
 await RunFfmpeg(["-v", "error", "-filter_complex", "sine=frequency=660:sample_rate=48000:duration=2[a];sine=frequency=990:sample_rate=48000:duration=1[b];sine=frequency=1320:sample_rate=48000:duration=2[c];[a][b][c]concat=n=3:v=0:a=1[out]", "-map", "[out]", "-c:a", "pcm_f32le", "-y", mappedMicrophonePath]);
+await RunFfmpeg(["-v", "error", "-filter_complex", "sine=frequency=440:sample_rate=48000:duration=4[a];sine=frequency=880:sample_rate=48000:duration=2[b];sine=frequency=660:sample_rate=48000:duration=4[c];[a][b][c]concat=n=3:v=0:a=1[out]", "-map", "[out]", "-c:a", "pcm_f32le", "-y", attachMappedPath]);
+
+var attachProject = new FrameTrailProject
+{
+    MediaPath = "screen.mp4",
+    Media = new() { Width = 320, Height = 180, Duration = 8, FrameRate = 60 },
+    Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 8 }] }
+};
+var appAssembly = Assembly.Load("FrameTrail");
+var attachMethod = appAssembly.GetType("FrameTrail.App.MainWindow")?.GetMethod("AttachMappedAudio", BindingFlags.NonPublic | BindingFlags.Static)
+    ?? throw new InvalidOperationException("无法定位 App 的 AttachMappedAudio 实际入口。");
+var screenResult = new RecordingResult("screen.mp4", 0, 10_000, 1_000, EncoderMode.Software, "probe", 320, 180, 60,
+    null, [], [new CapturePauseInterval(4_000, 6_000)], FirstFrameObservedStopwatchTicks: 0);
+var captureHandle = new CaptureTrackHandle(Guid.NewGuid(), CaptureTrackKind.SystemAudio, attachMappedPath, 0, 1_000);
+var captureTrackResult = new CaptureTrackResult(captureHandle, 10_000, 0, 0, 0, EncoderMode.Unknown, [], [],
+    AudioSampleRate: 48_000, AudioFramesWritten: 480_000,
+    AudioClockSegments: [new CaptureAudioClockSegment(0, 10_000, 0, 480_000, 48_000, 1)], AudioSourceRate: 1);
+attachMethod.Invoke(null, [attachProject, screenResult, captureTrackResult, "media/captured.wav", 10d, AudioTrackSource.System]);
+Check(attachProject.AudioTracks.Count == 1 && attachProject.AudioTracks[0].SyncSegments is { Count: 2 } attachedSegments &&
+      attachedSegments[0] == new CameraSyncSegment(0, 0, 4, 1) && attachedSegments[1] == new CameraSyncSegment(6, 4, 4, 1),
+    "App AttachMappedAudio clips samples captured during a screen pause and creates two real SyncSegments");
+FrameTrailProjectStore.Save(attachProjectPath, attachProject);
+var attachRoundTrip = FrameTrailProjectStore.Load(attachProjectPath);
+Check(attachRoundTrip.AudioTracks.Single().SyncSegments?.SequenceEqual(attachProject.AudioTracks.Single().SyncSegments!) == true,
+    "App-created SyncSegments survive project save and reopen");
+var attachedTrackScript = Path.Combine(outputDirectory, "attach-mapped-filter.txt");
+var attachedAudioTrack = attachRoundTrip.AudioTracks.Single() with { MediaPath = attachMappedPath };
+await File.WriteAllTextAsync(attachedTrackScript, MediaTools.AudioTrackFilter(attachRoundTrip.Timeline, [attachedAudioTrack]));
+await RunFfmpeg(["-v", "error", "-i", attachMappedPath, "-filter_complex_script", attachedTrackScript, "-map", "[out]", "-c:a", "pcm_f32le", "-y", attachMappedMixPath]);
+var attachSourcePcm = await DecodeFloatStereo(attachMappedPath);
+var attachPcm = await DecodeFloatStereo(attachMappedMixPath);
+var beforeScreenPause = Analyze(attachPcm, 1, 440, 880);
+var afterScreenPause = Analyze(attachPcm, 5, 660, 880);
+var attachSource440 = Analyze(attachSourcePcm, 1, 440, 880).System;
+var attachSource880 = Analyze(attachSourcePcm, 5, 660, 880).Microphone;
+var attachSource660 = Analyze(attachSourcePcm, 7, 660, 880).System;
+Check(attachSource440 > 0 && attachSource660 > 0 && attachSource880 > 0 &&
+      beforeScreenPause.System / attachSource440 > .9 && beforeScreenPause.Microphone / attachSource880 < .02 &&
+      afterScreenPause.System / attachSource660 > .9 && afterScreenPause.Microphone / attachSource880 < .02,
+    $"App-mapped/rendered audio preserves 440/660Hz relative to same-decode source baselines and excludes 880Hz pause material (source={attachSource440:0.0000}/{attachSource660:0.0000}/{attachSource880:0.0000}, rendered={beforeScreenPause.System:0.0000}/{beforeScreenPause.Microphone:0.0000}/{afterScreenPause.System:0.0000}/{afterScreenPause.Microphone:0.0000})");
+
+var badRateResult = captureTrackResult with { AudioClockSegments = [new CaptureAudioClockSegment(0, 10_000, 0, 480_000, 44_100, 1)] };
+try
+{
+    attachMethod.Invoke(null, [new FrameTrailProject { Media = new() { Duration = 8 } }, screenResult, badRateResult,
+        "media/bad.wav", 10d, AudioTrackSource.System]);
+    throw new InvalidOperationException("App accepted a per-segment sample rate that disagrees with the WAV sample rate.");
+}
+catch (TargetInvocationException exception) when (exception.InnerException is InvalidDataException) { }
+
+var badClockResult = captureTrackResult with { Handle = captureHandle with { StopwatchFrequency = 999 } };
+try
+{
+    attachMethod.Invoke(null, [new FrameTrailProject { Media = new() { Duration = 8 } }, screenResult, badClockResult,
+        "media/bad-clock.wav", 10d, AudioTrackSource.System]);
+    throw new InvalidOperationException("App accepted audio and screen clocks with different Stopwatch frequencies.");
+}
+catch (TargetInvocationException exception) when (exception.InnerException is InvalidDataException) { }
+
+var oldMetadataProject = new FrameTrailProject { Media = new() { Duration = 8 } };
+var oldMetadataResult = captureTrackResult with { AudioSampleRate = null, AudioClockSegments = null, AudioFramesWritten = null };
+attachMethod.Invoke(null, [oldMetadataProject, screenResult, oldMetadataResult, "media/legacy.wav", 10d, AudioTrackSource.System]);
+Check(oldMetadataProject.AudioTracks.Count == 2 && oldMetadataProject.AudioTracks[1].SourceStart == 6 &&
+      oldMetadataProject.AudioTracks[1].OffsetSeconds == 4,
+    "App AttachMappedAudio keeps the legacy continuous mapper for old capture metadata");
 
 var first = new TimelineSegment { SourceStart = 0, SourceDuration = 2, AudioOverrides = new() { SystemVolume = .5, MicrophoneVolume = .5 } };
 var second = new TimelineSegment { SourceStart = 2, SourceDuration = 2, AudioOverrides = new() { SystemMuted = true, MicrophoneVolume = 1 } };
@@ -158,7 +237,22 @@ var summary = new
     ExportEngineM4a = exportResult.Path,
     ExportEngineM4aDurationSeconds = (await MediaTools.ProbeAsync(exportResult.Path)).Duration,
     ExportEngineM4aObservations = exportedObservations.Select(x => new { x.System, x.Microphone }),
-    Assertions = new[] { "片段一两路音频均按50%音量输出", "片段二静音系统声音且麦克风保持输出", "片段三保留系统声音且静音麦克风", "多段SyncSegments按SourceStart与SourceRate输出对应素材时钟", "静音普通轨排在前面时FFmpeg输入索引仍与音轨一致", "ExportEngine M4A 按三段规则混合嵌入式系统声与独立麦克风", "拆分片段继承独立副本的音量覆写", "拆分后修改一侧不会串改另一侧覆写" }
+    AttachMappedAudioOutput = attachMappedMixPath,
+    AttachMappedAudioSegments = attachRoundTrip.AudioTracks.Single().SyncSegments,
+    AttachMappedAudioSamples = new
+    {
+        Source440 = attachSource440, Source660 = attachSource660, PauseSource880 = attachSource880,
+        BeforeScreenPause = new { Tone440Hz = beforeScreenPause.System, ExcludedTone880Hz = beforeScreenPause.Microphone },
+        AfterScreenPause = new { Tone660Hz = afterScreenPause.System, ExcludedTone880Hz = afterScreenPause.Microphone },
+        RelativeRatios = new
+        {
+            Tone440Hz = beforeScreenPause.System / attachSource440,
+            Tone660Hz = afterScreenPause.System / attachSource660,
+            ExcludedTone880HzBeforePause = beforeScreenPause.Microphone / attachSource880,
+            ExcludedTone880HzAfterPause = afterScreenPause.Microphone / attachSource880
+        }
+    },
+    Assertions = new[] { "片段一两路音频均按50%音量输出", "片段二静音系统声音且麦克风保持输出", "片段三保留系统声音且静音麦克风", "多段SyncSegments按SourceStart与SourceRate输出对应素材时钟", "App AttachMappedAudio与屏幕有效区间逐段求交并保存/重开", "Render处理App生成的含source gap SyncSegments", "拒绝Capture segment采样率与WAV不一致", "旧CaptureTrackResult元数据回退到原mapper", "静音普通轨排在前面时FFmpeg输入索引仍与音轨一致", "ExportEngine M4A 按三段规则混合嵌入式系统声与独立麦克风", "拆分片段继承独立副本的音量覆写", "拆分后修改一侧不会串改另一侧覆写" }
 };
 var summaryPath = Path.Combine(outputDirectory, "audio-overrides.summary.json");
 await File.WriteAllTextAsync(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));

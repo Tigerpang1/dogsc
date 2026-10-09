@@ -21,14 +21,15 @@ public sealed class FrameCaptureService : IFrameCaptureService
     private CaptureState _state = CaptureState.Idle;
     private long _startTicks, _stopTicks;
     private long _firstFrameObservedTicks, _firstFrameSystemTimestampUnixMilliseconds;
-    private int _firstFrameNumber, _firstFrameSeen;
+    private int _firstFrameNumber, _firstEncodedFrameSeen;
+    private int _windowPreviewDiagnosticsLogged;
     private int _width, _height, _frameRate;
     private string _encoderName = "H.264 Media Foundation";
     private EncoderMode _encoderMode = EncoderMode.Unknown;
     private string? _activeOutputPath;
     private readonly List<string> _warnings = [];
-    private DisplayRecordingSource? _windowCropSource;
-    private DynamicOptionsBuilder? _windowDynamicOptions;
+    private string? _windowPreviewFirstFrameDiagnostic;
+    private WindowRecordingSource? _windowSource;
     private CancellationTokenSource? _windowMonitorCancellation;
     private Task? _windowMonitorTask;
     private RecordingResult? _windowAutoStopResult;
@@ -112,9 +113,10 @@ public sealed class FrameCaptureService : IFrameCaptureService
             _backendFailureSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _pausedIntervals.Clear(); _pauseStartTicks = 0;
             _firstFrameObservedTicks = 0; _firstFrameSystemTimestampUnixMilliseconds = 0;
-            _firstFrameNumber = 0; _firstFrameSeen = 0;
+            _firstFrameNumber = 0; _firstEncodedFrameSeen = 0;
+            _windowPreviewDiagnosticsLogged = 0; _windowPreviewFirstFrameDiagnostic = null;
             Interlocked.Exchange(ref _desktopExitFinalizationScheduled, 0);
-            _windowCropSource = null; _windowDynamicOptions = null; _windowAutoStopResult = null; _windowTargetLost = 0;
+            _windowSource = null; _windowAutoStopResult = null; _windowTargetLost = 0;
             ValidateRequest(request);
             _activeOutputPath = Path.GetFullPath(request.OutputPath);
             SetState(CaptureState.Starting);
@@ -126,11 +128,6 @@ public sealed class FrameCaptureService : IFrameCaptureService
             var options = CreateRecorderOptions(request);
             _recordingStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _recordingFinished = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            _recorder = Recorder.CreateRecorder(options);
-            _recorder.OnStatusChanged += OnStatusChanged;
-            _recorder.OnFrameRecorded += OnFrameRecorded;
-            _recorder.OnRecordingFailed += OnRecordingFailed;
-            _recorder.OnRecordingComplete += OnRecordingComplete;
             var tracking = request.InputTracking ?? new InputTrackingOptions();
             if (tracking.Enabled)
             {
@@ -145,12 +142,23 @@ public sealed class FrameCaptureService : IFrameCaptureService
                     ErrorOccurred?.Invoke(this, new CaptureError("Input tracking could not be started.", ex));
                 }
             }
-            _startTicks = Stopwatch.GetTimestamp();
-            await Task.Run(() => _recorder.Record(_activeOutputPath), cancellationToken).ConfigureAwait(false);
+            var outputPath = _activeOutputPath ?? throw new InvalidOperationException("The active recording output path is unavailable.");
+            await Task.Run(() =>
+            {
+                // ScreenRecorderLib's WindowRecordingSource is initialized by Record; keep Recorder
+                // creation and that initialization on the same worker thread as the reference probe.
+                var recorder = Recorder.CreateRecorder(options);
+                _recorder = recorder;
+                recorder.OnStatusChanged += OnStatusChanged;
+                recorder.OnFrameRecorded += OnFrameRecorded;
+                recorder.OnRecordingFailed += OnRecordingFailed;
+                recorder.OnRecordingComplete += OnRecordingComplete;
+                _startTicks = Stopwatch.GetTimestamp();
+                recorder.Record(outputPath);
+            }, cancellationToken).ConfigureAwait(false);
             await _recordingStarted.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
             if (request.Target.Kind == CaptureTargetKind.Window)
             {
-                _windowDynamicOptions = _recorder.GetDynamicOptionsBuilder();
                 _windowMonitorCancellation = new CancellationTokenSource();
                 _windowMonitorTask = Task.Run(() => MonitorWindowTargetAsync(request.Target, _windowMonitorCancellation.Token));
             }
@@ -255,13 +263,15 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 _warnings.Add("Capture backend failure: " + failedBackend.Message);
             var inputPath = _inputSampler?.OutputPath;
             await DisposeRecordingComponentsAsync().ConfigureAwait(false);
+            if (Volatile.Read(ref _windowPreviewFirstFrameDiagnostic) is { } previewDiagnostic) _warnings.Add(previewDiagnostic);
+            else if (_request?.Target.Kind == CaptureTargetKind.Window) _warnings.Add("Window source preview did not yield a diagnostic frame before capture finalized.");
             SetState(CaptureState.Completed);
             _activeOutputPath = null;
             var result = new RecordingResult(output, _startTicks, _stopTicks, Stopwatch.Frequency, _encoderMode,
                 _encoderName, _width, _height, _frameRate, inputPath, _warnings.ToArray(), _pausedIntervals.ToArray(),
                 Interlocked.Read(ref _firstFrameObservedTicks) is var firstFrameTicks && firstFrameTicks != 0 ? firstFrameTicks : null,
-                Volatile.Read(ref _firstFrameSeen) != 0 ? Volatile.Read(ref _firstFrameNumber) : null,
-                Volatile.Read(ref _firstFrameSeen) != 0 ? Interlocked.Read(ref _firstFrameSystemTimestampUnixMilliseconds) : null);
+                Volatile.Read(ref _firstEncodedFrameSeen) == 2 ? Volatile.Read(ref _firstFrameNumber) : null,
+                Volatile.Read(ref _firstEncodedFrameSeen) == 2 ? Interlocked.Read(ref _firstFrameSystemTimestampUnixMilliseconds) : null);
             _latestCompletedResult = result;
             if (Volatile.Read(ref _windowTargetLost) != 0) _windowAutoStopResult = result;
             try { RecordingCompleted?.Invoke(result); }
@@ -460,17 +470,18 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 source = new DisplayRecordingSource(request.Target.Id) { RecorderApi = RecorderApi.DesktopDuplication, IsCursorCaptureEnabled = false };
                 break;
             case CaptureTargetKind.Window:
-                var targetDisplay = WindowsNative.EnumerateDisplays().FirstOrDefault(d => Contains(d.Bounds, targetBounds))
-                    ?? throw new ArgumentException("The selected window must fit inside one display.", nameof(request));
-                var crop = new DisplayRecordingSource(targetDisplay.Id)
+                _warnings.Add("Window capture uses ScreenRecorderLib WindowRecordingSource (Windows Graphics Capture). The first-image time anchor uses Stopwatch when the source preview callback arrives, with the recorder frame callback as fallback; neither callback exposes a native source-frame timestamp.");
+                var windowSource = new WindowRecordingSource(request.Target.WindowHandle)
                 {
-                    RecorderApi = RecorderApi.DesktopDuplication,
+                    IsBorderRequired = false,
                     IsCursorCaptureEnabled = false,
-                    SourceRect = new ScreenRecorderLib.ScreenRect(targetBounds.X - targetDisplay.Bounds.X,
-                        targetBounds.Y - targetDisplay.Bounds.Y, targetBounds.Width, targetBounds.Height)
+                    // Keep source dimensions while diagnosing delivery; the first callback anchors timing.
+                    IsVideoFramePreviewEnabled = true,
+                    VideoFramePreviewSize = new ScreenRecorderLib.ScreenSize(targetBounds.Width, targetBounds.Height)
                 };
-                _windowCropSource = crop;
-                source = crop;
+                _windowSource = windowSource;
+                windowSource.OnFrameRecorded += OnWindowSourceFrameRecorded;
+                source = windowSource;
                 break;
             case CaptureTargetKind.Region:
                 var bounds = request.Target.Bounds!;
@@ -528,7 +539,6 @@ public sealed class FrameCaptureService : IFrameCaptureService
     {
         try
         {
-            var lastBounds = ResolveTargetBounds(target);
             while (!cancellationToken.IsCancellationRequested)
             {
                 await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).ConfigureAwait(false);
@@ -553,29 +563,8 @@ public sealed class FrameCaptureService : IFrameCaptureService
                     FailWindowTarget("The captured window was minimized or has no visible bounds; recording is being finalized.");
                     return;
                 }
-                if (bounds == lastBounds) continue;
-                using var dpi = WindowsNative.UsePhysicalCoordinates();
-                var display = WindowsNative.EnumerateDisplays().FirstOrDefault(d => Contains(d.Bounds, bounds));
-                if (display is null)
-                {
-                    FailWindowTarget("The captured window moved outside one display; recording is being finalized.");
-                    return;
-                }
-                var oldSource = _windowCropSource;
-                if (oldSource is null || _windowDynamicOptions is null) return;
-                oldSource.DeviceName = display.Id;
-                oldSource.SourceRect = new ScreenRecorderLib.ScreenRect(bounds.X - display.Bounds.X,
-                    bounds.Y - display.Bounds.Y, bounds.Width, bounds.Height);
-                _windowDynamicOptions.SetUpdatedRecordingSource(oldSource);
-                if (!_windowDynamicOptions.Apply())
-                {
-                    FailWindowTarget("Could not update the visible window crop after it moved.");
-                    return;
-                }
-                else
-                {
-                    lastBounds = bounds;
-                }
+                // WindowRecordingSource follows the HWND through moves, resizes and display changes.
+                // Keep validating its screen bounds for pointer normalization; do not recrop the source.
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
@@ -618,10 +607,59 @@ public sealed class FrameCaptureService : IFrameCaptureService
     }
     private void OnFrameRecorded(object? sender, FrameRecordedEventArgs e)
     {
-        if (Interlocked.CompareExchange(ref _firstFrameSeen, 1, 0) != 0) return;
-        Interlocked.Exchange(ref _firstFrameObservedTicks, Stopwatch.GetTimestamp());
+        MarkFirstImageObserved();
+        if (Interlocked.CompareExchange(ref _firstEncodedFrameSeen, 1, 0) != 0) return;
         Volatile.Write(ref _firstFrameNumber, e.FrameNumber);
         Interlocked.Exchange(ref _firstFrameSystemTimestampUnixMilliseconds, e.Timestamp);
+        Volatile.Write(ref _firstEncodedFrameSeen, 2);
+    }
+
+    private void OnWindowSourceFrameRecorded(object? sender, FrameDataRecordedEventArgs e)
+    {
+        // This preview callback reports the first source image but exposes no native frame PTS.
+        // Record callback-observation time only; never retain the native bitmap buffer.
+        try
+        {
+            var bitmap = e.BitmapData;
+            if (bitmap is null || bitmap.Data == IntPtr.Zero || bitmap.Width <= 0 || bitmap.Height <= 0)
+                return;
+            MarkFirstImageObserved();
+            if (Interlocked.CompareExchange(ref _windowPreviewDiagnosticsLogged, 1, 0) == 0)
+                Volatile.Write(ref _windowPreviewFirstFrameDiagnostic, SummarizeWindowPreview(bitmap));
+        }
+        catch (Exception)
+        {
+            // Native callbacks must not leak managed exceptions into the capture thread.
+        }
+    }
+
+    private void MarkFirstImageObserved()
+    {
+        Interlocked.CompareExchange(ref _firstFrameObservedTicks, Stopwatch.GetTimestamp(), 0);
+    }
+
+    private static string SummarizeWindowPreview(FrameBitmapData bitmap)
+    {
+        var width = bitmap.Width;
+        var height = bitmap.Height;
+        var stride = bitmap.Stride;
+        if (Math.Abs((long)stride) < (long)width * 4)
+            return $"Window source preview diagnostic: invalid BGRA stride; width={width}, height={height}, stride={stride}.";
+        double intensitySum = 0;
+        var brightSamples = 0;
+        var count = 0;
+        foreach (var y in new[] { height / 4, height / 2, Math.Max(0, height * 3 / 4) })
+        foreach (var x in new[] { width / 4, width / 2, Math.Max(0, width * 3 / 4) })
+        {
+            var offset = checked(y * stride + x * 4);
+            var blue = Marshal.ReadByte(bitmap.Data, offset);
+            var green = Marshal.ReadByte(bitmap.Data, offset + 1);
+            var red = Marshal.ReadByte(bitmap.Data, offset + 2);
+            intensitySum += (red + green + blue) / 3.0;
+            if (Math.Max(red, Math.Max(green, blue)) >= 48) brightSamples++;
+            count++;
+        }
+        return $"Window source preview first-frame sample: {width}x{height}, stride={stride}, gridMeanRgbIntensity={intensitySum / count:F2}, gridBrightSamples={brightSamples}/{count}.";
     }
     internal void InjectRecordingFailureForProbe(Exception failure) => HandleRecordingFailure(failure);
     private void OnRecordingFailed(object? sender, RecordingFailedEventArgs e) =>
@@ -663,7 +701,11 @@ public sealed class FrameCaptureService : IFrameCaptureService
             _windowMonitorTask = null;
         }
         _windowMonitorCancellation?.Dispose(); _windowMonitorCancellation = null;
-        _windowDynamicOptions = null; _windowCropSource = null;
+        if (_windowSource is not null)
+        {
+            _windowSource.OnFrameRecorded -= OnWindowSourceFrameRecorded;
+            _windowSource = null;
+        }
         if (_desktopRecorder is not null) { await _desktopRecorder.DisposeAsync().ConfigureAwait(false); _desktopRecorder = null; }
         _recorder?.Dispose(); _recorder = null;
         if (_inputSampler is not null) { await _inputSampler.DisposeAsync().ConfigureAwait(false); _inputSampler = null; }

@@ -36,7 +36,12 @@ public sealed record RecordingResult(string OutputPath, long StartStopwatchTicks
     long? FirstFrameSystemTimestampUnixMilliseconds = null,
     long? ProgressEstimatedFirstFrameStopwatchTicks = null,
     long? StopObservedStopwatchTicks = null);
-public sealed record CapturePauseInterval(long PauseStartStopwatchTicks, long ResumeStopwatchTicks);
+public sealed record CapturePauseInterval(long PauseStartStopwatchTicks, long ResumeStopwatchTicks,
+    long? PauseStartSourceFrame = null, long? ResumeSourceFrame = null, int? SourceSampleRate = null,
+    long? PauseBoundaryNominalOffsetMaxFrames = null, long? AudioOutputFrame = null);
+/// <summary>One continuous WASAPI active interval mapped to output-WAV sample frame coordinates.</summary>
+public sealed record CaptureAudioClockSegment(long StartStopwatchTicks, long EndStopwatchTicks,
+    long SourceStartFrame, long SourceEndFrame, int SampleRate, double SourceRate);
 public sealed record RecoverableRecordingInfo(string ManifestPath, string OriginalOutputPath, IReadOnlyList<string> Segments);
 public sealed record CameraRecordingRequest(string OutputPath, string CameraDeviceId, int? FormatIndex = null,
     VideoOptions? Video = null);
@@ -45,7 +50,9 @@ public sealed record CaptureTrackHandle(Guid TrackId, CaptureTrackKind Kind, str
     long StartStopwatchTicks, long StopwatchFrequency);
 public sealed record CaptureTrackResult(CaptureTrackHandle Handle, long StopStopwatchTicks,
     int Width, int Height, int FrameRate, EncoderMode EncoderMode, IReadOnlyList<string> Warnings,
-    IReadOnlyList<CapturePauseInterval> PausedIntervals);
+    IReadOnlyList<CapturePauseInterval> PausedIntervals, int? AudioSampleRate = null,
+    double? AudioDeviceClockDriftPpm = null, long? AudioFramesWritten = null,
+    IReadOnlyList<CaptureAudioClockSegment>? AudioClockSegments = null, double? AudioSourceRate = null);
 public sealed record CaptureTrackStateChanged(Guid TrackId, CaptureTrackKind Kind, CaptureTrackState State,
     long StopwatchTicks, string? Detail = null);
 public sealed record CaptureStateChanged(CaptureState State, long StopwatchTicks, string? Detail = null);

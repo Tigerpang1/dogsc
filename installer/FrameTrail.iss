@@ -1,11 +1,11 @@
 #ifndef AppVersion
-  #define AppVersion "0.2.2"
+  #define AppVersion "0.2.3"
 #endif
 #ifndef AppExeName
   #define AppExeName "FrameTrail.exe"
 #endif
 #ifndef ReleaseDir
-  #define ReleaseDir "..\artifacts\release\FrameTrail-0.2.2-win-x64"
+  #define ReleaseDir "..\artifacts\release\FrameTrail-0.2.3-win-x64"
 #endif
 
 [Setup]

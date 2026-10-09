@@ -3,7 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.2',
+    [string]$Version = '0.2.3',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'FrameTrail.exe',
     [switch]$WithoutFfmpeg,
@@ -23,6 +23,8 @@ $ffmpegOutput = Join-Path $portableRoot 'tools/ffmpeg'
 $zipPath = Join-Path $releaseRoot "FrameTrail-$Version-win-x64.zip"
 $installerPath = Join-Path $releaseRoot "FrameTrail-Setup-$Version-win-x64.exe"
 $upstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
+. (Join-Path $PSScriptRoot 'source-provenance.ps1')
+$null = Get-FrameTrailSourceProvenance -RepositoryRoot $repoRoot -UpstreamBaseSha $upstreamBaseSha
 
 if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
     throw "应用项目尚未集成：$project"
@@ -91,51 +93,34 @@ $docsSource = Join-Path $repoRoot 'docs'
 if (-not (Test-Path -LiteralPath $docsSource -PathType Container)) { throw "文档目录缺失：$docsSource" }
 Copy-Item -LiteralPath $docsSource -Destination $publishRoot -Recurse -Force
 
-$sampleSource = Join-Path $repoRoot 'artifacts/sample/FrameTrail-Demo'
-if (-not (Test-Path -LiteralPath (Join-Path $sampleSource 'FrameTrail-Demo.frametrail') -PathType Leaf)) {
-    & (Join-Path $PSScriptRoot 'create-sample.ps1') -OutputDirectory $sampleSource
+$sampleStaging = Join-Path $env:TEMP ("FrameTrail-sample-$Version-$PID-" + [guid]::NewGuid().ToString('N'))
+$sampleNames = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md')
+try {
+    if (Test-Path -LiteralPath $sampleStaging) { throw "样例暂存目录已存在：$sampleStaging" }
+    & (Join-Path $PSScriptRoot 'create-sample.ps1') -OutputDirectory $sampleStaging
     if ($LASTEXITCODE -ne 0) { throw '原创样例生成失败。' }
+    $sampleDestination = Join-Path $publishRoot 'samples/FrameTrail-Demo'
+    $null = New-Item -ItemType Directory -Path $sampleDestination -Force
+    foreach ($name in $sampleNames) {
+        $sampleFile = Join-Path $sampleStaging $name
+        if (-not (Test-Path -LiteralPath $sampleFile -PathType Leaf)) { throw "生成的演示缺少文件：$name" }
+        Copy-Item -LiteralPath $sampleFile -Destination $sampleDestination
+    }
 }
-$sampleOutput = Join-Path $publishRoot 'samples'
-$null = New-Item -ItemType Directory -Path $sampleOutput -Force
-$sampleDestination = Join-Path $sampleOutput 'FrameTrail-Demo'
-$null = New-Item -ItemType Directory -Path $sampleDestination -Force
-Get-ChildItem -LiteralPath $sampleSource -File | Where-Object { $_.Extension -ne '.bak' } | Copy-Item -Destination $sampleDestination -Force
+finally {
+    $sampleAbsolute = [IO.Path]::GetFullPath($sampleStaging)
+    $tempBoundary = [IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\'
+    if (-not $sampleAbsolute.StartsWith($tempBoundary, [StringComparison]::OrdinalIgnoreCase)) { throw "拒绝清理TEMP之外的样例暂存：$sampleAbsolute" }
+    if (Test-Path -LiteralPath $sampleAbsolute) {
+        if (((Get-Item -LiteralPath $sampleAbsolute -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw '拒绝清理样例重解析点。' }
+        Remove-Item -LiteralPath $sampleAbsolute -Recurse -Force
+    }
+}
 
-$gitHead = $null
-$sourceKind = $null
-$workingTreeState = $null
-if (Get-Command git -ErrorAction SilentlyContinue) {
-    $gitHeadOutput = @(& git -C $repoRoot rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -eq 0 -and $gitHeadOutput.Count -gt 0) {
-        $candidateHead = ([string]$gitHeadOutput[0]).Trim()
-        if ($candidateHead -match '^[0-9a-f]{40}$') {
-            $gitHead = $candidateHead
-            & git -C (Join-Path $repoRoot 'upstream/dogsc') cat-file -e "$upstreamBaseSha^{commit}" 2>$null
-            if ($LASTEXITCODE -ne 0) { throw "Git 仓库存在，但上游固定基线不存在：$upstreamBaseSha" }
-            $gitStatusLines = @(& git -C $repoRoot status --porcelain 2>$null)
-            if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
-            $workingTreeState = if ($gitStatusLines.Count -eq 0) { 'clean' } else { 'dirty' }
-            $sourceKind = 'git checkout'
-        }
-    }
-}
-if (-not $gitHead) {
-    $metadataPath = Join-Path $repoRoot 'SOURCE-METADATA.json'
-    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
-        throw '无法读取 Git HEAD，且源码归档中缺少 SOURCE-METADATA.json。'
-    }
-    try { $sourceMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json }
-    catch { throw "源码归档元数据 JSON 无效：$metadataPath" }
-    if ($sourceMetadata.formatVersion -ne 1 -or
-        [string]$sourceMetadata.frameTrailCommit -notmatch '^[0-9a-f]{40}$' -or
-        [string]$sourceMetadata.upstreamDogScCommit -ne $upstreamBaseSha) {
-        throw "源码归档元数据版本、FrameTrail 提交或上游基线不匹配：$metadataPath"
-    }
-    $gitHead = [string]$sourceMetadata.frameTrailCommit
-    $workingTreeState = '源码归档（无 Git 元数据）'
-    $sourceKind = 'source archive'
-}
+$sourceProvenance = Get-FrameTrailSourceProvenance -RepositoryRoot $repoRoot -UpstreamBaseSha $upstreamBaseSha
+$gitHead = $sourceProvenance.Head
+$sourceKind = $sourceProvenance.Kind
+$workingTreeState = $sourceProvenance.WorktreeState
 
 $ffmpegSourceMaterial = Join-Path $releaseRoot 'ffmpeg-corresponding-source'
 if (-not $WithoutFfmpeg) {

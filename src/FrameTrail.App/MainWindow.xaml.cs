@@ -4,6 +4,7 @@ using System.Globalization;
 using System.IO;
 using System.Text.Json;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -45,6 +46,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool protectiveStop;
     private bool recordingFinalizing;
+    private Task? recordingStopTask;
     private bool recordingFaultHandled;
     private long recordingStart;
     private record TargetItem(string Name, CaptureTarget Target);
@@ -53,8 +55,11 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent(); InitializeEditorShell();
-        Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.Close(); recordingGuard.Stop(); };
+        InitializeComponent(); InitializeEditorShell(); SurfaceWindow.AttachNativeEdges(this);
+        SurfaceWindow.FitToWorkArea(this);
+        AutomationProperties.SetItemStatus(PreviewImage, "idle");
+        AutomationProperties.SetItemStatus(TimelineView, "idle");
+        Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); };
         recordingGuard.Tick += async (_, _) =>
         {
             if(capture.State is not (CaptureState.Recording or CaptureState.Paused) || protectiveStop||recordingFinalizing)return;
@@ -91,6 +96,7 @@ public partial class MainWindow : Window
         var args = Environment.GetCommandLineArgs();
         var open = Array.IndexOf(args, "--open");
         if (open >= 0 && args.Length > open + 1) await Guard(() => OpenProject(args[open + 1]));
+        var recordingBarSmoke=Array.IndexOf(args,"--recordingbar-lifecycle-smoke");if(recordingBarSmoke>=0&&recordingBarSmoke+1<args.Length){await VerifyRecordingBarLifecycle(args[recordingBarSmoke+1]);closeReady=true;Close();return;}
         var editorSmoke=Array.IndexOf(args,"--editor-smoke");if(editorSmoke>=0&&args.Length>editorSmoke+1){await VerifyEditorRegression(args[editorSmoke+1]);closeReady=true;Close();return;}
         var recoverySmoke=Array.IndexOf(args,"--recovery-smoke");if(recoverySmoke>=0&&args.Length>recoverySmoke+2){try{var recovered=await RecoverReadableRecording(args[recoverySmoke+1]);var p=FrameTrailProjectStore.Load(recovered);await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=true,Project=recovered,AudioTracks=p.AudioTracks.Count,Markers=p.Markers.Count,PointerEvents=p.PointerEvents.Count}));}catch(Exception ex){await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=false,Error=ex.ToString()}));}closeReady=true;Close();return;}
         var playbackSmoke=Array.IndexOf(args,"--playback-smoke");if(playbackSmoke>=0&&args.Length>playbackSmoke+1){await VerifyRealtimePlayback(args[playbackSmoke+1]);closeReady=true;Close();return;}
@@ -137,7 +143,7 @@ public partial class MainWindow : Window
     {
         try { await action(); }
         catch (OperationCanceledException) { Status.Text = "处理已取消，原始素材和项目已保留。"; }
-        catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; MessageBox.Show(this, ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(this, ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     private async Task RefreshDevices()
     {
@@ -180,7 +186,7 @@ public partial class MainWindow : Window
         try
         {
             if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
-            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording), async()=>await Guard(ToggleRecordingPause)); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
+            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);}); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
         finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
@@ -192,14 +198,21 @@ public partial class MainWindow : Window
         if (recordingFolder is not null) File.AppendAllText(Path.Combine(recordingFolder, "markers.jsonl"), JsonSerializer.Serialize(new { Tick = recordingMarkers[^1].Tick, Label = recordingMarkers[^1].Label }) + Environment.NewLine);
         recordingBar?.SetMarkerCount(recordingMarkers.Count);
     }
-    private async Task StopRecording()
+    private Task StopRecording()
     {
-        if(recordingFinalizing)return;recordingFinalizing=true;
+        if(recordingStopTask is { IsCompleted:false })return recordingStopTask;
+        return recordingStopTask=StopRecordingCore();
+    }
+    private async Task StopRecordingCore()
+    {
+        if(recordingFinalizing){while(recordingFinalizing)await Task.Delay(25);return;}recordingFinalizing=true;
         recordingGuard.Stop();
         RecordButton.IsEnabled = false;
+        var captureStopped=false;
         try
         {
             var result = await capture.StopAsync();
+            captureStopped=true;
             await CompleteRecording(result);
         }
         catch (Exception error)
@@ -222,8 +235,11 @@ public partial class MainWindow : Window
         finally
         {
             NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle, 0);
-            recordingBar?.Close(); recordingBar = null;
-            RecordButton.Content = "开始录制";
+            // StopAsync disposes its backend before reporting Faulted. There is no
+            // live recording to retry in that state; recovery uses the saved files.
+            captureStopped |= capture.State is not (CaptureState.Recording or CaptureState.Paused or CaptureState.Stopping);
+            if(captureStopped){recordingBar?.CloseAfterRecording();recordingBar=null;RecordButton.Content="开始录制";}
+            else RecordButton.Content="■  结束录制";
             RecordButton.IsEnabled = true;
             recordingFinalizing = false;
         }
@@ -235,7 +251,7 @@ public partial class MainWindow : Window
         RecordButton.IsEnabled = false;
         try
         {
-            var extraTracks=await StopAdditionalTracks(); recordingTrackWarnings.AddRange(result.Warnings); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "开始录制";
+            var extraTracks=await StopAdditionalTracks(); recordingTrackWarnings.AddRange(result.Warnings); recordingBar?.CloseAfterRecording(); recordingBar = null; RecordButton.Content = "开始录制";
             // Keep pause/timing records even if validating the main video fails below.
             await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "independent-tracks-result.json"), JsonSerializer.Serialize(extraTracks, new JsonSerializerOptions { WriteIndented = true }));
             await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "capture-result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
@@ -287,7 +303,7 @@ public partial class MainWindow : Window
         try { opened = FrameTrailProjectStore.Load(path); }
         catch (Exception ex) when (ex is JsonException or InvalidDataException && File.Exists(path + ".bak"))
         {
-            if (MessageBox.Show(this, "项目文件未能读取。是否保留损坏文件并恢复最近备份？\n" + ex.Message, "恢复项目", MessageBoxButton.YesNo) != MessageBoxResult.Yes) throw;
+            if (SurfaceDialog.Show(this, "项目文件未能读取。是否保留损坏文件并恢复最近备份？\n" + ex.Message, "恢复项目", MessageBoxButton.YesNo) != MessageBoxResult.Yes) throw;
             File.Copy(path, path + ".damaged-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")); opened = FrameTrailProjectStore.RestoreBackup(path);
         }
         var media = FrameTrailProjectStore.ResolveMediaPath(path, opened);
@@ -331,14 +347,16 @@ public partial class MainWindow : Window
     private async Task LoadTimelineAssets(string path,FrameTrailProject opened)
     {
         assetsCancellation?.Cancel(); assetsCancellation=new(); var token=assetsCancellation.Token;
+        AutomationProperties.SetItemStatus(TimelineView, "loading");
         try
         {
             var data=await TimelineAssets.BuildAsync(path,Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"FrameTrail","thumbnail-cache"),token);
             if(token.IsCancellationRequested || project?.ProjectId!=opened.ProjectId)return;
             timelineAssets=data; RefreshProject();
+            AutomationProperties.SetItemStatus(TimelineView, "ready");
         }
         catch(Exception ex) when(ex is OperationCanceledException || token.IsCancellationRequested) { }
-        catch(Exception ex) { App.Log(ex); Status.Text="缩略图或波形生成失败："+ex.Message; }
+        catch(Exception ex) { AutomationProperties.SetItemStatus(TimelineView, "error"); App.Log(ex); Status.Text="缩略图或波形生成失败："+ex.Message; }
     }
     private void WaveformSizeChanged(object sender,SizeChangedEventArgs e)=>DrawWaveform();
     private void DrawWaveform()
@@ -404,6 +422,7 @@ public partial class MainWindow : Window
     private async Task RenderPreview(double time)
     {
         if (closingInProgress || project == null || projectFile == null) return; seekCancellation?.Cancel(); seekCancellation = new(); var token = seekCancellation.Token;
+        AutomationProperties.SetItemStatus(PreviewImage, "rendering");
         var snapshot = project; var path = FrameTrailProjectStore.ResolveMediaPath(projectFile,snapshot);
         try
         {
@@ -425,9 +444,11 @@ public partial class MainWindow : Window
             }
             finally { previewGate.Release(); }
             token.ThrowIfCancellationRequested(); PreviewImage.Source = image;displayedPreviewScene=scene;displayedPreviewProject=snapshot; PreviewImage.Visibility = Visibility.Visible; RefreshPreviewSelection();
+            AutomationProperties.SetItemStatus(PreviewImage, "ready");
         }
         catch (OperationCanceledException) { }
         catch (Exception) when (token.IsCancellationRequested) { }
+        catch { AutomationProperties.SetItemStatus(PreviewImage, "error"); throw; }
     }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
@@ -475,7 +496,7 @@ public partial class MainWindow : Window
     {
         if(closeReady) return; e.Cancel=true;
         if(closingInProgress) return;
-        if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { MessageBox.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
+        if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { SurfaceDialog.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
         if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，请稍后关闭。"; return; }
         closingInProgress=true;
         try

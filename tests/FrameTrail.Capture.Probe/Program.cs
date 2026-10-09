@@ -4,6 +4,13 @@ using FrameTrail.Capture;
 
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Length > 0 && args[0] == "--microphone-capture")
+{
+    if (args.Length != 3 || args[2] != "--interactive-desktop")
+        throw new ArgumentException("Usage: FrameTrail.Capture.Probe --microphone-capture <freshoutdir> --interactive-desktop. This command opens the default microphone and requires explicit authorization.");
+    await MicrophoneCaptureProbe.RunAsync(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--failure-lifecycle-probe")
 {
     CaptureFailureLifecycleProbe.Run();
@@ -19,6 +26,11 @@ if (args.Length == 1 && args[0] == "--audio-packet-clock-test")
     AudioPacketClockProbe.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--audio-qpc-jitter-diagnosis-test")
+{
+    AudioPacketQpcJitterDiagnosisProbe.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--audio-packet-diagnostics-test")
 {
     AudioPacketDiagnosticsProbe.Run();
@@ -32,6 +44,9 @@ if (args.Length == 1 && args[0] == "--playback-options-test")
     if (interactive.FrameRate != 60) throw new InvalidOperationException("The existing --fps60 shorthand no longer parses.");
     var scopedRestore = ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--restore-own-playback-session"]);
     if (!scopedRestore.RestoreOwnPlaybackSession) throw new InvalidOperationException("The explicit owned-session restore option did not parse.");
+    var longLease = ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--long-restore-own-playback-session", "--duration", "1800"]);
+    if (!longLease.LongRestoreOwnPlaybackSession || longLease.DurationSeconds != 1800)
+        throw new InvalidOperationException("The explicit 1800-second owned-session lease option did not parse.");
     try
     {
         ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--restore-own-playback-session"]);
@@ -42,6 +57,12 @@ if (args.Length == 1 && args[0] == "--playback-options-test")
     {
         ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--restore-own-playback-session", "--duration", "31"]);
         throw new InvalidOperationException("Session restore accepted a sample longer than 30 seconds.");
+    }
+    catch (ArgumentOutOfRangeException) { }
+    try
+    {
+        ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--long-restore-own-playback-session", "--duration", "1799"]);
+        throw new InvalidOperationException("Long session lease accepted a duration other than exactly 1800 seconds.");
     }
     catch (ArgumentOutOfRangeException) { }
     try
@@ -62,7 +83,7 @@ if (args.Length == 1 && args[0] == "--playback-options-test")
         throw new InvalidOperationException("An extra positional argument was silently accepted.");
     }
     catch (ArgumentException ex) when (ex.Message.Contains("Only one positional output path", StringComparison.Ordinal)) { }
-    Console.WriteLine("Playback option parsing passed: interactive mode validation, unknown flag and extra positional rejection, and --fps60 shorthand; no device or window was started.");
+    Console.WriteLine("Playback option parsing passed: short/1800-second lease constraints, interactive mode validation, unknown flag and extra positional rejection, and --fps60 shorthand; no device or window was started.");
     return;
 }
 if (args.Length == 1 && args[0] == "--playback-session-volume-test")

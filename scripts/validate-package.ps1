@@ -1,17 +1,113 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.2', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.3', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly, [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RestorePreferencesSnapshot)
 
 $ErrorActionPreference = 'Stop'
-if (-not $ContentOnly -and -not $InteractiveDesktop) {
+if (-not $ContentOnly -and -not $InteractiveDesktop -and -not $RestorePreferencesSnapshot) {
     throw '包运行验收会打开窗口、播放声音并操作真实桌面。请安排主机交互时段后显式传入 -InteractiveDesktop；本次未启动应用或安装程序。'
 }
+if ($RestorePreferencesSnapshot -and $ContentOnly) { throw '偏好恢复入口不能与 -ContentOnly 同时使用。' }
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64"
 $validation = Join-Path $repo "artifacts/validation/package-$Version"
 $null = New-Item -ItemType Directory -Path $validation -Force
+$preferenceSnapshotId = [guid]::NewGuid().ToString('N')
+$preferenceSnapshotPath = Join-Path $validation "user-preferences-$preferenceSnapshotId.json"
+$preferenceSnapshotCreated = $false
+$preferenceRestoreFailed = $false
 $report = [ordered]@{ Version=$Version; Scope=$(if ($ContentOnly) { 'content-only' } elseif ($SkipInstallation) { 'portable-only' } else { 'interactive-package' }); StartedUtc=[DateTime]::UtcNow.ToString('O'); Passed=$false; Checks=@(); Limitations=@('本机 Windows 11 x64；不代替没有运行库的干净虚拟机。') }
 if ($ContentOnly) { $report.Limitations += '仅后台检查包内容与哈希，未执行播放、录制或安装卸载，不替代交互运行验收。' }
 else { $report.Limitations += '应用运行验证隔离 PATH 与 DOTNET_ROOT，使用当前真实桌面。' }
+function Get-PreferenceTargets([string]$LocalDataRoot) {
+    $appData = Join-Path $LocalDataRoot 'FrameTrail'
+    return @(
+        [ordered]@{ Name='settings.json'; Path=(Join-Path $appData 'settings.json') },
+        [ordered]@{ Name='recent-projects.json'; Path=(Join-Path $appData 'recent-projects.json') },
+        [ordered]@{ Name='memo.txt'; Path=(Join-Path $appData 'memo.txt') },
+        [ordered]@{ Name='memo.txt.settings.json'; Path=(Join-Path $appData 'memo.txt.settings.json') }
+    )
+}
+function Write-JsonCreateNew([string]$Path, $Value) {
+    $bytes = [Text.Encoding]::UTF8.GetBytes(($Value | ConvertTo-Json -Depth 8))
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+}
+function Write-ValidationReport([string]$Path, $Value, [bool]$PreferenceRestoreFailed) {
+    $Value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Path -Encoding utf8
+    if ($PreferenceRestoreFailed) { throw '用户偏好恢复失败；验证报告已写入，退出码必须为非零。' }
+}
+function Get-PreferenceRecoveryCommand([string]$SnapshotId) {
+    $executable = Join-Path $PSHOME 'pwsh.exe'
+    if (-not [IO.File]::Exists($executable)) { $executable = 'pwsh' }
+    return "& `"$executable`" -NoProfile -File `"$PSCommandPath`" -Version $Version -RestorePreferencesSnapshot $SnapshotId"
+}
+function New-PreferenceSnapshot([string]$Path, [string]$SnapshotId, [string]$LocalDataRoot) {
+    $localData = $LocalDataRoot
+    $files = foreach ($target in Get-PreferenceTargets $localData) {
+        $present = [IO.File]::Exists($target.Path)
+        [ordered]@{ Name=$target.Name; Exists=$present; ContentBase64=$(if ($present) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($target.Path)) } else { $null }) }
+    }
+    Write-JsonCreateNew $Path ([ordered]@{ Version=1; SnapshotId=$SnapshotId; CreatedUtc=[DateTime]::UtcNow.ToString('O'); Files=@($files) })
+}
+function Restore-PreferenceSnapshot([string]$Path, [string]$ExpectedId, [string]$LocalDataRoot) {
+    if (-not [IO.File]::Exists($Path)) { throw "偏好恢复快照不存在：$Path" }
+    $snapshot = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    if ($snapshot.Version -ne 1 -or $snapshot.SnapshotId -ne $ExpectedId -or @($snapshot.Files).Count -ne 4) { throw '偏好恢复快照格式、编号或文件数量无效。' }
+    $localData = $LocalDataRoot
+    $targets = @(Get-PreferenceTargets $localData)
+    $allowedNames = @($targets | ForEach-Object Name)
+    $seen = @{}
+    $validated = [Collections.Generic.List[object]]::new()
+    foreach ($entry in $snapshot.Files) {
+        if ($entry.Name -notin $allowedNames -or $seen.ContainsKey([string]$entry.Name)) { throw "快照包含不允许或重复的目标：$($entry.Name)" }
+        if ($entry.Exists -isnot [bool]) { throw "快照文件存在状态不是布尔值：$($entry.Name)" }
+        $seen[[string]$entry.Name] = $true
+        $target = $targets | Where-Object Name -eq $entry.Name | Select-Object -First 1
+        if ($null -eq $target) { throw "快照目标未映射到固定偏好文件：$($entry.Name)" }
+        $bytes = $null
+        if ($entry.Exists) {
+            if ($entry.ContentBase64 -isnot [string]) { throw "快照文件缺少原始字节：$($entry.Name)" }
+            try { $bytes = [Convert]::FromBase64String($entry.ContentBase64) } catch { throw "快照文件 Base64 无效：$($entry.Name)" }
+        } elseif ($null -ne $entry.ContentBase64) {
+            throw "原先不存在的文件不应包含内容：$($entry.Name)"
+        }
+        $validated.Add([pscustomobject]@{ Name=[string]$entry.Name; Path=[string]$target.Path; Exists=[bool]$entry.Exists; Bytes=$bytes })
+    }
+    if ($seen.Count -ne 4) { throw '偏好恢复快照未覆盖全部固定目标。' }
+    # No user preference is changed until the complete manifest and every byte payload have passed validation.
+    foreach ($entry in $validated) {
+        if ($entry.Exists) {
+            $bytes = [byte[]]$entry.Bytes
+            $parent = Split-Path -Parent $entry.Path
+            $null = New-Item -ItemType Directory -Path $parent -Force
+            $temporary = Join-Path $parent ('.' + [IO.Path]::GetFileName($entry.Path) + '.restore-' + [guid]::NewGuid().ToString('N'))
+            try {
+                [IO.File]::WriteAllBytes($temporary, $bytes)
+                if ([IO.File]::Exists($entry.Path)) { [IO.File]::Move($temporary, $entry.Path, $true) } else { [IO.File]::Move($temporary, $entry.Path) }
+            } finally { if ([IO.File]::Exists($temporary)) { [IO.File]::Delete($temporary) } }
+            $actual = [IO.File]::ReadAllBytes($entry.Path)
+            if ($actual.Length -ne $bytes.Length -or [BitConverter]::ToString($actual) -cne [BitConverter]::ToString($bytes)) { throw "恢复后的字节校验失败：$($entry.Name)" }
+        } else {
+            if ([IO.File]::Exists($entry.Path)) { [IO.File]::Delete($entry.Path) }
+            if ([IO.File]::Exists($entry.Path)) { throw "未能恢复文件原先不存在的状态：$($entry.Name)" }
+        }
+    }
+    return $true
+}
+if ($RestorePreferencesSnapshot) {
+    $restoreId = $RestorePreferencesSnapshot.ToLowerInvariant()
+    $restorePath = Join-Path $validation "user-preferences-$restoreId.json"
+    $restoreReportPath = Join-Path $validation "user-preferences-$restoreId-restore-result.json"
+    try {
+        $null = Restore-PreferenceSnapshot $restorePath $restoreId ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData))
+        $marker = Join-Path $validation "user-preferences-$restoreId.restored"
+        if (-not [IO.File]::Exists($marker)) { Write-JsonCreateNew $marker ([ordered]@{ SnapshotId=$restoreId; RestoredUtc=[DateTime]::UtcNow.ToString('O') }) }
+        [ordered]@{ SnapshotId=$restoreId; Passed=$true; Snapshot=$restorePath; RestoredUtc=[DateTime]::UtcNow.ToString('O') } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $restoreReportPath -Encoding utf8
+        return
+    } catch {
+        [ordered]@{ SnapshotId=$restoreId; Passed=$false; Snapshot=$restorePath; RecoveryCommand=(Get-PreferenceRecoveryCommand $restoreId); Error=$_.Exception.ToString() } | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $restoreReportPath -Encoding utf8
+        throw
+    }
+}
 function Run-OwnedProcess([string]$Exe, [string[]]$Arguments, [bool]$Isolate = $false, [int]$TimeoutSeconds = 180) {
     $start = [Diagnostics.ProcessStartInfo]::new($Exe)
     $start.UseShellExecute = $false
@@ -34,10 +130,10 @@ function Run-OwnedProcess([string]$Exe, [string[]]$Arguments, [bool]$Isolate = $
         if ($process.ExitCode -ne 0) { throw "验证进程失败 ($($process.ExitCode))：$Exe" }
     } finally { $process.Dispose() }
 }
-function Check-Report([string]$Path, [string]$Name) {
+function Check-Report([string]$Path, [string]$Id, [string]$Name) {
     $data = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     if (-not $data.Passed) { throw "$Name 未通过：$($data.Error)" }
-    $report.Checks += [ordered]@{ Name=$Name; Passed=$true; Report=$Path }
+    $report.Checks += [ordered]@{ Id=$Id; Name=$Name; Passed=$true; Report=$Path }
 }
 function Assert-PortableArchive([string]$ArchivePath, [string]$DirectoryPath) {
     # Inspect the archive itself so a stale ZIP cannot inherit a newer directory's result.
@@ -69,20 +165,42 @@ function Assert-PortableArchive([string]$ArchivePath, [string]$DirectoryPath) {
     } finally { $archive.Dispose() }
 }
 try {
+    if (-not $ContentOnly) {
+        $unrestored = @()
+        foreach ($candidate in Get-ChildItem -LiteralPath $validation -Filter 'user-preferences-*.json' -File) {
+            if ($candidate.Name -match '^user-preferences-([0-9a-f]{32})\.json$') {
+                $candidateId = $Matches[1]
+                if (-not (Test-Path -LiteralPath (Join-Path $validation "user-preferences-$candidateId.restored"))) { $unrestored += $candidate }
+            }
+        }
+        if ($unrestored.Count -gt 0) { throw "发现尚未恢复的用户偏好快照，先使用 -RestorePreferencesSnapshot <UUID> 恢复并校验：$($unrestored[0].FullName)" }
+        New-PreferenceSnapshot $preferenceSnapshotPath $preferenceSnapshotId ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData))
+        $preferenceSnapshotCreated = $true
+        $report.PreferenceSnapshotId = $preferenceSnapshotId
+        $report.PreferenceSnapshot = $preferenceSnapshotPath
+        $report.PreferenceRecoveryCommand = Get-PreferenceRecoveryCommand $preferenceSnapshotId
+        $report.Checks += [ordered]@{ Id='preferences-snapshot'; Name='交互验收前保存四个固定用户偏好文件的原始字节与存在状态'; Passed=$true; SnapshotId=$preferenceSnapshotId }
+    }
     $exe = Join-Path $release 'app/FrameTrail.exe'
     $sample = Join-Path $release 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
     foreach ($path in @($exe, $sample, (Join-Path $release 'app/coreclr.dll'), (Join-Path $release 'app/hostfxr.dll'), (Join-Path $release 'app/hostpolicy.dll'), (Join-Path $release 'app/FrameTrail.runtimeconfig.json'), (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
     $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
-    $report.Checks += [ordered]@{ Name='主程序、自包含运行库、原创样例与许可证齐备，ZIP逐文件内容一致'; Passed=$true }
+    $expectedSamples = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md') | Sort-Object
+    $sampleDirectory = Split-Path -Parent $sample
+    $actualSamples = @(Get-ChildItem -LiteralPath $sampleDirectory -Force)
+    if (@($actualSamples | Where-Object { $_.PSIsContainer -or ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -gt 0 -or
+        @(Compare-Object $expectedSamples @($actualSamples.Name | Sort-Object)).Count -gt 0) { throw '演示工程包含非预期文件、目录、链接或缺少固定生成物。' }
+    $report.SampleFilesVerified = $expectedSamples
+    $report.Checks += [ordered]@{ Id='portable-archive-content'; Name='主程序、自包含运行库、原创样例与许可证齐备，ZIP逐文件内容一致'; Passed=$true }
     if (-not $ContentOnly) {
     $playback = Join-Path $validation 'portable-playback.json'
     Run-OwnedProcess $exe @('--open', $sample, '--playback-smoke', $playback) $true
-    Check-Report $playback '隔离开发环境后的便携版有声播放与暂停恢复'
+    Check-Report $playback 'portable-playback' '隔离开发环境后的便携版有声播放与暂停恢复'
     $workflow = Join-Path $validation 'portable-workflow'
     Run-OwnedProcess $exe @('--workflow-smoke', $workflow, '--with-pause', '--with-input-stimulus', '--record-seconds', '6') $true
-    Check-Report (Join-Path $workflow 'workflow-result.json') '便携版真实录制、暂停、编辑、重开及导出'
+    Check-Report (Join-Path $workflow 'workflow-result.json') 'portable-workflow' '便携版真实录制、暂停、编辑、重开及导出'
     if (-not $SkipInstallation) {
         $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9EB9A39E-9EF9-4E70-9D2B-E081ECBC1A68}_is1'
         if (Test-Path -LiteralPath $registry) { throw '存在已安装的 FrameTrail；为保留用户安装，本次跳过自动覆盖。' }
@@ -97,11 +215,11 @@ try {
         $installedSample = Join-Path $install 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
         $installedReport = Join-Path $validation 'installed-playback.json'
         Run-OwnedProcess $installedExe @('--open', $installedSample, '--playback-smoke', $installedReport) $true
-        Check-Report $installedReport 'per-user 安装版样例打开及有声播放'
+        Check-Report $installedReport 'installed-playback' 'per-user 安装版样例打开及有声播放'
         $uninstaller = Join-Path $install 'unins000.exe'
         Run-OwnedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $validation 'uninstall.log')") $false 300
         if ((Test-Path -LiteralPath $registry) -or (Test-Path -LiteralPath $installedExe)) { throw '卸载后仍残留应用主程序或安装注册项。' }
-        $report.Checks += [ordered]@{ Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
+        $report.Checks += [ordered]@{ Id='installed-uninstall'; Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
     }
     $report.Artifacts = @(foreach ($artifactName in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe")) {
@@ -112,7 +230,21 @@ try {
     $report.Passed = $true
 } catch { $report.Error = $_.Exception.ToString(); throw }
 finally {
+    if ($preferenceSnapshotCreated) {
+        try {
+            $null = Restore-PreferenceSnapshot $preferenceSnapshotPath $preferenceSnapshotId ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData))
+            $marker = Join-Path $validation "user-preferences-$preferenceSnapshotId.restored"
+            if (-not [IO.File]::Exists($marker)) { Write-JsonCreateNew $marker ([ordered]@{ SnapshotId=$preferenceSnapshotId; RestoredUtc=[DateTime]::UtcNow.ToString('O') }) }
+            $report.Checks += [ordered]@{ Id='preferences-restored'; Name='交互验收后恢复并逐字节核对四个固定用户偏好文件'; Passed=$true; SnapshotId=$preferenceSnapshotId }
+        } catch {
+            $report.Passed = $false
+            $preferenceRestoreFailed = $true
+            $report.PreferenceRestoreError = $_.Exception.ToString()
+            $report.PreferenceRecoveryCommand = Get-PreferenceRecoveryCommand $preferenceSnapshotId
+            $report.Checks += [ordered]@{ Id='preferences-restored'; Name='交互验收后恢复并逐字节核对四个固定用户偏好文件'; Passed=$false; SnapshotId=$preferenceSnapshotId; SnapshotRetained=$true }
+        }
+    }
     $report.CompletedUtc = [DateTime]::UtcNow.ToString('O')
     $resultName = if ($ContentOnly) { 'content-result.json' } else { 'result.json' }
-    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $validation $resultName) -Encoding utf8
+    Write-ValidationReport (Join-Path $validation $resultName) $report $preferenceRestoreFailed
 }

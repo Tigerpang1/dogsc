@@ -295,67 +295,185 @@ internal static class CaptureScenarios
         var display = (await capture.EnumerateDisplaysAsync()).First(x => x.IsPrimary);
         var width = Math.Min(640, display.Bounds.Width - 160);
         var height = Math.Min(360, display.Bounds.Height - 160);
+        if (width < 160 || height < 120) throw new InvalidOperationException("The primary display is too small for the window-target WGC test.");
         var start = new Point(display.Bounds.X + Math.Max(80, Math.Min(2400, display.Bounds.Width - width - 80)),
             display.Bounds.Y + Math.Max(80, Math.Min(1400, display.Bounds.Height - height - 80)));
-        var window = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
+        await using var window = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height), colorBars: true);
         capture.StateChanged += (_, e) => { Console.WriteLine($"{DateTimeOffset.UtcNow:O} {e.State} ticks={e.StopwatchTicks} detail={e.Detail}"); Console.Out.Flush(); };
         capture.ErrorOccurred += (_, e) => { Console.WriteLine($"ErrorOccurred={e.Message}"); Console.Out.Flush(); };
         string? completedEventPath = null;
-        capture.RecordingCompleted += result => { completedEventPath = result.OutputPath; Console.WriteLine($"RecordingCompleted={result.OutputPath}"); Console.Out.Flush(); };
+        var completedCount = 0;
+        capture.RecordingCompleted += result => { completedEventPath = result.OutputPath; Interlocked.Increment(ref completedCount); Console.WriteLine($"RecordingCompleted={result.OutputPath}"); Console.Out.Flush(); };
 
         var windowRequest = new RecordingRequest(output,
             new CaptureTarget(CaptureTargetKind.Window, window.Handle.ToInt64().ToString("X"), WindowHandle: window.Handle),
             new VideoOptions(30, width, height, EncoderPreference.Software), new AudioOptions(),
             new InputTrackingOptions(true, 60, Path.ChangeExtension(output, ".window-input.jsonl")));
+        var phaseLog = new List<object>();
+        var testTimer = Stopwatch.StartNew();
+        var targetSummaryPath = Path.ChangeExtension(output, ".target.json");
+        void Phase(string name, object? details = null)
+        {
+            var item = new { Name = name, ElapsedSeconds = testTimer.Elapsed.TotalSeconds, Utc = DateTimeOffset.UtcNow, Details = details };
+            phaseLog.Add(item);
+            var progress = new { Utc = DateTimeOffset.UtcNow, Test = "WindowRecordingSource遮挡/移动/缩放验收", PhaseLog = phaseLog };
+            File.WriteAllText(targetSummaryPath, JsonSerializer.Serialize(progress, new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine(JsonSerializer.Serialize(item)); Console.Out.Flush();
+        }
+        var affinityNone = await window.SetDisplayAffinityAsync(0);
+        if (!affinityNone.SetSucceeded || !affinityNone.ReadSucceeded || affinityNone.Actual != 0)
+            throw new InvalidOperationException($"The controlled source HWND must have WDA_NONE before capture: {JsonSerializer.Serialize(affinityNone)}");
+        Phase("source-wda-none-confirmed", affinityNone);
+        Phase("window-recording-starting", new { Handle = $"0x{window.Handle.ToInt64():X}", window.Bounds, width, height });
         await capture.StartAsync(windowRequest);
-        await Task.Delay(TimeSpan.FromSeconds(3));
+        Phase("window-recording-started", new { Handle = $"0x{window.Handle.ToInt64():X}", window.Bounds, width, height });
+        var recordingStartedTicks = Stopwatch.GetTimestamp();
+        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        var beforeCoverActionTicks = Stopwatch.GetTimestamp();
+        var cover = await PatternWindowHost.StartAsync(window.Bounds, solidRed: true);
+        await using var coverLifetime = cover;
+        cover.BringToTopWithoutActivating();
+        var coverShownTicks = Stopwatch.GetTimestamp();
+        await Task.Delay(TimeSpan.FromSeconds(1.5));
+        var coverCloseTicks = Stopwatch.GetTimestamp();
+        var coverBounds = cover.Bounds;
+        Phase("opaque-cover-shown", new { Handle = $"0x{cover.Handle.ToInt64():X}", coverBounds, SourceBounds = window.Bounds });
+        await cover.CloseAsync();
+        await Task.Delay(TimeSpan.FromSeconds(0.8));
         var moved = new Point(start.X + 120, start.Y + 60);
         await window.MoveToAsync(moved);
-        await Task.Delay(TimeSpan.FromSeconds(3));
+        await window.ResizeToAsync(width - 40, height - 20);
+        var resizeCompleteTicks = Stopwatch.GetTimestamp();
+        await Task.Delay(TimeSpan.FromSeconds(2.0));
+        var stoppingTicks = Stopwatch.GetTimestamp();
+        Phase("window-moved-and-resized", new { moved, Bounds = window.Bounds });
         var windowRect = window.Bounds;
-        await capture.StopAsync();
+        var result = await capture.StopAsync();
+        var windowOutputEvent = completedEventPath;
+        Phase("window-recording-stopped", new { result.OutputPath, result.Width, result.Height, result.FirstFrameObservedStopwatchTicks,
+            result.FirstFrameNumber, result.FirstFrameSystemTimestampUnixMilliseconds });
         await window.CloseAsync();
-        Console.WriteLine($"Window target capture completed; initial=({start.X},{start.Y},{width},{height}), moved=({moved.X},{moved.Y}), finalBounds={windowRect}.");
+
+        var ffmpeg = ResolveFfmpegExe();
+        var videoProbe = GetMediaProbeLine(output);
+        var duration = GetMediaDuration(output);
+        var failures = new List<string>();
+        var phaseSamples = new Dictionary<string, string>(StringComparer.Ordinal);
+        var firstFrameTicks = result.FirstFrameObservedStopwatchTicks;
+        if (firstFrameTicks is null || result.StopwatchFrequency <= 0)
+            failures.Add("The recording result did not provide a first-image Stopwatch anchor and frequency.");
+        double ToVideoSeconds(long ticks) => firstFrameTicks is long anchor
+            ? (ticks - anchor) / (double)result.StopwatchFrequency
+            : double.NaN;
+        var beforeCover = ToVideoSeconds(recordingStartedTicks + (beforeCoverActionTicks - recordingStartedTicks) / 2);
+        var duringCover = ToVideoSeconds(coverShownTicks + (coverCloseTicks - coverShownTicks) / 2);
+        var afterResize = ToVideoSeconds(resizeCompleteTicks + (stoppingTicks - resizeCompleteTicks) / 2);
+        var sampleTimes = new Dictionary<string, double>(StringComparer.Ordinal)
+        {
+            ["beforeCover"] = beforeCover, ["duringCover"] = duringCover, ["afterResize"] = afterResize
+        };
+        var expectedPalette = new[]
+        {
+            (Name: "topCyan", X: width / 4, Y: height / 6, R: 20, G: 160, B: 220),
+            (Name: "middleGreen", X: width / 4, Y: height / 2, R: 30, G: 190, B: 50),
+            (Name: "bottomOrange", X: width / 4, Y: height * 5 / 6, R: 180, G: 80, B: 30)
+        };
+        var blackNegativeControlRejected = expectedPalette.All(swatch => !IsNearRgb((0, 0, 0), swatch.R, swatch.G, swatch.B, 40));
+        if (!blackNegativeControlRejected) throw new InvalidOperationException("The color assertion accepted a pure-black negative control.");
+        async Task ValidatePaletteAsync(string phase, double atSeconds)
+        {
+            if (!double.IsFinite(atSeconds) || atSeconds < 0.15 || atSeconds > duration - 0.4)
+            {
+                failures.Add($"The {phase} sample time {atSeconds:F3}s is outside a safe frame range for {duration:F3}s media.");
+                return;
+            }
+            foreach (var swatch in expectedPalette)
+            {
+                try
+                {
+                    var pixel = await ReadPixelAtVideoAsync(ffmpeg, output, atSeconds, swatch.X, swatch.Y);
+                    phaseSamples[$"{phase}.{swatch.Name}"] = pixel;
+                    if (!IsNearRgb(ParseRgb(pixel), swatch.R, swatch.G, swatch.B, 40))
+                        failures.Add($"The {phase} {swatch.Name} sample at {atSeconds:F3}s differs from the source color: {pixel}.");
+                }
+                catch (Exception ex)
+                {
+                    phaseSamples[$"{phase}.{swatch.Name}"] = "decode-error";
+                    failures.Add($"Could not decode {phase} {swatch.Name} pixel at {atSeconds:F3}s: {ex.Message}");
+                }
+            }
+        }
+        await ValidatePaletteAsync("beforeCover", beforeCover);
+        await ValidatePaletteAsync("duringCover", duringCover);
+        await ValidatePaletteAsync("afterResize", afterResize);
+        var covered = coverBounds.Width == width && coverBounds.Height == height && coverBounds == new Rectangle(start.X, start.Y, width, height);
+        if (!File.Exists(output) || new FileInfo(output).Length == 0) failures.Add("Window capture did not produce a non-empty video file.");
+        if (duration < 4.5) failures.Add($"Window capture duration is unexpectedly short: {duration:F3}s.");
+        if (!HasExpectedVideoProbe(videoProbe, width, height)) failures.Add($"ffprobe did not confirm an H.264 {width}x{height} video stream: {videoProbe}");
+        if (!covered) failures.Add("The red occlusion window did not cover the source test window bounds.");
+        if (!string.Equals(completedEventPath, result.OutputPath, StringComparison.OrdinalIgnoreCase)) failures.Add("RecordingCompleted did not report the same output as StopAsync.");
+        var targetSummary = new
+        {
+            Utc = DateTimeOffset.UtcNow, OperatingSystem = Environment.OSVersion.VersionString,
+            SourceType = "ScreenRecorderLib.WindowRecordingSource", SourceHandle = $"0x{window.Handle.ToInt64():X}",
+            WdaNone = affinityNone,
+            InitialBounds = new Rectangle(start.X, start.Y, width, height), CoverBounds = coverBounds, FinalBounds = windowRect,
+            Move = moved, Resize = new { Width = width - 40, Height = height - 20 }, Output = output,
+            RecordingResult = result, RecordingCompletedOutput = windowOutputEvent, DurationSeconds = duration,
+            Probe = videoProbe, Samples = phaseSamples, SampleTimes = sampleTimes, BlackNegativeControlRejected = blackNegativeControlRejected,
+            PhaseLog = phaseLog, Failures = failures
+        };
+        await File.WriteAllTextAsync(targetSummaryPath, JsonSerializer.Serialize(targetSummary, new JsonSerializerOptions { WriteIndented = true }));
+        Console.WriteLine($"Window WGC target report={targetSummaryPath}; duration={duration:F3}s; probe={videoProbe}; samples={JsonSerializer.Serialize(phaseSamples)}.");
+        if (failures.Count > 0) throw new InvalidOperationException("Window WGC target test failed: " + string.Join(" | ", failures));
+
         try
         {
             var invalidPath = Path.ChangeExtension(output, ".closed-window.mp4");
             await capture.StartAsync(windowRequest with { OutputPath = invalidPath });
-            await capture.StopAsync();
-            Console.WriteLine("Closed target unexpectedly accepted.");
+            try { await capture.StopAsync(); } catch { }
+            throw new InvalidOperationException("Closed target before start was accepted; expected request validation to reject it.");
         }
-        catch (Exception ex) { Console.WriteLine($"Closed target before start: rejected ({ex.GetType().Name}: {ex.Message})"); }
+        catch (ArgumentException ex)
+        {
+            if (!ex.Message.Contains("Window handle is no longer valid or is minimized", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The closed-window start failed for an unrelated reason, so handle rejection was not verified.", ex);
+            Phase("closed-target-rejected", new { ExceptionType = ex.GetType().Name, Message = ex.Message });
+        }
 
-        var closingWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
+        await using var closingWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
         var closingPath = Path.ChangeExtension(output, ".closed-during-recording.mp4");
+        var beforeClosedCount = Volatile.Read(ref completedCount);
         await capture.StartAsync(windowRequest with { OutputPath = closingPath,
             Target = new CaptureTarget(CaptureTargetKind.Window, closingWindow.Handle.ToInt64().ToString("X"), WindowHandle: closingWindow.Handle) });
-        await Task.Delay(TimeSpan.FromSeconds(2));
+        await Task.Delay(TimeSpan.FromSeconds(1));
         await closingWindow.CloseAsync();
-        await Task.Delay(TimeSpan.FromSeconds(2));
-        try
-        {
-            var closedResult = await capture.StopAsync();
-            Console.WriteLine($"Window closed during capture; stop completed with file={closedResult.OutputPath}; eventPath={completedEventPath}; latestResult={capture.LatestCompletedResult?.OutputPath}; eventMatches={string.Equals(completedEventPath, closedResult.OutputPath, StringComparison.OrdinalIgnoreCase)}.");
-        }
-        catch (Exception ex) { Console.WriteLine($"Window closed during capture; stop reported {ex.GetType().Name}: {ex.Message}"); }
+        await WaitForAutoCompletionAsync(() => Volatile.Read(ref completedCount), beforeClosedCount, TimeSpan.FromSeconds(10));
+        var closedResult = capture.LatestCompletedResult;
+        if (capture.State != CaptureState.Completed || closedResult is null || !string.Equals(completedEventPath, closingPath, StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(closingPath) || new FileInfo(closingPath).Length == 0)
+            throw new InvalidOperationException("Closing a captured window did not auto-finalize a non-empty recording and raise RecordingCompleted.");
+        var closedOutputEvent = completedEventPath;
+        Phase("window-close-auto-finalized", new { State = capture.State, Output = closedResult.OutputPath, Event = completedEventPath });
 
-        var minimizingWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
+        await using var minimizingWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
         var minimizingPath = Path.ChangeExtension(output, ".minimized-during-recording.mp4");
+        var beforeMinimizedCount = Volatile.Read(ref completedCount);
         await capture.StartAsync(windowRequest with { OutputPath = minimizingPath,
             Target = new CaptureTarget(CaptureTargetKind.Window, minimizingWindow.Handle.ToInt64().ToString("X"), WindowHandle: minimizingWindow.Handle) });
         await Task.Delay(TimeSpan.FromSeconds(1));
         await minimizingWindow.MinimizeAsync();
-        await Task.Delay(TimeSpan.FromSeconds(1));
-        try
-        {
-            var minimizedResult = await capture.StopAsync();
-            Console.WriteLine($"Window minimized during capture; stop completed with file={minimizedResult.OutputPath}.");
-        }
-        catch (Exception ex) { Console.WriteLine($"Window minimized during capture; recorder auto-finalized ({ex.GetType().Name}: {ex.Message})."); }
+        await WaitForAutoCompletionAsync(() => Volatile.Read(ref completedCount), beforeMinimizedCount, TimeSpan.FromSeconds(10));
+        var minimizedResult = capture.LatestCompletedResult;
+        if (capture.State != CaptureState.Completed || minimizedResult is null || !string.Equals(completedEventPath, minimizingPath, StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(minimizingPath) || new FileInfo(minimizingPath).Length == 0)
+            throw new InvalidOperationException("Minimizing a captured window did not auto-finalize a non-empty recording and raise RecordingCompleted.");
+        var minimizedOutputEvent = completedEventPath;
+        Phase("window-minimize-auto-finalized", new { State = capture.State, Output = minimizedResult.OutputPath, Event = completedEventPath });
         await minimizingWindow.CloseAsync();
 
         var regionOutput = Path.Combine(Path.GetDirectoryName(output)!, Path.GetFileNameWithoutExtension(output) + "-region.mp4");
-        var regionWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
+        await using var regionWindow = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height));
         var bounds = regionWindow.Bounds;
         await capture.StartAsync(new RecordingRequest(regionOutput,
             new CaptureTarget(CaptureTargetKind.Region, display.Id,
@@ -365,7 +483,41 @@ internal static class CaptureScenarios
         await Task.Delay(TimeSpan.FromSeconds(5));
         var regionResult = await capture.StopAsync();
         await regionWindow.CloseAsync();
+        Phase("region-recording-completed", new { Output = regionResult.OutputPath, regionResult.Width, regionResult.Height });
         Console.WriteLine($"Region target capture completed; physical bounds={bounds}; output={regionResult.OutputPath}; output={regionResult.Width}x{regionResult.Height}.");
+        var regionProbe = GetMediaProbeLine(regionOutput);
+        if (!File.Exists(regionOutput) || new FileInfo(regionOutput).Length == 0 || !HasExpectedVideoProbe(regionProbe, width, height)
+            || GetMediaDuration(regionOutput) < 4 || !string.Equals(completedEventPath, regionOutput, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException($"Region DDA regression did not produce the expected decodable video: {regionProbe}");
+        var finalTargetSummary = new
+        {
+            Utc = DateTimeOffset.UtcNow, OperatingSystem = Environment.OSVersion.VersionString,
+            Test = "ScreenRecorderLib WindowRecordingSource with controlled pattern and red occlusion window",
+            WindowCapture = new { Output = output, SourceHandle = $"0x{window.Handle.ToInt64():X}", InitialBounds = new Rectangle(start.X, start.Y, width, height),
+                WdaNone = affinityNone,
+                CoverBounds = coverBounds, FinalBounds = windowRect, Move = moved, Resize = new { Width = width - 40, Height = height - 20 },
+                DurationSeconds = duration, Probe = videoProbe, Samples = phaseSamples, SampleTimes = sampleTimes, BlackNegativeControlRejected = blackNegativeControlRejected,
+                RecordingCompletedOutput = windowOutputEvent, Failures = failures },
+            ClosedTargetRejected = true, ClosedDuringRecording = new { Output = closedResult.OutputPath, Event = closedOutputEvent },
+            MinimizedDuringRecording = new { Output = minimizedResult.OutputPath, Event = minimizedOutputEvent },
+            RegionRegression = new { Output = regionResult.OutputPath, regionResult.Width, regionResult.Height, Probe = regionProbe }, PhaseLog = phaseLog
+        };
+        await File.WriteAllTextAsync(targetSummaryPath, JsonSerializer.Serialize(finalTargetSummary, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static bool HasExpectedVideoProbe(string probe, int width, int height)
+    {
+        var fields = probe.Split(',', StringSplitOptions.TrimEntries);
+        return fields.Length >= 3 && fields[0].Equals("h264", StringComparison.OrdinalIgnoreCase)
+            && int.TryParse(fields[1], out var actualWidth) && actualWidth == width
+            && int.TryParse(fields[2], out var actualHeight) && actualHeight == height;
+    }
+
+    private static async Task WaitForAutoCompletionAsync(Func<int> count, int previousCount, TimeSpan timeout)
+    {
+        var timer = Stopwatch.StartNew();
+        while (count() == previousCount && timer.Elapsed < timeout) await Task.Delay(50);
+        if (count() == previousCount) throw new TimeoutException("The captured window did not auto-finalize before the timeout.");
     }
 
     private static async Task RunExclusionTestAsync(ProbeOptions options)
@@ -435,6 +587,22 @@ internal static class CaptureScenarios
             "-frames:v", "1", "-vf", $"crop=2:2:{width / 2}:{height / 2}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
         return FormatRgb(pixel);
     }
+
+    private static async Task<string> ReadPixelAtVideoAsync(string ffmpeg, string path, double seconds, int x, int y)
+    {
+        var pixel = await RunRawPixelCommandAsync(ffmpeg, ["-hide_banner", "-loglevel", "error", "-ss",
+            seconds.ToString("F3", System.Globalization.CultureInfo.InvariantCulture), "-i", path,
+            "-frames:v", "1", "-vf", $"crop=2:2:{x}:{y}", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]);
+        return FormatRgb(pixel);
+    }
+
+    private static (int R, int G, int B) ParseRgb(string value) =>
+        value.Length == 7 && value[0] == '#'
+            ? (Convert.ToInt32(value.Substring(1, 2), 16), Convert.ToInt32(value.Substring(3, 2), 16), Convert.ToInt32(value.Substring(5, 2), 16))
+            : throw new FormatException($"Unexpected RGB sample: {value}");
+
+    private static bool IsNearRgb((int R, int G, int B) actual, int red, int green, int blue, int tolerance) =>
+        Math.Abs(actual.R - red) <= tolerance && Math.Abs(actual.G - green) <= tolerance && Math.Abs(actual.B - blue) <= tolerance;
 
     private static async Task<string> CaptureGdiCenterPixelAsync(string ffmpeg, Rectangle bounds)
     {
@@ -617,13 +785,15 @@ internal static class CaptureScenarios
         double? inputActivityChangeElapsedSeconds = null;
         PlaybackSessionVolumeLease? playbackSessionLease = null;
         PlaybackSessionVolumeResult? playbackSessionVolumeResult = null;
+        var playbackSessionObservations = new List<PlaybackSessionVolumeObservation>();
         using var player = new Process { StartInfo = new ProcessStartInfo(ffplay)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
             ArgumentList = { "-autoexit", "-alwaysontop", "-noborder", "-hide_banner", "-loglevel", "error" }
         }};
         if (options.LoopPlayback) foreach (var argument in new[] { "-loop", "0" }) player.StartInfo.ArgumentList.Add(argument);
-        if (options.RestoreOwnPlaybackSession) foreach (var argument in new[] { "-volume", "3" }) player.StartInfo.ArgumentList.Add(argument);
+        var ownsPlaybackSession = options.RestoreOwnPlaybackSession || options.LongRestoreOwnPlaybackSession;
+        if (ownsPlaybackSession) foreach (var argument in new[] { "-volume", "3" }) player.StartInfo.ArgumentList.Add(argument);
         if (options.RegionPlayback) foreach (var argument in new[] { "-x", bounds.Width.ToString(), "-y", bounds.Height.ToString(), "-left", bounds.X.ToString(), "-top", bounds.Y.ToString() }) player.StartInfo.ArgumentList.Add(argument);
         else player.StartInfo.ArgumentList.Add("-fs");
         player.StartInfo.ArgumentList.Add(fixture);
@@ -632,11 +802,11 @@ internal static class CaptureScenarios
             if (!player.Start()) throw new InvalidOperationException("Could not start ffplay.");
             stderrTask = player.StandardError.ReadToEndAsync();
             await Task.Delay(300);
-            if (options.RestoreOwnPlaybackSession)
+            if (ownsPlaybackSession)
             {
                 playbackSessionLease = PlaybackSessionVolumeLease.Apply(
-                    new NAudioPlaybackAudioSessionProvider(), (uint)player.Id, loopback.Id, temporaryVolume: 0.03f);
-                Console.WriteLine($"Temporarily unmuted only ffplay PID={player.Id} at 3% session volume on selected loopback endpoint; original mute/volume will be restored in cleanup.");
+                    new NAudioPlaybackAudioSessionProvider(), (uint)player.Id, loopback.Id, temporaryVolume: 1.0f);
+                Console.WriteLine($"Temporarily unmuted only ffplay PID={player.Id} at 100% session volume; ffplay's own volume is 3%, so total playback remains limited to 3%. Original mute/volume will be restored in cleanup.");
             }
             var targetPlayerBounds = options.RegionPlayback
                 ? new Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height)
@@ -657,6 +827,11 @@ internal static class CaptureScenarios
                 Console.WriteLine($"Interactive playback activated own HWND once; GetLastInputInfo baseline tick={baseline}. Any subsequent system input activity will abort the run without reading key or text values.");
             }
             var nextRoiCheck = 5d;
+            var nextLeaseCheck = 5d;
+            var leaseMonitor = options.LongRestoreOwnPlaybackSession
+                ? new PlaybackSessionVolumeMonitor((uint)player.Id, loopback.Id, requestedVolume: 1.0f)
+                : null;
+            Stopwatch? playbackElapsed = null;
             bool? previousForeground = null;
             void CheckPlayerFocus(double sampleElapsed)
             {
@@ -701,15 +876,26 @@ internal static class CaptureScenarios
             Console.WriteLine("Loopback audio capture started.");
             if (options.LoopPlayback)
             {
-                var elapsed = Stopwatch.StartNew();
-                while (elapsed.Elapsed.TotalSeconds < options.DurationSeconds)
+                playbackElapsed = Stopwatch.StartNew();
+                while (playbackElapsed.Elapsed.TotalSeconds < options.DurationSeconds)
                 {
-                    var remainingSeconds = options.DurationSeconds - elapsed.Elapsed.TotalSeconds;
+                    var remainingSeconds = options.DurationSeconds - playbackElapsed.Elapsed.TotalSeconds;
                     await Task.Delay(TimeSpan.FromSeconds(Math.Min(0.25, Math.Max(0.05, remainingSeconds))));
                     if (player.HasExited) throw new InvalidOperationException("The controlled ffplay stimulus exited before capture completed.");
-                    var sampleElapsed = elapsed.Elapsed.TotalSeconds;
+                    var sampleElapsed = playbackElapsed.Elapsed.TotalSeconds;
                     CheckPlayerFocus(sampleElapsed);
                     CheckRoi(sampleElapsed);
+                    if (leaseMonitor is not null && sampleElapsed >= nextLeaseCheck)
+                    {
+                        if (sampleElapsed - nextLeaseCheck > 1.0)
+                            throw new TimeoutException($"Owned ffplay session monitor missed its five-second deadline by {sampleElapsed - nextLeaseCheck:F3}s.");
+                        using var monitorProvider = new NAudioPlaybackAudioSessionProvider();
+                        var observation = leaseMonitor.Observe(monitorProvider, sampleElapsed);
+                        playbackSessionObservations.Add(observation);
+                        nextLeaseCheck += 5;
+                        if (playbackSessionObservations.Count % 12 == 0)
+                            Console.WriteLine($"Verified owned ffplay PID={observation.ProcessId} route/session volume at {observation.ElapsedSeconds:F0}s; checks={playbackSessionObservations.Count}.");
+                    }
                 }
             }
             else
@@ -724,6 +910,19 @@ internal static class CaptureScenarios
                 }
                 if (!player.HasExited) throw new TimeoutException("ffplay did not exit within the expected playback duration.");
                 await player.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            if (leaseMonitor is not null && (playbackSessionObservations.Count == 0 || playbackSessionObservations[^1].ElapsedSeconds < options.DurationSeconds))
+            {
+                var finalElapsed = playbackElapsed?.Elapsed.TotalSeconds
+                    ?? throw new InvalidOperationException("Long playback lease has no active elapsed-time clock.");
+                if (finalElapsed < options.DurationSeconds)
+                    throw new InvalidOperationException($"Final playback lease observation occurred before the requested duration: {finalElapsed:F3}s.");
+                if (finalElapsed - nextLeaseCheck > 1.0)
+                    throw new TimeoutException($"Final owned ffplay session observation missed its five-second deadline by {finalElapsed - nextLeaseCheck:F3}s.");
+                using var finalMonitorProvider = new NAudioPlaybackAudioSessionProvider();
+                var finalObservation = leaseMonitor.Observe(finalMonitorProvider, finalElapsed);
+                playbackSessionObservations.Add(finalObservation);
+                Console.WriteLine($"Verified final owned ffplay PID={finalObservation.ProcessId} route/session volume at {finalObservation.ElapsedSeconds:F3}s; checks={playbackSessionObservations.Count}.");
             }
             Console.WriteLine("Playback duration completed; stopping screen capture.");
             var stderr = string.Empty;
@@ -748,6 +947,21 @@ internal static class CaptureScenarios
             }
             if (playbackSessionVolumeResult is { RestorationErrors.Count: > 0 })
                 throw new InvalidOperationException("The owned ffplay session did not restore its original mute/volume state; see the failure report.");
+            var firstLeaseObservationSeconds = playbackSessionObservations.Count > 0 ? playbackSessionObservations[0].ElapsedSeconds : (double?)null;
+            var lastLeaseObservationSeconds = playbackSessionObservations.Count > 0 ? playbackSessionObservations[^1].ElapsedSeconds : (double?)null;
+            var leaseObservationSpanSeconds = playbackSessionObservations.Count > 1
+                ? playbackSessionObservations[^1].ElapsedSeconds - playbackSessionObservations[0].ElapsedSeconds
+                : 0d;
+            if (options.LongRestoreOwnPlaybackSession &&
+                (playbackSessionObservations.Count != 360 ||
+                 firstLeaseObservationSeconds is not double firstObservation || firstObservation > 6.0 ||
+                 lastLeaseObservationSeconds is not double lastObservation || lastObservation < options.DurationSeconds ||
+                 leaseObservationSpanSeconds < options.DurationSeconds - 6.0 ||
+                 playbackSessionVolumeResult is null ||
+                 playbackSessionVolumeResult.RestoredMute != playbackSessionVolumeResult.OriginalMute ||
+                 playbackSessionVolumeResult.RestoredVolume is not float restoredPlaybackVolume ||
+                 Math.Abs(restoredPlaybackVolume - playbackSessionVolumeResult.OriginalVolume) > 0.0001f))
+                throw new InvalidOperationException($"The 1800-second owned ffplay session lease did not complete 360 five-second checks spanning the requested duration and restore its original values; observed {playbackSessionObservations.Count} checks, first={firstLeaseObservationSeconds}, last={lastLeaseObservationSeconds}, span={leaseObservationSpanSeconds:F3}s.");
             if (options.LoopPlayback) stderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(5));
             await File.WriteAllTextAsync(ffplayStderrPath, stderr);
             Console.WriteLine("Controlled player stopped; building result summary.");
@@ -763,6 +977,7 @@ internal static class CaptureScenarios
             else Console.WriteLine($"Loopback packet diagnostics sidecar missing: {diagnosticsPath}");
             var summary = new
             {
+                ScreenResult = screenResult, AudioResult = audioResult,
                 screenResult.OutputPath, AudioPath = audioResult.Handle.MediaPath, Fixture = fixture,
                 screenResult.StartStopwatchTicks, screenResult.StopStopwatchTicks, screenResult.StopwatchFrequency,
                 screenResult.FirstFrameObservedStopwatchTicks, AudioStartStopwatchTicks = audioResult.Handle.StartStopwatchTicks,
@@ -773,8 +988,23 @@ internal static class CaptureScenarios
                 DdagrabOffset = options.RegionPlayback ? new Point(bounds.X - display.Bounds.X, bounds.Y - display.Bounds.Y) : Point.Empty,
                 AudioWarnings = audioResult.Warnings, screenResult.Warnings, FfplayStderrPath = ffplayStderrPath,
                 AudioPacketDiagnosticsPath = diagnosticsPath, AudioPacketDiagnostics = audioPacketDiagnostics,
-                PlaybackSessionOverrideRequested = options.RestoreOwnPlaybackSession,
+                PlaybackSessionOverrideRequested = ownsPlaybackSession,
                 PlaybackSessionOverride = playbackSessionVolumeResult,
+                PlaybackSessionLease = options.LongRestoreOwnPlaybackSession ? new
+                {
+                    Policy = "exact ffplay PID only; selected loopback endpoint only; 3% ffplay gain; temporary process session unmuted at 100%; verify every five seconds; restore original session state before killing ffplay",
+                    DurationSeconds = options.DurationSeconds,
+                    MonitorIntervalSeconds = 5,
+                    ObservationCount = playbackSessionObservations.Count,
+                    FirstObservationElapsedSeconds = firstLeaseObservationSeconds,
+                    LastObservationElapsedSeconds = lastLeaseObservationSeconds,
+                    ObservationSpanSeconds = leaseObservationSpanSeconds,
+                    Observations = playbackSessionObservations,
+                    RestorationSucceeded = playbackSessionVolumeResult is { RestorationErrors.Count: 0 }
+                        && playbackSessionVolumeResult.RestoredMute == playbackSessionVolumeResult.OriginalMute
+                        && playbackSessionVolumeResult.RestoredVolume is float restoredVolume
+                        && Math.Abs(restoredVolume - playbackSessionVolumeResult.OriginalVolume) <= 0.0001f
+                } : null,
                 FfplayExitCode = player.HasExited ? player.ExitCode : (int?)null,
                 PlayerForegroundSamples = foregroundSampleCount, PlayerForegroundObservedSamples = foregroundObservedCount,
                 PlayerForegroundTransitions = foregroundTransitionCount, FirstForegroundElapsedSeconds = firstForegroundElapsedSeconds,
@@ -787,6 +1017,26 @@ internal static class CaptureScenarios
             };
             var json = JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(Path.ChangeExtension(output, ".sync-playback.json"), json);
+            if (options.LongRestoreOwnPlaybackSession)
+                await File.WriteAllTextAsync(Path.ChangeExtension(output, ".playback-lease.json"), JsonSerializer.Serialize(new
+                {
+                    Status = "completed",
+                    ProcessId = (uint)player.Id,
+                    SelectedEndpointId = loopback.Id,
+                    Fixture = fixture,
+                    DurationSeconds = options.DurationSeconds,
+                    MonitorIntervalSeconds = 5,
+                    InitialLease = playbackSessionVolumeResult,
+                    ObservationCount = playbackSessionObservations.Count,
+                    FirstObservationElapsedSeconds = firstLeaseObservationSeconds,
+                    LastObservationElapsedSeconds = lastLeaseObservationSeconds,
+                    ObservationSpanSeconds = leaseObservationSpanSeconds,
+                    Observations = playbackSessionObservations,
+                    Restored = playbackSessionVolumeResult is { RestorationErrors.Count: 0 }
+                        && playbackSessionVolumeResult.RestoredMute == playbackSessionVolumeResult.OriginalMute
+                        && playbackSessionVolumeResult.RestoredVolume is float leaseSidecarRestoredVolume
+                        && Math.Abs(leaseSidecarRestoredVolume - playbackSessionVolumeResult.OriginalVolume) <= 0.0001f
+                }, new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine(json);
         }
         catch (Exception ex)
@@ -827,8 +1077,16 @@ internal static class CaptureScenarios
                 var failureReport = new
                 {
                     Status = "aborted-or-failed", Error = ex.ToString(), FfplayStderrPath = ffplayStderrPath,
-                    PlaybackSessionOverrideRequested = options.RestoreOwnPlaybackSession,
+                    PlaybackSessionOverrideRequested = ownsPlaybackSession,
                     PlaybackSessionOverride = playbackSessionVolumeResult,
+                    PlaybackSessionLease = options.LongRestoreOwnPlaybackSession ? new
+                    {
+                        Policy = "exact ffplay PID only; selected loopback endpoint only; verify unmuted 100% session volume every five seconds; restore original state",
+                        DurationSeconds = options.DurationSeconds,
+                        MonitorIntervalSeconds = 5,
+                        ObservationCount = playbackSessionObservations.Count,
+                        Observations = playbackSessionObservations
+                    } : null,
                     PlayerForegroundSamples = foregroundSampleCount, PlayerForegroundObservedSamples = foregroundObservedCount,
                     PlayerForegroundTransitions = foregroundTransitionCount, FirstForegroundElapsedSeconds = firstForegroundElapsedSeconds,
                     PlaybackMode = options.InteractivePlayback ? "interactive-getlastinputinfo" : "nonactivating-foreground-guard",
@@ -839,6 +1097,21 @@ internal static class CaptureScenarios
                         : "No keystrokes or user text are sampled; any observed ffplay foreground state aborts the controlled run."
                 };
                 await File.WriteAllTextAsync(Path.ChangeExtension(output, ".sync-playback.failure.json"), JsonSerializer.Serialize(failureReport, new JsonSerializerOptions { WriteIndented = true }));
+                if (options.LongRestoreOwnPlaybackSession)
+                    await File.WriteAllTextAsync(Path.ChangeExtension(output, ".playback-lease.json"), JsonSerializer.Serialize(new
+                    {
+                        Status = "aborted-or-failed",
+                        Error = ex.ToString(),
+                        ProcessId = (uint)player.Id,
+                        SelectedEndpointId = loopback.Id,
+                        Fixture = fixture,
+                        DurationSeconds = options.DurationSeconds,
+                        MonitorIntervalSeconds = 5,
+                        InitialLease = playbackSessionVolumeResult,
+                        ObservationCount = playbackSessionObservations.Count,
+                        Observations = playbackSessionObservations,
+                        RestoreErrors = playbackSessionVolumeResult?.RestorationErrors ?? []
+                    }, new JsonSerializerOptions { WriteIndented = true }));
             }
             catch { }
             throw;
@@ -1063,12 +1336,13 @@ internal sealed class PatternWindow : Form
     private bool _flash;
     private readonly bool _animate;
     private readonly bool _solidRed;
+    private readonly bool _colorBars;
     private readonly string _affinityResultPath;
     private readonly System.Windows.Forms.Timer? _animationTimer;
     private int _animationFrame;
-    internal PatternWindow(Rectangle bounds, bool animate, bool solidRed, string affinityResultPath)
+    internal PatternWindow(Rectangle bounds, bool animate, bool solidRed, string affinityResultPath, bool colorBars)
     {
-        _animate = animate; _solidRed = solidRed; _affinityResultPath = affinityResultPath;
+        _animate = animate; _solidRed = solidRed; _affinityResultPath = affinityResultPath; _colorBars = colorBars;
         FormBorderStyle = FormBorderStyle.None; StartPosition = FormStartPosition.Manual; Bounds = bounds;
         Text = "FrameTrail Capture Probe Pattern";
         TopMost = true; ShowInTaskbar = false; BackColor = solidRed ? Color.Red : Color.FromArgb(12, 20, 36);
@@ -1097,6 +1371,17 @@ internal sealed class PatternWindow : Form
     {
         base.OnPaint(e);
         if (_solidRed) { e.Graphics.Clear(Color.Red); return; }
+        if (_colorBars)
+        {
+            using var cyan = new SolidBrush(Color.FromArgb(20, 160, 220));
+            using var green = new SolidBrush(Color.FromArgb(30, 190, 50));
+            using var orange = new SolidBrush(Color.FromArgb(180, 80, 30));
+            var bandHeight = Height / 3;
+            e.Graphics.FillRectangle(cyan, 0, 0, Width, bandHeight);
+            e.Graphics.FillRectangle(green, 0, bandHeight, Width, bandHeight);
+            e.Graphics.FillRectangle(orange, 0, bandHeight * 2, Width, Height - bandHeight * 2);
+            return;
+        }
         e.Graphics.Clear(_flash ? Color.White : Color.FromArgb(12, 20, 36));
         using var brush = new SolidBrush(_flash ? Color.Black : Color.LimeGreen);
         var x = _animate ? (_animationFrame * 13) % Math.Max(1, Width - Width / 5) : Width / 3;
@@ -1110,7 +1395,7 @@ internal sealed class PatternWindow : Form
 
 internal static class PatternWindowHost
 {
-    internal static async Task<PatternWindowController> StartAsync(Rectangle bounds, bool animate = false, bool solidRed = false)
+    internal static async Task<PatternWindowController> StartAsync(Rectangle bounds, bool animate = false, bool solidRed = false, bool colorBars = false)
     {
         var readyPath = Path.Combine(Path.GetTempPath(), $"frametrail-pattern-{Guid.NewGuid():N}.txt");
         var affinityResultPath = readyPath + ".affinity.json";
@@ -1126,6 +1411,7 @@ internal static class PatternWindowHost
         info.ArgumentList.Add(animate ? "--animate" : "--static");
         info.ArgumentList.Add(solidRed ? "--solid-red" : "--pattern");
         info.ArgumentList.Add(affinityResultPath);
+        info.ArgumentList.Add(colorBars ? "--color-bars" : "--default-pattern");
         var process = Process.Start(info) ?? throw new InvalidOperationException("Could not start the controlled test window process.");
         var timeout = Stopwatch.StartNew();
         while (!File.Exists(readyPath) && !process.HasExited && timeout.Elapsed < TimeSpan.FromSeconds(10))
@@ -1147,7 +1433,8 @@ internal static class PatternWindowHost
         var animate = args.Length > 6 && args[6] == "--animate";
         var solidRed = args.Length > 7 && args[7] == "--solid-red";
         var affinityResultPath = args.Length > 8 ? args[8] : Path.Combine(Path.GetTempPath(), $"frametrail-affinity-{Guid.NewGuid():N}.json");
-        var window = new PatternWindow(bounds, animate, solidRed, affinityResultPath);
+        var colorBars = args.Length > 9 && args[9] == "--color-bars";
+        var window = new PatternWindow(bounds, animate, solidRed, affinityResultPath, colorBars);
         window.Shown += (_, _) => File.WriteAllText(readyPath, window.Handle.ToInt64().ToString("X"));
         Application.Run(window);
     }
@@ -1160,6 +1447,7 @@ internal sealed class PatternWindowController(Process process, IntPtr handle, st
     private const uint SwpNoSize = 0x0001, SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010;
     private const uint SwpNoMove = 0x0002, SwpShowWindow = 0x0040;
     private IntPtr _previousForeground;
+    private int _closed;
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessageW(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
@@ -1206,6 +1494,12 @@ internal sealed class PatternWindowController(Process process, IntPtr handle, st
             throw new InvalidOperationException("Could not move the controlled test window.");
         return Task.CompletedTask;
     }
+    internal Task ResizeToAsync(int width, int height)
+    {
+        if (width <= 0 || height <= 0 || !SetWindowPos(Handle, IntPtr.Zero, 0, 0, width, height, SwpNoMove | SwpNoZOrder | SwpNoActivate))
+            throw new InvalidOperationException("Could not resize the controlled test window.");
+        return Task.CompletedTask;
+    }
     internal Task MinimizeAsync()
     {
         ShowWindow(Handle, 6);
@@ -1213,11 +1507,20 @@ internal sealed class PatternWindowController(Process process, IntPtr handle, st
     }
     internal async Task CloseAsync()
     {
-        if (process.HasExited) { RestorePreviousForeground(); return; }
-        PostMessageW(Handle, WmClose, IntPtr.Zero, IntPtr.Zero);
-        await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
-        process.Dispose();
-        RestorePreviousForeground();
+        if (Interlocked.Exchange(ref _closed, 1) != 0) return;
+        try
+        {
+            if (!process.HasExited)
+            {
+                PostMessageW(Handle, WmClose, IntPtr.Zero, IntPtr.Zero);
+                await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
+        }
+        finally
+        {
+            process.Dispose();
+            RestorePreviousForeground();
+        }
     }
     private void RestorePreviousForeground()
     {

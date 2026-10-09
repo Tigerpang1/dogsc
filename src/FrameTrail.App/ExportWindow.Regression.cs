@@ -27,10 +27,13 @@ public sealed partial class ExportWindow
             }
         }
         void Click(Button button) => button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        void Snapshot(string state) => MainWindow.CaptureWindowVisual(this,
+            Path.Combine(outputFolder, $"panel-{(audioOnly ? "audio" : "video")}-{state}.png"));
 
         outputDirectory = outputFolder;
         fileName.Text = audioOnly ? "panel-audio" : "panel-video";
         RefreshPreview();
+        Snapshot("ready");
         if (audioOnly)
         {
             Check(extensionBadge.Text == ".m4a" && previewFormat.Text == "M4A 音频" && resolutionChoices.All(b => !b.IsEnabled) && frameRateChoices.All(b => !b.IsEnabled),
@@ -43,6 +46,7 @@ public sealed partial class ExportWindow
                 "M4A只有音频且时长与剪辑一致");
             Check(openFileButton.IsVisible && openFolderButton.IsVisible && !exportButton.IsVisible,
                 "成功后展示打开文件与文件夹操作");
+            Snapshot("completed");
             return checks;
         }
 
@@ -55,6 +59,7 @@ public sealed partial class ExportWindow
         Check(completedPath is null && stageText.Text == "导出失败，可修改设置后重试" && exportButton.IsEnabled,
             "输出目录不可用时显示失败并恢复重试操作");
         Check(await File.ReadAllTextAsync(blockedDirectory) == "preserve-existing-file", "失败不会改写已有目标文件");
+        Snapshot("failed");
         outputDirectory = outputFolder;
         RefreshPreview();
         Click(resolutionChoices[0]);
@@ -63,19 +68,37 @@ public sealed partial class ExportWindow
         Check(running && progressBar.Value > .05 && stageText.Text.Contains("编码"), "真实视频合成进度到达后可以取消");
         Check(!videoModeButton.IsEnabled && !audioModeButton.IsEnabled && !browseButton.IsEnabled && !fileName.IsEnabled,
             "导出进行中锁定内容类型和输出位置，摘要与当前任务一致");
+        Snapshot("running");
         Click(cancelButton);
         await WaitUntil(() => !running);
         Check(completedPath is null && stageText.Text == "已取消导出" && exportButton.IsEnabled && cancelButton.IsEnabled,
             "取消完成后恢复导出按钮且不标记成功");
         Check(!File.Exists(Path.Combine(outputFolder, "panel-video.mp4")) && !Directory.EnumerateFiles(outputFolder, ".frametrail-*").Any(),
             "取消后没有成片或导出临时文件残留");
+        Snapshot("cancelled");
         Click(exportButton);
         await WaitUntil(() => !running);
         Check(completedPath is not null && File.Exists(completedPath), "取消后在同一面板重新导出成功");
         var video = await MediaTools.ProbeAsync(completedPath!);
         Check(video.Width > 0 && Math.Abs(video.Duration - project.Timeline.Duration) < .12,
             "重试成片可解码且时长正确");
+        Snapshot("completed");
+        // A close request during export must wait for actual engine cleanup.
+        fileName.Text = "panel-close-during-export";
+        await StartCloseRegression();
+        Check(!IsVisible && !running && completedPath is null && !File.Exists(Path.Combine(outputFolder, "panel-close-during-export.mp4"))
+            && !Directory.EnumerateFiles(outputFolder, ".frametrail-*").Any(), "关闭正在导出的窗口会等待引擎取消及临时文件清理");
         return checks;
+
+        async Task StartCloseRegression()
+        {
+            var task = StartExport();
+            await WaitUntil(() => !running || progressBar.Value > .05);
+            Check(running && IsVisible, "关闭回归使用实际运行中的视频导出");
+            Close();
+            Check(IsVisible && closeAfterCancellation, "关闭请求被暂缓，取消状态立即显示");
+            await task;
+        }
     }
 }
 

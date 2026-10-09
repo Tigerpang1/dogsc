@@ -56,7 +56,7 @@ public partial class MainWindow
   }
   return .26;
  }
- private static void CaptureWindowVisual(Window window,string path)
+ internal static void CaptureWindowVisual(Window window,string path)
  {
   window.UpdateLayout();var bitmap=new RenderTargetBitmap((int)window.ActualWidth,(int)window.ActualHeight,96,96,PixelFormats.Pbgra32);bitmap.Render(window);var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(bitmap));using var stream=File.Create(path);encoder.Save(stream);
  }

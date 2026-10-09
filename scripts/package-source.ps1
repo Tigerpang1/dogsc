@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.2',
+    [string]$Version = '0.2.3',
     [string]$UpstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 )
 
@@ -10,13 +10,10 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $upstreamRoot = Join-Path $repoRoot 'upstream/dogsc'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
 $output = Join-Path $releaseRoot "FrameTrail-$Version-source.zip"
-$head = [string](& git -C $repoRoot rev-parse HEAD 2>$null)
-if ($LASTEXITCODE -ne 0 -or $head -notmatch '^[0-9a-f]{40}$') { throw '无法读取 FrameTrail 仓库 HEAD。' }
-& git -C $upstreamRoot cat-file -e "$UpstreamBaseSha^{commit}" 2>$null
-if ($LASTEXITCODE -ne 0) { throw "DogSC 上游基线不存在：$UpstreamBaseSha" }
-$statusLines = @(& git -C $repoRoot status --porcelain 2>$null)
-if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
-$worktreeState = if ($statusLines.Count -eq 0) { 'clean' } else { 'dirty' }
+. (Join-Path $PSScriptRoot 'source-provenance.ps1')
+$provenance = Get-FrameTrailSourceProvenance -RepositoryRoot $repoRoot -UpstreamBaseSha $UpstreamBaseSha -RequireGitCheckout
+$head = $provenance.Head
+$worktreeState = $provenance.WorktreeState
 if ($worktreeState -ne 'clean') { throw '源码包只归档已提交代码；请先提交当前变更，避免遗漏未提交实现。' }
 
 $null = New-Item -ItemType Directory -Path $releaseRoot -Force

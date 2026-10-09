@@ -15,7 +15,7 @@ FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随�
 | Vortice.Mathematics | 2.1.0 | MIT | Vortice 的传递依赖，运行时包由锁文件确认。 |
 | SharpGen.Runtime / SharpGen.Runtime.COM | 2.4.2-beta | MIT | Vortice 的传递依赖；NuGet 包声明 MIT。 |
 | System.Text.Json / System.IO.Pipelines / System.Text.Encodings.Web | 9.0.1 | MIT | SharpGen 传递依赖；Microsoft .NET 包。 |
-| .NET 8 Runtime / Windows Desktop Runtime assets | 随 .NET 8 SDK 发布 | MIT 及各自第三方声明 | 自包含发布随应用目录一起发行；以 `dotnet publish` 输出中的 `LICENSE.txt` 和 `ThirdPartyNotices.txt` 为准。 |
+| .NET 10 Runtime / Windows Desktop Runtime assets | 随 .NET 10 SDK 发布 | MIT 及各自第三方声明 | 自包含发布随应用目录一起发行；以 `dotnet publish` 输出中的 `LICENSE.txt` 和 `ThirdPartyNotices.txt` 为准。发行时应使用当前受支持的 .NET 10 补丁版 SDK 重建。 |
 | Microsoft Visual C++ 2015–2022 Redistributable (x64) | 系统预装组件 | Microsoft 许可条款 | ScreenRecorderLib 的运行依赖。本安装包不捆绑、不安装、不更新它；用户从[微软官方页面](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)自行获取。 |
 | FFmpeg（Gyan Windows full static build） | 8.1.1，FFmpeg commit `239f2c733d` | GPLv3 build | 仅本机验证包。随发布候选包的许可证和源代码准备见 [`FFmpeg-GPLv3.txt`](FFmpeg-GPLv3.txt)、[`FFmpeg-CORRESPONDING-SOURCE.md`](FFmpeg-CORRESPONDING-SOURCE.md) 与 [`../scripts/fetch-ffmpeg-corresponding-source.ps1`](../scripts/fetch-ffmpeg-corresponding-source.ps1)。公开发布仍须确认完整对应源代码覆盖和 GPL 合规。 |
 

@@ -1,12 +1,12 @@
 using System.Globalization;
 
 internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int FrameRate, int? Width, int? Height,
-    bool Metrics, bool NoAudio, bool Software, bool FixedFrameRate, bool SyncStimulus, bool SyncCapture, bool SyncPlayback, bool LoopPlayback, bool InteractivePlayback, bool RestoreOwnPlaybackSession, bool RegionPlayback, int RegionX, int RegionY, string? FixturePath, bool TargetTest, bool TrackTest, bool PauseCycle, bool MultiPauseCycle, bool KillRecoveryTest, bool EnumerateInputs, bool LongLoopback, bool AnimateWindow, bool ExclusionTest)
+    bool Metrics, bool NoAudio, bool Software, bool FixedFrameRate, bool SyncStimulus, bool SyncCapture, bool SyncPlayback, bool LoopPlayback, bool InteractivePlayback, bool RestoreOwnPlaybackSession, bool LongRestoreOwnPlaybackSession, bool RegionPlayback, int RegionX, int RegionY, string? FixturePath, bool TargetTest, bool TrackTest, bool PauseCycle, bool MultiPauseCycle, bool KillRecoveryTest, bool EnumerateInputs, bool LongLoopback, bool AnimateWindow, bool ExclusionTest)
 {
     internal static ProbeOptions Parse(string[] args)
     {
         string? output = null; var duration = 5; var fps = 30; int? width = null, height = null; var metrics = false;
-        var noAudio = false; var software = false; var fixedFrameRate = false; var syncStimulus = false; var syncCapture = false; var syncPlayback = false; var loopPlayback = false; var interactivePlayback = false; var restoreOwnPlaybackSession = false; var regionPlayback = false; var regionX = 40; var regionY = 40; string? fixture = null; var targetTest = false;
+        var noAudio = false; var software = false; var fixedFrameRate = false; var syncStimulus = false; var syncCapture = false; var syncPlayback = false; var loopPlayback = false; var interactivePlayback = false; var restoreOwnPlaybackSession = false; var longRestoreOwnPlaybackSession = false; var regionPlayback = false; var regionX = 40; var regionY = 40; string? fixture = null; var targetTest = false;
         var trackTest = false; var pauseCycle = false; var multiPauseCycle = false; var killRecoveryTest = false; var enumerateInputs = false; var longLoopback = false; var animateWindow = false; var exclusionTest = false;
         for (var i = 0; i < args.Length; i++)
         {
@@ -21,6 +21,7 @@ internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int
             if (arg == "--loop-playback") { loopPlayback = true; continue; }
             if (arg == "--interactive-playback") { interactivePlayback = true; continue; }
             if (arg == "--restore-own-playback-session") { restoreOwnPlaybackSession = true; continue; }
+            if (arg == "--long-restore-own-playback-session") { longRestoreOwnPlaybackSession = true; continue; }
             if (arg == "--region-playback") { regionPlayback = true; continue; }
             if (arg == "--target-test") { targetTest = true; continue; }
             if (arg == "--track-test") { trackTest = true; continue; }
@@ -60,8 +61,11 @@ internal sealed record ProbeOptions(string? OutputPath, int DurationSeconds, int
         if (interactivePlayback && !syncPlayback) throw new ArgumentException("--interactive-playback requires --sync-playback.", nameof(args));
         if (restoreOwnPlaybackSession && (!interactivePlayback || !syncPlayback || !loopPlayback)) throw new ArgumentException("--restore-own-playback-session requires --sync-playback, --interactive-playback, and --loop-playback.", nameof(args));
         if (restoreOwnPlaybackSession && duration > 30) throw new ArgumentOutOfRangeException(nameof(args), "--restore-own-playback-session is limited to playback samples of 30 seconds or less.");
+        if (restoreOwnPlaybackSession && longRestoreOwnPlaybackSession) throw new ArgumentException("Use only one playback session lease option.", nameof(args));
+        if (longRestoreOwnPlaybackSession && (!interactivePlayback || !syncPlayback || !loopPlayback)) throw new ArgumentException("--long-restore-own-playback-session requires --sync-playback, --interactive-playback, and --loop-playback.", nameof(args));
+        if (longRestoreOwnPlaybackSession && duration != 1800) throw new ArgumentOutOfRangeException(nameof(args), "--long-restore-own-playback-session requires exactly --duration 1800.");
         return new ProbeOptions(output is null ? null : Path.GetFullPath(output), duration, fps, width, height,
-            metrics, noAudio, software, fixedFrameRate, syncStimulus, syncCapture, syncPlayback, loopPlayback, interactivePlayback, restoreOwnPlaybackSession, regionPlayback, regionX, regionY, fixture is null ? null : Path.GetFullPath(fixture), targetTest, trackTest, pauseCycle, multiPauseCycle, killRecoveryTest, enumerateInputs, longLoopback, animateWindow, exclusionTest);
+            metrics, noAudio, software, fixedFrameRate, syncStimulus, syncCapture, syncPlayback, loopPlayback, interactivePlayback, restoreOwnPlaybackSession, longRestoreOwnPlaybackSession, regionPlayback, regionX, regionY, fixture is null ? null : Path.GetFullPath(fixture), targetTest, trackTest, pauseCycle, multiPauseCycle, killRecoveryTest, enumerateInputs, longLoopback, animateWindow, exclusionTest);
     }
     private static bool TryInlineInt(string value, string prefix, out int number)
     {

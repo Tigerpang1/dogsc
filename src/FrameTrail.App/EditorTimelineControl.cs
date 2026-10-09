@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -35,12 +36,40 @@ public sealed class EditorTimelineControl : FrameworkElement
  readonly List<Hit> hits=[];
  Hit? drag; Point down; double dragDelta; string dragMode=""; bool seeking;
  const double LabelWidth=152, RulerHeight=40, PrimaryHeight=90, LaneHeight=52;
+ static readonly Brush EffectLabelBrush=CreateEffectLabelBrush();
+ bool isHighContrast;
  public double DocumentWidth=>Math.Max(1,ActualWidth-LabelWidth)*Zoom;
  double Scale=>DocumentWidth/Math.Max(Project?.Timeline.Duration??1,.01);
  double X(double t)=>LabelWidth+t*Scale-Offset;
  double Time(double x)=>Math.Clamp((x-LabelWidth+Offset)/Scale,0,Project?.Timeline.Duration??0);
- Brush B(string name)=>(Brush?)TryFindResource(name)??Brushes.Gray;
- public EditorTimelineControl(){Focusable=true;MinHeight=234;SizeChanged+=(_,_)=>InvalidateVisual();}
+ bool IsHighContrast=>isHighContrast;
+ Brush B(string name)
+ {
+  if(IsHighContrast)return name switch
+  {
+   "Surface" or "Chrome" or "ControlSurface" or "Workspace"=>SystemColors.WindowBrush,
+   "Ink" or "Secondary"=>SystemColors.WindowTextBrush,
+   "Hairline" or "Dot"=>SystemColors.GrayTextBrush,
+   "Accent" or "Selection"=>SystemColors.HighlightBrush,
+   _=>SystemColors.WindowTextBrush
+  };
+  return (Brush?)TryFindResource(name)??Brushes.Gray;
+ }
+ public EditorTimelineControl()
+ {
+  Focusable=true;MinHeight=234;SizeChanged+=(_,_)=>InvalidateVisual();
+  if(Application.Current?.TryFindResource("TransientPreferences") is TransientPreferences preferences)
+  {
+   isHighContrast=preferences.HighContrast;
+   PropertyChangedEventManager.AddHandler(preferences,OnPreferencesChanged,string.Empty);
+  }
+ }
+ void OnPreferencesChanged(object? sender,PropertyChangedEventArgs e)
+ {
+  isHighContrast=(sender as TransientPreferences)?.HighContrast==true;
+  InvalidateVisual();
+ }
+ static Brush CreateEffectLabelBrush(){var brush=new SolidColorBrush(Color.FromRgb(48,50,50));brush.Freeze();return brush;}
  public void Refresh(){var lanes=LaneNames().Count();Height=RulerHeight+PrimaryHeight+lanes*LaneHeight;InvalidateVisual();}
  void Text(DrawingContext dc,string text,Point p,double size=11,Brush? brush=null,FontWeight? weight=null,double maxWidth=double.PositiveInfinity,TextAlignment alignment=TextAlignment.Left)
  { var family=(FontFamily?)TryFindResource("InterfaceFont")??new FontFamily("Microsoft YaHei UI");var f=new FormattedText(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface(family,FontStyles.Normal,weight??FontWeights.Normal,FontStretches.Normal),size,brush??B("Secondary"),VisualTreeHelper.GetDpi(this).PixelsPerDip){TextAlignment=alignment};if(double.IsFinite(maxWidth)){f.MaxTextWidth=Math.Max(1,maxWidth);f.Trimming=TextTrimming.CharacterEllipsis;}dc.DrawText(f,p);}
@@ -59,9 +88,10 @@ public sealed class EditorTimelineControl : FrameworkElement
    dc.DrawRoundedRectangle(B("Chrome"),new Pen(selected?B("Ink"):B("Hairline"),selected?1.6:1),rect,10,10);
    dc.PushClip(new RectangleGeometry(rect,9,9));
    if(Filmstrip&&Assets?.Thumbnails.Count>0){for(double px=rect.X;px<rect.Right;px+=90){var sourceTime=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var image=Assets.Thumbnails.OrderBy(z=>Math.Abs(z.SourceTime-sourceTime)).First().Image;dc.DrawImage(image,new Rect(px,rect.Y,90,58));}}
-   else dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(228,232,230)),null,new Rect(rect.X,rect.Y,rect.Width,58));
-   if(Waveform&&Assets?.Peaks.Count>0&&Assets.Duration>0){var peak=Math.Max(.001,Assets.Peaks.Max());var geometry=new StreamGeometry();var mid=rect.Bottom-11d;var left=rect.Left;var right=rect.Right;var waveStep=2d;double Amplitude(double px){var st=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var k=Math.Clamp((int)(st/Assets.Duration*Assets.Peaks.Count),0,Assets.Peaks.Count-1);return Math.Clamp(Assets.Peaks[k]/peak*8,.5,8);}using(var ctx=geometry.Open()){ctx.BeginFigure(new Point(left,mid),true,true);for(var px=left;px<=right;px+=waveStep)ctx.LineTo(new Point(px,mid-Amplitude(px)),true,false);ctx.LineTo(new Point(right,mid),true,false);for(var px=right;px>=left;px-=waveStep)ctx.LineTo(new Point(px,mid+Amplitude(px)),true,false);ctx.LineTo(new Point(left,mid),true,false);}geometry.Freeze();dc.DrawGeometry(new SolidColorBrush(Color.FromRgb(120,125,125)),null,geometry);}
-   dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(145,30,33,33)),null,new Rect(Math.Max(rect.Left+4,rect.Right-60),rect.Top+5,55,19),8,8);Text(dc,TimeSpan.FromSeconds(segment.OutputDuration).ToString(@"m\:ss\.ff"),new(Math.Max(rect.Left+8,rect.Right-55),rect.Top+7),10,Brushes.White);
+   else dc.DrawRectangle(IsHighContrast?B("Chrome"):new SolidColorBrush(Color.FromRgb(228,232,230)),null,new Rect(rect.X,rect.Y,rect.Width,58));
+   if(Waveform&&Assets?.Peaks.Count>0&&Assets.Duration>0){var peak=Math.Max(.001,Assets.Peaks.Max());var geometry=new StreamGeometry();var mid=rect.Bottom-11d;var left=rect.Left;var right=rect.Right;var waveStep=2d;double Amplitude(double px){var st=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var k=Math.Clamp((int)(st/Assets.Duration*Assets.Peaks.Count),0,Assets.Peaks.Count-1);return Math.Clamp(Assets.Peaks[k]/peak*8,.5,8);}using(var ctx=geometry.Open()){ctx.BeginFigure(new Point(left,mid),true,true);for(var px=left;px<=right;px+=waveStep)ctx.LineTo(new Point(px,mid-Amplitude(px)),true,false);ctx.LineTo(new Point(right,mid),true,false);for(var px=right;px>=left;px-=waveStep)ctx.LineTo(new Point(px,mid+Amplitude(px)),true,false);ctx.LineTo(new Point(left,mid),true,false);}geometry.Freeze();dc.DrawGeometry(IsHighContrast?B("Ink"):new SolidColorBrush(Color.FromRgb(120,125,125)),null,geometry);}
+   if(IsHighContrast){dc.DrawRoundedRectangle(B("Chrome"),new Pen(B("Ink"),.8),new Rect(Math.Max(rect.Left+4,rect.Right-60),rect.Top+5,55,19),8,8);Text(dc,TimeSpan.FromSeconds(segment.OutputDuration).ToString(@"m\:ss\.ff"),new(Math.Max(rect.Left+8,rect.Right-55),rect.Top+7),10,B("Ink"));}
+   else{dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(145,30,33,33)),null,new Rect(Math.Max(rect.Left+4,rect.Right-60),rect.Top+5,55,19),8,8);Text(dc,TimeSpan.FromSeconds(segment.OutputDuration).ToString(@"m\:ss\.ff"),new(Math.Max(rect.Left+8,rect.Right-55),rect.Top+7),10,Brushes.White);}
    dc.Pop();hits.Add(new(rect,new("screen",segment.Id),segment.SourceStart,segment.SourceDuration,segment.PlaybackRate,i));elapsed+=segment.OutputDuration;
   }
   var y=RulerHeight+PrimaryHeight;
@@ -73,10 +103,10 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(Project.Overlays.Count>0)Lane("overlay",Project.Overlays.Select(z=>(z.Id,z.Start,z.Duration,"贴图 · "+System.IO.Path.GetFileNameWithoutExtension(z.MediaPath))),Color.FromRgb(188,216,192));
   if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind switch{BlurKind.Blur=>"柔化",BlurKind.Spotlight=>"聚光",_=>"马赛克"})),Color.FromRgb(208,192,220));
   if(Project.AudioTracks.Count>0)Lane("audio",Project.AudioTracks.Select((z,i)=>(AudioId(i),z.OffsetSeconds,z.Duration,z.Muted?"音频 · 静音":"音频 · "+(i+1))),Color.FromRgb(198,200,228));
-  foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14);}
+  foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(IsHighContrast?B("Accent"):new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14,B("Ink"));}
   if(HoverTime.HasValue){var x=X(HoverTime.Value);dc.DrawLine(new Pen(B("Secondary"),1){DashStyle=DashStyles.Dash},new(x,0),new(x,ActualHeight));}
   var playX=X(Position);dc.DrawLine(new Pen(B("Ink"),1.25),new(playX,5),new(playX,ActualHeight));dc.DrawEllipse(B("Ink"),null,new(playX,7),4,4);
-  if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(50,70,169,134)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
+  if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);var rangeColor=IsHighContrast?SystemColors.HighlightColor:Color.FromRgb(70,169,134);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)(IsHighContrast?70:50),rangeColor.R,rangeColor.G,rangeColor.B)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}
   dc.Pop();dc.DrawRectangle(B("Surface"),null,new Rect(0,RulerHeight,LabelWidth,Math.Max(0,ActualHeight-RulerHeight)));
   EditorIcon.DrawVector(dc,"trackScreen",new Rect(16,RulerHeight+31,18,18),B("Ink"));Text(dc,"屏幕录制",new(40,RulerHeight+35),11,B("Ink"));y=RulerHeight+PrimaryHeight;
@@ -89,7 +119,7 @@ public sealed class EditorTimelineControl : FrameworkElement
  void DrawEffects(DrawingContext dc,string kind,IEnumerable<(Guid Id,double Start,double Duration,string Label)> clips,double y,Color color)
  {
   if(Project==null)return;
-  foreach(var c in clips){var outputStart=0d;foreach(var seg in Project.Timeline.Segments){var a=Math.Max(c.Start,seg.SourceStart);var b=Math.Min(c.Start+c.Duration,seg.SourceEnd);if(b>a){var r=new Rect(X(outputStart+(a-seg.SourceStart)/seg.PlaybackRate)+1,y+8,Math.Max(4,(b-a)/seg.PlaybackRate*Scale-2),LaneHeight-15);var selected=Selection?.Kind==kind&&Selection.Id==c.Id||MultiSelection.Contains(new(kind,c.Id));dc.DrawRoundedRectangle(new SolidColorBrush(color),new Pen(selected?B("Ink"):new SolidColorBrush(Color.FromArgb(30,60,60,60)),selected?1.4:.6),r,9,9);if(r.Width>30)Text(dc,c.Label,new(r.Left+6,r.Top+9),11,B("Ink"),FontWeights.Medium,r.Width-12,TextAlignment.Center);hits.Add(new(r,new(kind,c.Id),c.Start,c.Duration,seg.PlaybackRate,-1));}outputStart+=seg.OutputDuration;}}
+  foreach(var c in clips){var outputStart=0d;foreach(var seg in Project.Timeline.Segments){var a=Math.Max(c.Start,seg.SourceStart);var b=Math.Min(c.Start+c.Duration,seg.SourceEnd);if(b>a){var r=new Rect(X(outputStart+(a-seg.SourceStart)/seg.PlaybackRate)+1,y+8,Math.Max(4,(b-a)/seg.PlaybackRate*Scale-2),LaneHeight-15);var selected=Selection?.Kind==kind&&Selection.Id==c.Id||MultiSelection.Contains(new(kind,c.Id));var fill=IsHighContrast?selected?B("Accent"):B("Chrome"):new SolidColorBrush(color);var label=IsHighContrast?selected?SystemColors.HighlightTextBrush: B("Ink"):EffectLabelBrush;var outline=IsHighContrast?selected?B("Accent"):B("Ink"):selected?B("Ink"):new SolidColorBrush(Color.FromArgb(30,60,60,60));dc.DrawRoundedRectangle(fill,new Pen(outline,selected?1.4:.6),r,9,9);if(r.Width>30)Text(dc,c.Label,new(r.Left+6,r.Top+9),11,label,FontWeights.Medium,r.Width-12,TextAlignment.Center);hits.Add(new(r,new(kind,c.Id),c.Start,c.Duration,seg.PlaybackRate,-1));}outputStart+=seg.OutputDuration;}}
  }
  protected override void OnMouseDown(MouseButtonEventArgs e)
  {

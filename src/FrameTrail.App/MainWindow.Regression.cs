@@ -4,6 +4,54 @@ using FrameTrail.Media;
 namespace FrameTrail.App;
 public partial class MainWindow
 {
+ private async Task VerifyRecordingBarLifecycle(string report)
+ {
+  var checks=new List<string>();
+  void Check(bool passed,string name){if(!passed)throw new InvalidOperationException(name);checks.Add(name);}
+  RecordingBar? delayedBar=null;RecordingBar? retryBar=null;
+  try
+  {
+   var requested=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+   var releaseStop=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+   var stopCalls=0;
+   delayedBar=new RecordingBar(()=>{},async()=>{Interlocked.Increment(ref stopCalls);requested.TrySetResult();await releaseStop.Task;},()=>Task.CompletedTask,_=>{});
+   delayedBar.Show();delayedBar.Close();delayedBar.Close();
+   await requested.Task.WaitAsync(TimeSpan.FromSeconds(3));
+   Check(stopCalls==1,"关闭请求在停止尚未完成时只调用一次stop");
+   Check(delayedBar.IsVisible,"异步停止期间录制条仍可见");
+   releaseStop.TrySetResult();
+   await WaitUntilAsync(()=>!delayedBar.IsVisible,TimeSpan.FromSeconds(3));
+   Check(!delayedBar.IsVisible,"停止成功后显式关闭录制条");delayedBar=null;
+
+   var failures=0;var attempts=0;
+   retryBar=new RecordingBar(()=>{},()=>Interlocked.Increment(ref attempts)==1?Task.FromException(new IOException("expected virtual stop failure")):Task.CompletedTask,()=>Task.CompletedTask,_=>Interlocked.Increment(ref failures));
+   retryBar.Show();retryBar.Close();
+   await WaitUntilAsync(()=>failures==1,TimeSpan.FromSeconds(3));
+   Check(retryBar.IsVisible&&attempts==1,"停止失败时窗口保持可见并允许重试");
+   retryBar.Close();
+   await WaitUntilAsync(()=>!retryBar.IsVisible,TimeSpan.FromSeconds(3));
+   Check(attempts==2&&!retryBar.IsVisible,"重试成功后关闭且停止回调恰好重试一次");retryBar=null;
+   Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
+   await File.WriteAllTextAsync(report,JsonSerializer.Serialize(new{Passed=true,Checks=checks},new JsonSerializerOptions{WriteIndented=true}));
+  }
+  catch(Exception ex)
+  {
+   delayedBar?.CloseAfterRecording();retryBar?.CloseAfterRecording();
+   Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(report))!);
+   await File.WriteAllTextAsync(report,JsonSerializer.Serialize(new{Passed=false,Checks=checks,Error=ex.ToString()},new JsonSerializerOptions{WriteIndented=true}));
+  }
+
+  static async Task WaitUntilAsync(Func<bool> predicate,TimeSpan timeout)
+  {
+   var until=DateTime.UtcNow+timeout;
+   while(!predicate())
+   {
+    if(DateTime.UtcNow>=until)throw new TimeoutException("录制条生命周期回归等待超时。");
+    await Task.Delay(15);
+   }
+  }
+ }
+
  private async Task VerifyEditorRegression(string report)
  {
   var checks=new List<string>();object result;

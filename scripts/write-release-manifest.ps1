@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.2', [switch]$Candidate)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.3', [switch]$Candidate)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo 'artifacts/release'
@@ -7,12 +7,25 @@ $validation = Join-Path $repo "artifacts/validation/package-$Version"
 $packageResultName = if ($Candidate) { 'content-result.json' } else { 'result.json' }
 $package = Get-Content -LiteralPath (Join-Path $validation $packageResultName) -Raw | ConvertFrom-Json
 $source = Get-Content -LiteralPath (Join-Path $validation 'source-validation.json') -Raw | ConvertFrom-Json
-if (-not $package.Passed -or $source.status -ne 'passed') { throw '发行材料必须先完成对应范围的包验收与源码归档构建验收。' }
+if ($package.Passed -isnot [bool] -or -not $package.Passed -or $source.status -ne 'passed') { throw '发行材料必须先完成对应范围的包验收与源码归档构建验收。' }
 if ($package.Version -ne $Version) { throw '包验证版本不匹配。' }
 if ($Candidate) {
     if ($package.Scope -ne 'content-only') { throw '候选清单需要对应的后台包内容验证。' }
-} elseif ($package.Scope -ne 'interactive-package' -or $package.Checks.Count -ne 5) {
-    throw '完整交付清单需要包含安装卸载的五项交互包验收；后台内容检查和跳过安装的结果不能代替。'
+} elseif ($package.Scope -ne 'interactive-package') {
+    throw '完整交付清单需要包含安装卸载的交互包验收；后台内容检查和跳过安装的结果不能代替。'
+}
+$requiredChecks = @('portable-archive-content')
+if (-not $Candidate) {
+    $requiredChecks += @('preferences-snapshot', 'portable-playback', 'portable-workflow', 'installed-playback', 'installed-uninstall', 'preferences-restored')
+}
+foreach ($id in $requiredChecks) {
+    $matches = @($package.Checks | Where-Object Id -eq $id)
+    if ($matches.Count -ne 1 -or $matches[0].Passed -isnot [bool] -or -not $matches[0].Passed) {
+        throw "包验收缺少、重复或未通过必要检查：$id"
+    }
+}
+if (@($package.Checks | Where-Object { $_.Passed -isnot [bool] -or -not $_.Passed }).Count -gt 0) {
+    throw '包验收仍包含失败或无效的检查。'
 }
 $entries = @()
 foreach ($name in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe", "FrameTrail-$Version-source.zip")) {
@@ -40,7 +53,7 @@ $manifest = [ordered]@{
     frameTrailCommit=$head; upstreamDogScCommit=$source.sourceMetadata.upstreamDogScCommit
     packageValidationScope=$package.Scope; packageValidatedUtc=$package.CompletedUtc; sourceValidatedUtc=$source.completedUtc
     artifacts=$entries
-    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头/麦克风与多显示器矩阵未验收。','短片50ms同步目标未稳定通过；新QPC长测后段静音原因未定位，不能认定30分钟同步通过；静态逐像素一致未认证。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
+    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头/麦克风与多显示器矩阵未验收。','设备帧位置拼接的较早固定候选通过30秒18/18个视听cue短测，原始绝对P95为54.736ms；后续重锚边界修复有纯逻辑回归，当前包仍需新短测、30分钟同步及录制回工程成片验收。','窗口录制跨进程探针仍出现黑帧；同进程动态窗口成功，静态/动态影响尚待区分。','浅深主题与浮层已有局部实机证据；完整同包视觉、100%/200% DPI与系统高对比模式尚未验收。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
 }
 if ($Candidate) { $manifest.limitations += '当前候选仅完成后台包内容检查；最终全量UIA、发行包实际播放录制和安装卸载待主机交互时段验证。' }
 $manifestJson = $manifest | ConvertTo-Json -Depth 6

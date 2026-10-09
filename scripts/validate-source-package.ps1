@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.2',
+    [string]$Version = '0.2.3',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]
@@ -167,7 +167,7 @@ try {
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
     $testScript = Join-Path $repoRoot 'scripts/test.ps1'
     $testResult = Invoke-LoggedProcess -Name 'tests' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $testScript, '-Configuration', 'Release', '-IncludeCaptureProbe') `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $testScript, '-Configuration', 'Release', '-IncludeCaptureProbe', '-IncludeVisualProbe', '-IncludeReleaseProbe') `
         -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
 
     $appProject = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'

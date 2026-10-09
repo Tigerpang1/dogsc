@@ -10,11 +10,18 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
     private long _packetCount, _packetFrames, _silentFrames, _silentSourceFramesWritten, _packetSourceFramesWritten, _actuallyWrittenFrames, _overlapDroppedFrames;
     private long _pumpSilenceFrames, _packetGapSilenceFrames, _finalizationSilenceFrames;
     private long _timestampFallbackPackets, _timestampErrorPackets, _discontinuities, _devicePositionMismatches, _droppedBuckets;
+    private long _devicePositionResets;
+    private long _pauseBoundaryCount;
+    private double _qpcPositionResidualAbsMaxMs;
+    private long _pauseBoundaryNominalOffsetMaxFrames;
+    private double? _deviceClockDriftPpmLatest;
+    private double? _predictedClockDifferenceMs;
     private long? _lastPacketTicks;
     private double _latencyMin = double.PositiveInfinity, _latencyMax = double.NegativeInfinity;
 
     internal void Packet(long arrivalTicks, int frames, bool silent, double arrivalLatencyMs, bool timestampFallback,
-        bool timestampError, bool discontinuity, bool devicePositionMismatch)
+        bool timestampError, bool discontinuity, bool devicePositionMismatch, bool devicePositionReset = false,
+        double? qpcPositionResidualMs = null, double? deviceClockDriftPpm = null)
     {
         lock (_gate)
         {
@@ -26,6 +33,18 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
             if (timestampError) { bucket.TimestampErrorPackets++; _timestampErrorPackets++; }
             if (discontinuity) { bucket.Discontinuities++; _discontinuities++; }
             if (devicePositionMismatch) { bucket.DevicePositionMismatches++; _devicePositionMismatches++; }
+            if (devicePositionReset) { bucket.DevicePositionResets++; _devicePositionResets++; }
+            if (qpcPositionResidualMs is double residual && double.IsFinite(residual))
+            {
+                bucket.QpcPositionResidualAbsMaxMs = Math.Max(bucket.QpcPositionResidualAbsMaxMs, Math.Abs(residual));
+                _qpcPositionResidualAbsMaxMs = Math.Max(_qpcPositionResidualAbsMaxMs, Math.Abs(residual));
+            }
+            if (deviceClockDriftPpm is double drift && double.IsFinite(drift))
+            {
+                bucket.DeviceClockDriftPpmMin = Math.Min(bucket.DeviceClockDriftPpmMin, drift);
+                bucket.DeviceClockDriftPpmMax = Math.Max(bucket.DeviceClockDriftPpmMax, drift);
+                _deviceClockDriftPpmLatest = drift;
+            }
             if (double.IsFinite(arrivalLatencyMs))
             {
                 bucket.LatencyMin = Math.Min(bucket.LatencyMin, arrivalLatencyMs);
@@ -46,6 +65,25 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
             bucket.PacketSourceFramesWritten += frames; bucket.ActuallyWrittenFrames += frames;
             _packetSourceFramesWritten += frames; _actuallyWrittenFrames += frames;
             if (endpointSilent) { bucket.SilentSourceFramesWritten += frames; _silentSourceFramesWritten += frames; }
+        }
+    }
+    internal void PauseBoundaryMapped(long eventTicks, long absoluteNominalOffsetFrames)
+    {
+        lock (_gate)
+        {
+            var bucket = GetBucket(eventTicks);
+            bucket.PauseBoundaryCount++;
+            bucket.PauseBoundaryNominalOffsetMaxFrames = Math.Max(bucket.PauseBoundaryNominalOffsetMaxFrames, absoluteNominalOffsetFrames);
+            _pauseBoundaryCount++;
+            _pauseBoundaryNominalOffsetMaxFrames = Math.Max(_pauseBoundaryNominalOffsetMaxFrames, absoluteNominalOffsetFrames);
+        }
+    }
+    internal void SetClockEstimate(double driftPpm, double predictedDifferenceMs)
+    {
+        lock (_gate)
+        {
+            _deviceClockDriftPpmLatest = double.IsFinite(driftPpm) ? driftPpm : null;
+            _predictedClockDifferenceMs = double.IsFinite(predictedDifferenceMs) ? predictedDifferenceMs : null;
         }
     }
     internal void OverlapDropped(long eventTicks, long frames) { if (frames <= 0) return; lock (_gate) { GetBucket(eventTicks).OverlapDroppedFrames += frames; _overlapDroppedFrames += frames; } }
@@ -81,6 +119,9 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
                 PacketGapSilenceFrames: _packetGapSilenceFrames, FinalizationSilenceFrames: _finalizationSilenceFrames,
                 TimestampFallbackPackets: _timestampFallbackPackets, TimestampErrorPackets: _timestampErrorPackets,
                 DataDiscontinuities: _discontinuities, DevicePositionMismatches: _devicePositionMismatches,
+                DevicePositionResets: _devicePositionResets, QpcPositionResidualAbsMaxMs: _qpcPositionResidualAbsMaxMs,
+                PauseBoundaryCount: _pauseBoundaryCount, PauseBoundaryNominalOffsetMaxFrames: _pauseBoundaryNominalOffsetMaxFrames,
+                DeviceClockDriftPpmLatest: _deviceClockDriftPpmLatest, PredictedClockDifferenceMs: _predictedClockDifferenceMs,
                 ArrivalLatencyMinMs: double.IsFinite(_latencyMin) ? _latencyMin : null,
                 ArrivalLatencyMaxMs: double.IsFinite(_latencyMax) ? _latencyMax : null,
                 LastPacketElapsedMs: _lastPacketTicks is long last ? (last - startTicks) * 1000d / stopwatchFrequency : null,
@@ -110,7 +151,12 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
         bucket.TimestampFallbackPackets, bucket.TimestampErrorPackets,
         bucket.LatencyMin is double min && double.IsFinite(min) ? min : null,
         bucket.LatencyMax is double max && double.IsFinite(max) ? max : null,
-        bucket.Discontinuities, bucket.DevicePositionMismatches, bucket.SilentSourceFramesWritten,
+        bucket.Discontinuities, bucket.DevicePositionMismatches, bucket.DevicePositionResets,
+        bucket.PauseBoundaryCount, bucket.PauseBoundaryNominalOffsetMaxFrames,
+        bucket.QpcPositionResidualAbsMaxMs,
+        double.IsFinite(bucket.DeviceClockDriftPpmMin) ? bucket.DeviceClockDriftPpmMin : null,
+        double.IsFinite(bucket.DeviceClockDriftPpmMax) ? bucket.DeviceClockDriftPpmMax : null,
+        bucket.SilentSourceFramesWritten,
         bucket.PacketSourceFramesWritten, bucket.ActuallyWrittenFrames,
         bucket.OverlapDroppedFrames, bucket.PumpSilenceFrames, bucket.PacketGapSilenceFrames, bucket.FinalizationSilenceFrames);
 
@@ -119,9 +165,13 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
         internal long Index { get; } = index;
         internal double StartElapsedMs { get; } = startElapsedMs;
         internal long PacketCount, PacketFrames, SilentFrames, TimestampFallbackPackets, TimestampErrorPackets, Discontinuities, DevicePositionMismatches;
+        internal long DevicePositionResets;
+        internal long PauseBoundaryCount, PauseBoundaryNominalOffsetMaxFrames;
         internal long SilentSourceFramesWritten, PacketSourceFramesWritten, ActuallyWrittenFrames, OverlapDroppedFrames;
         internal long PumpSilenceFrames, PacketGapSilenceFrames, FinalizationSilenceFrames;
         internal double LatencyMin = double.PositiveInfinity, LatencyMax = double.NegativeInfinity;
+        internal double QpcPositionResidualAbsMaxMs;
+        internal double DeviceClockDriftPpmMin = double.PositiveInfinity, DeviceClockDriftPpmMax = double.NegativeInfinity;
     }
 }
 
@@ -131,13 +181,19 @@ internal sealed record AudioPacketDiagnosticsSnapshot(int BucketSeconds, int Max
     long PacketSourceFramesWritten, long ActuallyWrittenFrames,
     long OverlapDroppedFrames, long PumpGeneratedSilenceFrames, long PacketGapSilenceFrames,
     long FinalizationSilenceFrames, long TimestampFallbackPackets, long TimestampErrorPackets, long DataDiscontinuities,
-    long DevicePositionMismatches, double? ArrivalLatencyMinMs, double? ArrivalLatencyMaxMs,
+    long DevicePositionMismatches, long DevicePositionResets, double QpcPositionResidualAbsMaxMs,
+    long PauseBoundaryCount, long PauseBoundaryNominalOffsetMaxFrames, double? DeviceClockDriftPpmLatest,
+    double? PredictedClockDifferenceMs,
+    double? ArrivalLatencyMinMs, double? ArrivalLatencyMaxMs,
     double? LastPacketElapsedMs, double ObservedElapsedMs, IReadOnlyList<AudioPacketDiagnosticBucket> Buckets);
 
 internal sealed record AudioPacketDiagnosticBucket(long Index, double StartElapsedMs, long PacketCount,
     long PacketFrames, long SilentFlagFrames, long TimestampFallbackPackets, long TimestampErrorPackets,
     double? ArrivalLatencyMinMs, double? ArrivalLatencyMaxMs,
-    long DataDiscontinuities, long DevicePositionMismatches, long SilentSourceFramesWritten,
+    long DataDiscontinuities, long DevicePositionMismatches, long DevicePositionResets,
+    long PauseBoundaryCount, long PauseBoundaryNominalOffsetMaxFrames,
+    double QpcPositionResidualAbsMaxMs, double? DeviceClockDriftPpmMin, double? DeviceClockDriftPpmMax,
+    long SilentSourceFramesWritten,
     long PacketSourceFramesWritten, long ActuallyWrittenFrames, long OverlapDroppedFrames,
     long PumpGeneratedSilenceFrames, long PacketGapSilenceFrames, long FinalizationSilenceFrames);
 

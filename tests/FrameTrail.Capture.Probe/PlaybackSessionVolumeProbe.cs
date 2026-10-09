@@ -10,7 +10,8 @@ internal static class PlaybackSessionVolumeProbe
         VerifyRestoreSetterFailure(endpoint);
         VerifyNoSessionAndDuplicateSession(endpoint);
         VerifyForeignProcessAndWrongEndpoint(endpoint);
-        Console.WriteLine("Playback session volume probe passed: normal/exception restore, idempotence, apply/restore setter failures, absent/duplicate session rejection, exact-PID scoping, route checks, and provider cleanup; no audio device or process was used.");
+        VerifyLongLeaseMonitor(endpoint);
+        Console.WriteLine("Playback session volume probe passed: normal/exception restore, idempotence, apply/restore setter failures, absent/duplicate session rejection, exact-PID scoping, route checks, 360 simulated 5-second lease observations, and provider cleanup; no audio device or process was used.");
     }
 
     private static void VerifyNormalRestore(string endpoint)
@@ -137,6 +138,53 @@ internal static class PlaybackSessionVolumeProbe
         var routeProvider = new FakeProvider([wrongEndpoint]);
         ExpectRejected(routeProvider, 4510, endpoint, "not selected loopback endpoint");
         Require(wrongEndpoint.Mute && wrongEndpoint.Volume == 0f, "A route mismatch must not modify the owned session.");
+    }
+
+    private static void VerifyLongLeaseMonitor(string endpoint)
+    {
+        const uint pid = 4600;
+        var owned = new FakeSession(pid, endpoint, mute: true, volume: 0f);
+        var foreign = new FakeSession(4601, endpoint, mute: false, volume: 0.8f);
+        var initialProvider = new FakeProvider([owned]);
+        var lease = PlaybackSessionVolumeLease.Apply(initialProvider, pid, endpoint, temporaryVolume: 1f);
+        var monitor = new PlaybackSessionVolumeMonitor(pid, endpoint, requestedVolume: 1f);
+        for (var check = 1; check <= 360; check++)
+        {
+            var provider = new FakeProvider([foreign, owned]);
+            var observation = monitor.Observe(provider, check * 5.0);
+            Require(observation.ProcessId == pid && observation.EndpointId == endpoint &&
+                    observation.Mute == false && Math.Abs(observation.Volume - 1f) < 0.0001f,
+                "Every simulated five-second lease check must confirm only the exact PID and selected endpoint.");
+            provider.Dispose();
+            Require(provider.DisposeCount == 1, "Each transient lease check provider must be disposed.");
+        }
+        Require(!foreign.Mute && Math.Abs(foreign.Volume - 0.8f) < 0.0001f,
+            "Long-lease monitoring must leave a different process session unchanged.");
+
+        owned.Mute = true;
+        try
+        {
+            using var provider = new FakeProvider([owned]);
+            monitor.Observe(provider, 1800);
+            throw new InvalidOperationException("A muted owned session must abort the long lease.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("became muted", StringComparison.Ordinal)) { }
+        owned.Mute = false;
+
+        var routeChanged = new FakeSession(pid, "different-endpoint", mute: false, volume: 1f);
+        try
+        {
+            using var provider = new FakeProvider([routeChanged]);
+            monitor.Observe(provider, 1805);
+            throw new InvalidOperationException("A route change must abort the long lease.");
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("moved to endpoint", StringComparison.Ordinal)) { }
+        Require(routeChanged.Volume == 1f && !routeChanged.Mute,
+            "A route mismatch must not alter the mismatched session.");
+
+        var restored = lease.Restore();
+        Require(restored.RestoredMute == true && restored.RestoredVolume == 0f && restored.RestorationErrors.Count == 0,
+            "The simulated long lease must restore the original mute and volume after monitoring.");
     }
 
     private static void ExpectRejected(FakeProvider provider, uint pid, string endpoint, string message)

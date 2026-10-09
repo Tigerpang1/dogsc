@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail.Media;
@@ -58,12 +59,12 @@ public partial class MainWindow
      if(time>=snapshot.Timeline.Duration-.015)break;
      var frameIndex=(int)Math.Floor(time*frameRate);if(frameIndex==lastFrame){await Task.Delay(3,token);continue;}lastFrame=frameIndex;time=frameIndex/(double)frameRate;
      await session.ReadFrameAsync(time,pixels,token);token.ThrowIfCancellationRequested();var frame=BitmapSource.Create(width,height,96,96,PixelFormats.Bgra32,null,pixels,width*4);frame.Freeze();
-     await Dispatcher.InvokeAsync(()=>{if(token.IsCancellationRequested)return;playbackRenderedFrames++;PreviewImage.Source=frame;refreshing=true;Playhead.Value=time;refreshing=false;UpdateTime();});
+     await Dispatcher.InvokeAsync(()=>{if(token.IsCancellationRequested)return;playbackRenderedFrames++;PreviewImage.Source=frame;AutomationProperties.SetItemStatus(PreviewImage,"ready");refreshing=true;Playhead.Value=time;refreshing=false;UpdateTime();});
     }
     if(!token.IsCancellationRequested)await Dispatcher.InvokeAsync(()=>{if(token.IsCancellationRequested)return;StopPlayback();Playhead.Value=Playhead.Maximum;});
    }
    catch(OperationCanceledException){}
-   catch(Exception ex){App.Log(ex);await Dispatcher.InvokeAsync(()=>{if(!token.IsCancellationRequested){StopPlayback();Status.Text="预览播放未完成："+ex.Message;}});}
+   catch(Exception ex){App.Log(ex);await Dispatcher.InvokeAsync(()=>{if(!token.IsCancellationRequested){StopPlayback();AutomationProperties.SetItemStatus(PreviewImage,"error");Status.Text="预览播放未完成："+ex.Message;}});}
   });
  }
 }

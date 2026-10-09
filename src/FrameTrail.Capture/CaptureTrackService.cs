@@ -114,36 +114,62 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 ownsOutputFile = true;
                 waveWriter = new WaveFileWriter(outputStream, audioCapture.WaveFormat);
                 outputStream = null; // The WaveFileWriter now owns the stream.
-                session = new TrackSession(kind, request.OutputPath) { AudioCapture = audioCapture, WaveFileWriter = waveWriter };
+                session = new TrackSession(kind, request.OutputPath)
+                {
+                    AudioCapture = audioCapture,
+                    AudioSampleRate = audioCapture.WaveFormat.SampleRate,
+                    WaveFileWriter = waveWriter
+                };
                 session.Warnings.Add($"WASAPI audio format: {audioCapture.WaveFormat}; standalone WAV contains no video.");
-                session.Warnings.Add("WASAPI packet QPC timestamps are used for audio sample placement; timestamp-error packets fall back to callback arrival time.");
+                session.Warnings.Add("WASAPI device positions place continuous audio packets; QPC anchors the source clock and measures drift. Timestamp-error packets retain valid contiguous device positions and use arrival time only when an anchor/reset is needed.");
                 audioCapture.PacketAvailable += (packet, frames, devicePosition, qpcPosition, arrivalTicks, flags) =>
                 {
                     try
                     {
                         var packetDuration = frames * 1000d / Math.Max(1, audioCapture.WaveFormat.SampleRate);
                         if (packetDuration > session.MaxAudioPacketMilliseconds) session.MaxAudioPacketMilliseconds = packetDuration;
-                        var timing = AudioPacketClock.Resolve(qpcPosition, arrivalTicks, frames,
-                            audioCapture.WaveFormat.SampleRate, flags, Stopwatch.Frequency);
                         lock (session.AudioWriteGate)
                         {
                             if (session.AudioStartTicks == 0) return;
+                            var placement = session.AudioPositionMapper!.Map(devicePosition, frames, qpcPosition,
+                                arrivalTicks, flags);
+                            var timing = placement.Timing;
+                            if (placement.ClockReanchored && !session.AudioPaused)
+                            {
+                                // Flush all old-epoch packets before switching the active
+                                // source clock segment. The current packet is enqueued below.
+                                DrainAudioPackets(session, placement.StartFrame == long.MinValue
+                                    ? long.MinValue : placement.StartFrame - 1);
+                                var boundaryOutputFrame = AudioPacketTimeline.SourceFrameToActiveOutputFrame(
+                                    placement.StartFrame, session.AudioPauseFrameIntervals);
+                                if (boundaryOutputFrame < session.AudioFramesWritten)
+                                {
+                                    session.Warnings.Add("A WASAPI clock reanchor mapped behind the already-written WAV cursor; the new source-clock segment was clamped to the written boundary.");
+                                    boundaryOutputFrame = session.AudioFramesWritten;
+                                }
+                                WriteAudioSilence(session, boundaryOutputFrame - session.AudioFramesWritten,
+                                    audioCapture.WaveFormat.BlockAlign, arrivalTicks, AudioSilenceSource.PacketGap);
+                                AddAudioClockSegment(session, placement.ClockBoundaryStopwatchTicks, boundaryOutputFrame);
+                                session.AudioSegmentStartTicks = placement.ClockBoundaryStopwatchTicks;
+                                session.AudioSegmentStartOutputFrame = boundaryOutputFrame;
+                            }
                             session.AudioDiagnostics ??= new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
-                            var startFrame = (long)((decimal)(timing.StartStopwatchTicks - session.AudioStartTicks) * audioCapture.WaveFormat.SampleRate / Stopwatch.Frequency);
-                            var mismatch = session.ExpectedDevicePosition is long expected && devicePosition != expected && !timing.DataDiscontinuity;
                             session.AudioDiagnostics.Packet(arrivalTicks, frames, (flags & AudioClientBufferFlags.Silent) != 0,
                                 timing.ArrivalLatencyMilliseconds, timing.UsedArrivalFallback, timing.TimestampError,
-                                timing.DataDiscontinuity, mismatch);
-                            session.AudioPackets.Enqueue(new AudioPacket(startFrame, packet, timing, arrivalTicks,
+                                timing.DataDiscontinuity, placement.DevicePositionMismatch, placement.DevicePositionReset,
+                                placement.QpcResidualMilliseconds, placement.DeviceClockDriftPpm);
+                            session.AudioPackets.Enqueue(new AudioPacket(placement.StartFrame, packet, timing, arrivalTicks,
                                 (flags & AudioClientBufferFlags.Silent) != 0));
                             session.AudioPacketCount++;
                             if (session.FirstDevicePosition is null)
                             {
                                 session.FirstDevicePosition = devicePosition;
-                                session.FirstPacketOffsetMilliseconds = (timing.StartStopwatchTicks - session.AudioStartTicks) * 1000d / Stopwatch.Frequency;
+                                session.FirstPacketOffsetMilliseconds = placement.StartFrame * 1000d / audioCapture.WaveFormat.SampleRate;
                             }
-                            if (mismatch)
+                            if (placement.DevicePositionMismatch)
                                 session.DevicePositionMismatchCount++;
+                            if (placement.DevicePositionReset)
+                                session.DevicePositionResetCount++;
                             session.ExpectedDevicePosition = checked(devicePosition + frames);
                             if (timing.UsedArrivalFallback) session.TimestampFallbackCount++;
                             if (timing.TimestampError) session.TimestampErrorCount++;
@@ -169,6 +195,10 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 registered = true;
                 SetState(session, CaptureTrackState.Starting);
                 session.AudioStartTicks = Stopwatch.GetTimestamp();
+                session.AudioSegmentStartTicks = session.AudioStartTicks;
+                session.AudioSegmentStartOutputFrame = 0;
+                session.AudioPositionMapper = new AudioPacketPositionMapper(session.AudioStartTicks,
+                    audioCapture.WaveFormat.SampleRate, Stopwatch.Frequency);
                 session.AudioDiagnostics = new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
                 audioCapture.StartRecording();
                 var startedTicks = session.AudioStartTicks;
@@ -220,12 +250,24 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 throw new InvalidOperationException("The capture track is not active.");
             var backendFailure = session.FailureException;
             var stopTicks = Stopwatch.GetTimestamp();
+            var audioStoppedWhilePaused = session.AudioCapture is not null && session.PauseStartTicks != 0;
             lock (session.AudioWriteGate)
             {
                 if (session.PauseStartTicks != 0)
                 {
-                    session.PausedIntervals.Add(new CapturePauseInterval(session.PauseStartTicks, stopTicks));
+                    var pauseStartFrame = session.PauseStartSourceFrame ?? SourceFrameAtTicks(session, session.PauseStartTicks);
+                    var pauseEndFrame = SourceFrameAtTicks(session, stopTicks);
+                    var priorPausedFrames = session.AudioPauseFrameIntervals.Sum(interval => Math.Max(0, interval.EndFrame - interval.StartFrame));
+                    var pauseOutputFrame = Math.Max(0, pauseStartFrame - priorPausedFrames);
+                    var boundaryOffset = Math.Max(
+                        RecordPauseBoundaryNominalOffset(session, session.PauseStartTicks, pauseStartFrame),
+                        RecordPauseBoundaryNominalOffset(session, stopTicks, pauseEndFrame));
+                    AddAudioClockSegment(session, session.PauseStartTicks, pauseOutputFrame);
+                    session.PausedIntervals.Add(new CapturePauseInterval(session.PauseStartTicks, stopTicks,
+                        pauseStartFrame, pauseEndFrame, session.AudioSampleRate, boundaryOffset, pauseOutputFrame));
+                    session.AudioPauseFrameIntervals.Add((pauseStartFrame, pauseEndFrame));
                     session.PauseStartTicks = 0;
+                    session.PauseStartSourceFrame = null;
                 }
                 if (session.AudioCapture is not null) session.AudioPaused = true;
             }
@@ -246,16 +288,25 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 lock (session.AudioWriteGate)
                 {
                     var blockAlign = Math.Max(1, session.AudioCapture.WaveFormat.BlockAlign);
-                    var activeTicks = GetAudioActiveTicks(session, stopTicks);
-                    var targetFrames = Math.Max(0, (long)(activeTicks * (double)session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
-                    var sourceStopFrame = Math.Max(0, (long)((decimal)(stopTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
+                    var sourceStopFrame = SourceFrameAtTicks(session, stopTicks);
+                    var targetFrames = GetAudioActiveOutputFrame(session, stopTicks);
                     DrainAudioPackets(session, long.MaxValue, sourceStopFrame, targetFrames);
                     WriteAudioSilence(session, Math.Max(0, targetFrames - session.AudioFramesWritten), blockAlign,
                         stopTicks, AudioSilenceSource.Finalization);
+                    if (!audioStoppedWhilePaused) AddAudioClockSegment(session, stopTicks, session.AudioFramesWritten);
                 }
                 session.AudioPumpCancellation?.Dispose(); session.AudioPumpCancellation = null; session.AudioPumpTask = null;
                 session.WaveFileWriter?.Dispose();
                 session.AudioCapture.Dispose();
+                var activeDurationSeconds = session.AudioClockSegments.Sum(segment =>
+                    Math.Max(0, segment.EndStopwatchTicks - segment.StartStopwatchTicks) / (double)Stopwatch.Frequency);
+                if (session.AudioPositionMapper?.DeviceClockDriftPpm is double measuredDrift)
+                {
+                    var predictedDifferenceMs = Math.Abs(measuredDrift) * activeDurationSeconds / 1_000d;
+                    session.AudioDiagnostics?.SetClockEstimate(measuredDrift, predictedDifferenceMs);
+                    if (predictedDifferenceMs >= 100d)
+                        session.Warnings.Add($"Estimated audio device clock drift may accumulate about {predictedDifferenceMs:F1} ms over {activeDurationSeconds:F1} active seconds ({measuredDrift:F1} ppm); per-segment source rates are recorded for timeline mapping.");
+                }
                 if (session.AudioDiagnostics is { } diagnostics)
                 {
                     var diagnosticsPath = session.OutputPath + ".diagnostics.json";
@@ -271,8 +322,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                     }
                 }
                 if (session.PausedIntervals.Count > 0)
-                    session.Warnings.Add($"Audio pause boundaries were clipped to WASAPI packet QPC timestamps; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
-                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
+                    session.Warnings.Add($"Audio pause boundaries were mapped into WASAPI device sample time using the measured QPC clock rate; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
+                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
             }
             else
             {
@@ -310,8 +361,14 @@ public sealed class CaptureTrackService : ICaptureTrackService
             }
             _sessions.TryRemove(trackId, out _);
             SetState(session, CaptureTrackState.Completed);
+            var audioSourceRate = session.AudioClockSegments.Count == 0 ? (double?)null :
+                session.AudioClockSegments.Sum(segment => segment.SourceEndFrame - segment.SourceStartFrame) /
+                (double)session.AudioSampleRate!.Value /
+                (session.AudioClockSegments.Sum(segment => segment.EndStopwatchTicks - segment.StartStopwatchTicks) / (double)Stopwatch.Frequency);
             return new CaptureTrackResult(session.Handle!, stopTicks, session.Width, session.Height,
-                session.FrameRate, session.EncoderMode, session.Warnings.ToArray(), session.PausedIntervals.ToArray());
+                session.FrameRate, session.EncoderMode, session.Warnings.ToArray(), session.PausedIntervals.ToArray(),
+                session.AudioSampleRate, session.AudioPositionMapper?.DeviceClockDriftPpm,
+                session.AudioCapture is null ? null : session.AudioFramesWritten, session.AudioClockSegments.ToArray(), audioSourceRate);
         }
         catch (Exception ex)
         {
@@ -397,7 +454,12 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 var now = Stopwatch.GetTimestamp();
                 if (pause)
                 {
-                    lock (session.AudioWriteGate) { session.AudioPaused = true; session.PauseStartTicks = now; }
+                    lock (session.AudioWriteGate)
+                    {
+                        session.AudioPaused = true;
+                        session.PauseStartTicks = now;
+                        session.PauseStartSourceFrame = SourceFrameAtTicks(session, now);
+                    }
                     SetState(session, CaptureTrackState.Paused, now);
                 }
                 else
@@ -405,8 +467,21 @@ public sealed class CaptureTrackService : ICaptureTrackService
                     lock (session.AudioWriteGate)
                     {
                         session.AudioPaused = false;
-                        session.PausedIntervals.Add(new CapturePauseInterval(session.PauseStartTicks, now));
+                        var pauseStartFrame = session.PauseStartSourceFrame ?? SourceFrameAtTicks(session, session.PauseStartTicks);
+                        var pauseEndFrame = SourceFrameAtTicks(session, now);
+                        var priorPausedFrames = session.AudioPauseFrameIntervals.Sum(interval => Math.Max(0, interval.EndFrame - interval.StartFrame));
+                        var pauseOutputFrame = Math.Max(0, pauseStartFrame - priorPausedFrames);
+                        var boundaryOffset = Math.Max(
+                            RecordPauseBoundaryNominalOffset(session, session.PauseStartTicks, pauseStartFrame),
+                            RecordPauseBoundaryNominalOffset(session, now, pauseEndFrame));
+                        session.PausedIntervals.Add(new CapturePauseInterval(session.PauseStartTicks, now,
+                            pauseStartFrame, pauseEndFrame, session.AudioSampleRate, boundaryOffset, pauseOutputFrame));
+                        AddAudioClockSegment(session, session.PauseStartTicks, pauseOutputFrame);
+                        session.AudioPauseFrameIntervals.Add((pauseStartFrame, pauseEndFrame));
                         session.PauseStartTicks = 0;
+                        session.PauseStartSourceFrame = null;
+                        session.AudioSegmentStartTicks = now;
+                        session.AudioSegmentStartOutputFrame = pauseOutputFrame;
                     }
                     SetState(session, CaptureTrackState.Recording, now);
                 }
@@ -546,10 +621,9 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 {
                     if (session.AudioStartTicks == 0) continue;
                     var nowTicks = Stopwatch.GetTimestamp();
-                    var targetSourceFrame = Math.Max(0, (long)((decimal)(nowTicks - session.AudioStartTicks) * format.SampleRate / Stopwatch.Frequency) - reorderFrames);
+                    var targetSourceFrame = Math.Max(0, SourceFrameAtTicks(session, nowTicks) - reorderFrames);
                     DrainAudioPackets(session, targetSourceFrame);
-                    var activeTicks = GetAudioActiveTicks(session, nowTicks);
-                    var targetOutputFrame = Math.Max(0, (long)(activeTicks * (double)format.SampleRate / Stopwatch.Frequency) - reorderFrames);
+                    var targetOutputFrame = Math.Max(0, GetAudioActiveOutputFrame(session, nowTicks) - reorderFrames);
                     WriteAudioSilence(session, Math.Max(0, targetOutputFrame - session.AudioFramesWritten), blockAlign,
                         nowTicks, AudioSilenceSource.Pump);
                 }
@@ -566,12 +640,10 @@ public sealed class CaptureTrackService : ICaptureTrackService
         {
             session.AudioPackets.Dequeue();
             var packetFrames = packet.Data.Length / blockAlign;
-            var pauseRanges = session.PausedIntervals.Select(interval => (
-                StartFrame: Math.Max(0, (long)((decimal)(interval.PauseStartStopwatchTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency)),
-                EndFrame: Math.Max(0, (long)((decimal)(interval.ResumeStopwatchTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency)))).ToList();
+            var pauseRanges = MapAudioPauseRanges(session);
             if (session.AudioPaused && session.PauseStartTicks > 0)
             {
-                var start = Math.Max(0, (long)((decimal)(session.PauseStartTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
+                var start = session.PauseStartSourceFrame ?? SourceFrameAtTicks(session, session.PauseStartTicks);
                 pauseRanges.Add((start, long.MaxValue));
             }
             foreach (var segment in AudioPacketTimeline.MapPacket(packet.StartFrame, packetFrames, pauseRanges,
@@ -613,13 +685,45 @@ public sealed class CaptureTrackService : ICaptureTrackService
         }
     }
 
-    private static long GetAudioActiveTicks(TrackSession session, long nowTicks)
+    private static long SourceFrameAtTicks(TrackSession session, long ticks)
     {
         if (session.AudioStartTicks == 0) return 0;
-        var pausedTicks = session.PausedIntervals.Sum(interval => interval.ResumeStopwatchTicks - interval.PauseStartStopwatchTicks);
+        return Math.Max(0, session.AudioPositionMapper?.StopwatchTicksToSourceFrame(ticks) ??
+            (long)((decimal)(ticks - session.AudioStartTicks) * session.AudioCapture!.WaveFormat.SampleRate / Stopwatch.Frequency));
+    }
+
+    private static long GetAudioActiveOutputFrame(TrackSession session, long ticks)
+    {
+        var sourceFrame = SourceFrameAtTicks(session, ticks);
+        var removed = MapAudioPauseRanges(session)
+            .Sum(interval => Math.Max(0, Math.Min(sourceFrame, interval.EndFrame) - Math.Min(sourceFrame, interval.StartFrame)));
         if (session.AudioPaused && session.PauseStartTicks != 0)
-            pausedTicks += Math.Max(0, nowTicks - session.PauseStartTicks);
-        return Math.Max(0, nowTicks - session.AudioStartTicks - pausedTicks);
+        {
+            var pauseStart = session.PauseStartSourceFrame ?? SourceFrameAtTicks(session, session.PauseStartTicks);
+            removed += Math.Max(0, sourceFrame - Math.Min(sourceFrame, pauseStart));
+        }
+        return Math.Max(0, sourceFrame - removed);
+    }
+
+    private static List<(long StartFrame, long EndFrame)> MapAudioPauseRanges(TrackSession session) =>
+        session.AudioPauseFrameIntervals.ToList();
+
+    private static long RecordPauseBoundaryNominalOffset(TrackSession session, long stopwatchTicks, long sourceFrame)
+    {
+        var nominalFrame = (long)((decimal)(stopwatchTicks - session.AudioStartTicks) *
+                                  session.AudioCapture!.WaveFormat.SampleRate / Stopwatch.Frequency);
+        var offsetFrames = Math.Abs(sourceFrame - nominalFrame);
+        session.AudioDiagnostics?.PauseBoundaryMapped(stopwatchTicks, offsetFrames);
+        return offsetFrames;
+    }
+
+    private static void AddAudioClockSegment(TrackSession session, long endStopwatchTicks, long sourceEndOutputFrame)
+    {
+        if (session.AudioSampleRate is not int sampleRate || sampleRate <= 0) return;
+        var segment = AudioClockSegmentMath.Create(session.AudioSegmentStartTicks, endStopwatchTicks,
+            session.AudioSegmentStartOutputFrame, Math.Max(session.AudioSegmentStartOutputFrame, sourceEndOutputFrame),
+            sampleRate, Stopwatch.Frequency);
+        if (segment is not null) session.AudioClockSegments.Add(segment);
     }
 
     private static double Percentile(List<double> values, double percentile)
@@ -704,6 +808,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal string OutputPath { get; } = Path.GetFullPath(outputPath);
         internal Recorder Recorder { get; set; } = null!;
         internal TimestampedWasapiCapture? AudioCapture { get; set; }
+        internal AudioPacketPositionMapper? AudioPositionMapper { get; set; }
+        internal int? AudioSampleRate { get; set; }
         internal WaveFileWriter? WaveFileWriter { get; set; }
         internal object AudioWriteGate { get; } = new();
         internal Queue<AudioPacket> AudioPackets { get; } = new();
@@ -725,8 +831,13 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal TaskCompletionSource<CaptureTrackState>? StatusChanged { get; set; }
         internal SemaphoreSlim Gate { get; } = new(1, 1);
         internal List<CapturePauseInterval> PausedIntervals { get; } = [];
+        internal List<(long StartFrame, long EndFrame)> AudioPauseFrameIntervals { get; } = [];
+        internal List<CaptureAudioClockSegment> AudioClockSegments { get; } = [];
         internal List<string> Warnings { get; } = [];
         internal long PauseStartTicks { get; set; }
+        internal long? PauseStartSourceFrame { get; set; }
+        internal long AudioSegmentStartTicks { get; set; }
+        internal long AudioSegmentStartOutputFrame { get; set; }
         internal int Width { get; set; }
         internal int Height { get; set; }
         internal int FrameRate { get; set; }
@@ -737,6 +848,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal long TimestampErrorCount { get; set; }
         internal long DataDiscontinuityCount { get; set; }
         internal long DevicePositionMismatchCount { get; set; }
+        internal long DevicePositionResetCount { get; set; }
         internal long? FirstDevicePosition { get; set; }
         internal long? ExpectedDevicePosition { get; set; }
         internal double FirstPacketOffsetMilliseconds { get; set; } = double.NaN;
