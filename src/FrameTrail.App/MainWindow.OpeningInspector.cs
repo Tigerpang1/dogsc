@@ -21,7 +21,12 @@ public partial class MainWindow
             Margin = new Thickness(0, 4, 0, 10)
         };
         AutomationProperties.SetName(enabled, "启用全局开场");
-        enabled.Click += (_, _) => ApplyEdit(p => (p.Settings.Opening ??= new()).Enabled = enabled.IsChecked == true);
+        RoutedEventHandler enabledChanged = (_, _) =>
+        {
+            if (!buildingInspector) ApplyEdit(p => (p.Settings.Opening ??= new()).Enabled = enabled.IsChecked == true);
+        };
+        enabled.Checked += enabledChanged;
+        enabled.Unchecked += enabledChanged;
         InspectorHost.Children.Add(enabled);
 
         if (!opening.Enabled) return;

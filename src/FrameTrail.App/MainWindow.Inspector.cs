@@ -26,7 +26,7 @@ public partial class MainWindow
  private void Section(string text){var title=new TextBlock{Text=text,Style=(Style)FindResource("SectionTitle")};if(inspectorTab=="zoom"&&motionTab=="motion")title.Margin=new Thickness(0,20,0,12);InspectorHost.Children.Add(title);}
  private void Note(string text,bool spacious=false)=>InspectorHost.Children.Add(new TextBlock{Text=text,Foreground=Brush("Secondary"),FontSize=11,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,spacious?24:8,0,12)});
  private void ActionButton(string label,Action action,bool primary=false){var b=new Button{Content=label,HorizontalContentAlignment=HorizontalAlignment.Center,Margin=new Thickness(0,6,0,4)};if(primary)b.Style=(Style)FindResource("PrimaryButton");b.Click+=(_,_)=>action();InspectorHost.Children.Add(b);}
- private void Toggle(string label,bool current,Action<bool> action){var c=new CheckBox{Content=label,IsChecked=current,Style=(Style)FindResource("InspectorToggle")};c.Click+=(_,_)=>{if(!buildingInspector)action(c.IsChecked==true);};InspectorHost.Children.Add(c);}
+ private void Toggle(string label,bool current,Action<bool> action){var c=new CheckBox{Content=label,IsChecked=current,Style=(Style)FindResource("InspectorToggle")};RoutedEventHandler changed=(_,_)=>{if(!buildingInspector)action(c.IsChecked==true);};c.Checked+=changed;c.Unchecked+=changed;InspectorHost.Children.Add(c);}
  private void TextField(string label,string text,Action<string> apply)
  {
   if(label.Length>0)InspectorHost.Children.Add(new TextBlock{Text=label,FontSize=12,Foreground=Brush("Secondary"),Margin=new Thickness(0,12,0,4)});
@@ -35,11 +35,12 @@ public partial class MainWindow
  private void Number(string label,double value,double min,double max,Action<double> apply,string suffix="",string format="0.##",bool inline=false)
  {
   var panel=new StackPanel{Margin=new Thickness(0,6,0,8)};var row=new DockPanel();var box=new TextBox{Text=value.ToString(format,CultureInfo.CurrentCulture)+suffix,Width=56,FontSize=11,TextAlignment=TextAlignment.Center,Padding=new Thickness(7,4,7,4),Margin=new Thickness(0),Background=Brush("ControlSurface")};DockPanel.SetDock(box,Dock.Right);row.Children.Add(box);row.Children.Add(new TextBlock{Text=label,FontSize=12,VerticalAlignment=VerticalAlignment.Center,Foreground=Brush("Secondary")});panel.Children.Add(row);
-  var slider=new Slider{Minimum=min,Maximum=max,Value=Math.Clamp(value,min,max),IsMoveToPointEnabled=true,Margin=new Thickness(4,8,4,0)};var committed=value;
+  var slider=new InspectorSlider{Style=(Style)FindResource(typeof(Slider)),Minimum=min,Maximum=max,Value=Math.Clamp(value,min,max),IsMoveToPointEnabled=true,Margin=new Thickness(4,8,4,0)};var committed=value;
   System.Windows.Automation.AutomationProperties.SetName(slider,label);System.Windows.Automation.AutomationProperties.SetName(box,label+"数值");
   slider.ValueChanged+=(_,_)=>box.Text=slider.Value.ToString(format,CultureInfo.CurrentCulture)+suffix;
   void CommitSlider(){if(buildingInspector||Math.Abs(committed-slider.Value)<1e-8)return;committed=slider.Value;apply(slider.Value);}
   slider.PreviewMouseLeftButtonUp+=(_,_)=>CommitSlider();slider.KeyUp+=(_,_)=>CommitSlider();
+  slider.AutomationValueCommitted+=(_,_)=>CommitSlider();slider.LostKeyboardFocus+=(_,_)=>CommitSlider();
   void CommitBox(){if(buildingInspector)return;var raw=box.Text.Replace(suffix.Length>0?suffix:"\0","");if(double.TryParse(raw,NumberStyles.Float,CultureInfo.CurrentCulture,out var result)&&double.IsFinite(result)){result=Math.Clamp(result,min,max);if(Math.Abs(result-committed)>1e-8){committed=result;apply(result);}}else box.Text=committed.ToString(format,CultureInfo.CurrentCulture)+suffix;}
   box.LostKeyboardFocus+=(_,_)=>CommitBox();box.KeyDown+=(_,e)=>{if(e.Key==Key.Enter){CommitBox();e.Handled=true;}};
   if(inline){((FrameworkElement)row.Children[1]).Width=96;slider.Margin=new Thickness(8,0,18,0);row.Children.Add(slider);}else panel.Children.Add(slider);InspectorHost.Children.Add(panel);
