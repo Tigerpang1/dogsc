@@ -6,11 +6,12 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $repoRoot ('artifacts/validation/source-provenance-policy-' + [guid]::NewGuid().ToString('N'))
 $parentRepository = Join-Path $output 'unrelated-parent'
 $null = New-Item -ItemType Directory -Path $parentRepository -Force
-& git -C $parentRepository init --quiet
+& git -c core.longpaths=true -C $parentRepository init --quiet
 if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize isolated policy fixture.' }
 [IO.File]::WriteAllText((Join-Path $parentRepository 'parent.txt'), 'Unrelated parent repository fixture.')
-& git -C $parentRepository add parent.txt
-& git -C $parentRepository -c user.name=FrameTrailPolicyTest -c user.email=policy-test@example.invalid commit --quiet -m 'Isolated fixture'
+& git -c core.longpaths=true -C $parentRepository add parent.txt
+if ($LASTEXITCODE -ne 0) { throw 'Cannot stage isolated policy fixture.' }
+& git -c core.longpaths=true -C $parentRepository -c user.name=FrameTrailPolicyTest -c user.email=policy-test@example.invalid commit --quiet -m 'Isolated fixture'
 if ($LASTEXITCODE -ne 0) { throw 'Cannot commit isolated policy fixture.' }
 $upstream = 'e207d11b111c5e58152238fb64115b2009850547'
 $archiveCommit = '1111111111111111111111111111111111111111'
