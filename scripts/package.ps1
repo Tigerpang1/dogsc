@@ -58,7 +58,7 @@ try {
     Push-Location $repoRoot
     try {
         & dotnet publish $project --configuration $Configuration --runtime win-x64 --self-contained true `
-            -p:Platform=x64 -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=false `
+            -p:Platform=x64 -p:RestoreLockedMode=true -p:PublishSingleFile=false -p:IncludeNativeLibrariesForSelfExtract=false `
             -p:Version=$Version -p:AssemblyVersion=$Version -p:FileVersion=$Version `
             --output $publishStaging
         if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败，退出码 $LASTEXITCODE" }

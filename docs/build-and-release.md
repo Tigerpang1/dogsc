@@ -13,7 +13,7 @@
 
 ## 构建和测试
 
-需要已安装 .NET 10 SDK 10.0.401 或更新的 .NET 10 SDK。仓库 `global.json` 以 SDK `10.0.401` 为起点，`latestFeature` 允许采用兼容的后续 .NET 10 feature band。自包含发布目录包含对应的 .NET 10 Runtime 和 Windows Desktop Runtime；发行时应使用当前受支持的补丁版 SDK 重建，避免捆绑过时运行库。
+需要已安装 .NET 10 SDK 10.0.401 或更新的 .NET 10 SDK。仓库 `global.json` 以 SDK `10.0.401` 为起点，`latestFeature` 允许采用兼容的后续 .NET 10 feature band。所有项目统一声明 `win-x64` 恢复目标，使普通测试与发布不会轮流改写NuGet锁文件；发布启用 `RestoreLockedMode`，依赖图与已提交锁文件不一致时即停止。自包含发布目录包含对应的 .NET 10 Runtime 和 Windows Desktop Runtime；发行时应使用当前受支持的补丁版 SDK 重建，避免捆绑过时运行库。
 
 ```powershell
 .\scripts\build.ps1
