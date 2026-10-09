@@ -13,8 +13,8 @@
     <ComboBox x:Name="Targets" DisplayMemberPath="Name"/><Button Content="刷新来源" Click="RefreshDevicesClick"/>
     <Button x:Name="RegionButton" Content="框选录制区域" Click="SelectRegionClick" Visibility="Collapsed"/><TextBlock x:Name="RegionLabel" FontSize="11" Foreground="#9DA8BB" TextWrapping="Wrap"/>
     <TextBlock Text="声音与帧率" Style="{StaticResource Label}"/><CheckBox x:Name="SystemSound" Content="录入系统声音"/><CheckBox x:Name="Microphone" Content="录入麦克风"/><ComboBox x:Name="MicDevices" DisplayMemberPath="Name"/><ComboBox x:Name="CaptureFps" SelectedIndex="0"><ComboBoxItem Content="30 FPS"/><ComboBoxItem Content="60 FPS"/></ComboBox>
-    <Button x:Name="RecordButton" Content="●  开始录制" Background="#CB6863" Click="RecordClick" Margin="0,16,0,3"/><Button Content="悬浮备忘录" Click="MemoClick"/><Button Content="恢复未完成录制" Click="RecoverRecordingClick"/>
-    <TextBlock Text="录制条可添加标记并结束录制。&#10;Ctrl+Alt+M 添加标记。&#10;完成的项目可在录制时继续编辑。" TextWrapping="Wrap" FontSize="11" Foreground="#9DA8BB" Margin="0,12,0,0"/>
+    <ComboBox x:Name="CaptureResolution" SelectedIndex="0"><ComboBoxItem Content="录制：最高 1080p"/><ComboBoxItem Content="录制：原始尺寸"/></ComboBox><Button x:Name="RecordButton" Content="●  开始录制（≤60 秒）" Background="#CB6863" Click="RecordClick" Margin="0,16,0,3"/><Button Content="悬浮备忘录" Click="MemoClick"/><Button Content="恢复未完成录制" Click="RecoverRecordingClick"/>
+    <TextBlock Text="技术预览：单次录制最多 60 秒。&#10;长录制内存问题仍在修复。&#10;录制条可添加标记并结束录制。&#10;Ctrl+Alt+M 添加标记。&#10;完成的项目可在录制时继续编辑。" TextWrapping="Wrap" FontSize="11" Foreground="#9DA8BB" Margin="0,12,0,0"/>
     <TextBlock Text="标记" Style="{StaticResource Label}"/><ListBox x:Name="Markers" Height="90" MouseDoubleClick="MarkerJump"/><Button Content="删除选中标记" Click="DeleteMarkerClick"/>
    </StackPanel></ScrollViewer></Border>
    <Grid Grid.Column="1" Margin="24,18"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="48"/></Grid.RowDefinitions>

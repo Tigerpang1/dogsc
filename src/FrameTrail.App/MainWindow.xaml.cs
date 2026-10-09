@@ -38,6 +38,9 @@ public partial class MainWindow : Window
     private RecordingBar? recordingBar;
     private readonly List<(long Tick, string Label)> recordingMarkers = [];
     private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
+    private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
+    private long recordingPrivateBaseline;
+    private bool protectiveStop;
     private long recordingStart;
     private record TargetItem(string Name, CaptureTarget Target);
     private record ClipItem(Guid Id, string Title, string Detail, BitmapSource? Thumbnail);
@@ -46,12 +49,21 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
-        Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.Close(); };
+        Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.Close(); recordingGuard.Stop(); };
+        recordingGuard.Tick += async (_, _) =>
+        {
+            if(capture.State!=CaptureState.Recording || protectiveStop)return;
+            using var process=Process.GetCurrentProcess(); process.Refresh();
+            var elapsed=(Stopwatch.GetTimestamp()-recordingStart)/(double)Stopwatch.Frequency;
+            string? reason=elapsed>=60 ? "技术预览当前单次录制上限为 60 秒；长录制内存问题尚未修复。" : process.PrivateMemorySize64-recordingPrivateBaseline>512L*1024*1024 ? "录制进程内存增长达到本次验证设置的保护阈值。" : null;
+            if(recordingFolder!=null && new DriveInfo(Path.GetPathRoot(recordingFolder)!).AvailableFreeSpace<300L*1024*1024)reason="录制盘剩余空间低于 300MiB。";
+            if(reason==null)return; protectiveStop=true;recordingGuard.Stop();await Guard(async()=>{await StopRecording();Status.Text="已保护性结束并保留素材："+reason;});protectiveStop=false;
+        };
         capture.ErrorOccurred += (_, error) => Dispatcher.BeginInvoke(() => { Status.Text = "录制提示：" + error.Message; App.Log(error.Exception ?? new Exception(error.Message)); });
         capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(() =>
         {
             if (state.State == CaptureState.Recording) recordingStart = state.StopwatchTicks;
-            if (state.State == CaptureState.Faulted) { RecordButton.Content = "●  重新录制"; RecordButton.IsEnabled = true; recordingBar?.Close(); recordingBar = null; }
+            if (state.State == CaptureState.Faulted) { recordingGuard.Stop(); RecordButton.Content = "●  重新录制"; RecordButton.IsEnabled = true; recordingBar?.Close(); recordingBar = null; }
         });
         playbackTimer.Tick += (_, _) => { if (!playing) return; refreshing = true; Playhead.Value = Math.Min(Player.Position.TotalSeconds, Playhead.Maximum); refreshing = false; UpdateTime(); };
     }
@@ -71,7 +83,14 @@ public partial class MainWindow : Window
             try
             {
                 SystemSound.IsChecked=true; await ToggleRecording();
-                await Task.Delay(1200); AddMarker(); await Task.Delay(2300); await StopRecording();
+                await Task.Delay(1200); AddMarker();
+                if(args.Contains("--wait-safety"))
+                {
+                    var safetyWatch=Stopwatch.StartNew();
+                    while((capture.State is CaptureState.Recording or CaptureState.Stopping)||project==null)
+                    { if(safetyWatch.Elapsed.TotalSeconds>80)throw new TimeoutException("保护停录未在预期时间完成。"); await Task.Delay(250); }
+                }
+                else { await Task.Delay(2300); await StopRecording(); }
                 var originalDuration=project!.Timeline.Duration;
                 Edit(p => { var split=p.Timeline.Split(p.Timeline.Segments[0].Id,originalDuration/2); p.Timeline.SetPlaybackRate(split.Right.Id,2); p.Timeline.Reorder(split.Right.Id,0); });
                 await OpenProject(projectFile!);
@@ -132,12 +151,17 @@ public partial class MainWindow : Window
         recordingFolder = Path.Combine(diagnosticRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(Path.Combine(recordingFolder, "media"));
         var output = Path.Combine(recordingFolder, "media", "screen.mp4");
-        var request = new RecordingRequest(output, target, new VideoOptions(FrameRate: CaptureFps.SelectedIndex == 1 ? 60 : 30), new AudioOptions(SystemSound.IsChecked == true, RecordMicrophone: Microphone.IsChecked == true, MicrophoneDeviceId: (MicDevices.SelectedItem as AudioDeviceInfo)?.Id), new InputTrackingOptions(OutputPath: Path.Combine(recordingFolder, "pointer.jsonl")));
+        if(new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace<500L*1024*1024)throw new IOException("录制盘剩余空间低于 500MiB，请释放空间后重试。");
+        var bounds=target.Bounds; int? captureWidth=null,captureHeight=null;
+        if(CaptureResolution.SelectedIndex==0 && bounds!=null)
+        { var scale=Math.Min(1,Math.Min(1920d/bounds.Width,1080d/bounds.Height));captureWidth=Math.Max(2,(int)(bounds.Width*scale)/2*2);captureHeight=Math.Max(2,(int)(bounds.Height*scale)/2*2); }
+        var request = new RecordingRequest(output, target, new VideoOptions(FrameRate: CaptureFps.SelectedIndex == 1 ? 60 : 30, Width:captureWidth,Height:captureHeight), new AudioOptions(SystemSound.IsChecked == true, RecordMicrophone: Microphone.IsChecked == true, MicrophoneDeviceId: (MicDevices.SelectedItem as AudioDeviceInfo)?.Id), new InputTrackingOptions(OutputPath: Path.Combine(recordingFolder, "pointer.jsonl")));
         await File.WriteAllTextAsync(Path.Combine(recordingFolder, "recording-recovery.json"), JsonSerializer.Serialize(new { request.OutputPath, TargetKind = request.Target.Kind.ToString(), request.Target.Id, request.Target.Bounds, WindowHandle = request.Target.WindowHandle.ToInt64(), request.Video, request.Audio }, new JsonSerializerOptions { WriteIndented = true }));
         recordingMarkers.Clear(); RecordButton.IsEnabled = false; Status.Text = "正在启动原生采集…";
         try
         {
-            await capture.StartAsync(request); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording)); recordingBar.Show();
+            using(var process=Process.GetCurrentProcess()) recordingPrivateBaseline=process.PrivateMemorySize64;
+            await capture.StartAsync(request); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording)); recordingBar.Show();
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
         finally { RecordButton.IsEnabled = true; }
@@ -151,10 +175,11 @@ public partial class MainWindow : Window
     }
     private async Task StopRecording()
     {
+        recordingGuard.Stop();
         RecordButton.IsEnabled = false;
         try
         {
-            var result = await capture.StopAsync(); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "●  开始录制";
+            var result = await capture.StopAsync(); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "●  开始录制（≤60 秒）";
             await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "capture-result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
             var info = await MediaTools.ProbeAsync(result.OutputPath);
             var created = MakeProject("media/screen.mp4", info);

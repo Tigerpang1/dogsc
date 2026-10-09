@@ -188,15 +188,12 @@ public sealed class GpuFrameRenderer : IDisposable
         public Vector4 Background;
     }
 
-    // Kept inline so published builds do not depend on a content-file copy rule.
-    private const string ShaderSource = """
-cbuffer SceneConstants : register(b0) { float4 OutputSourceSize; float4 Crop; float4 ScreenRect; float4 Style; float4 Cursor; float4 Background; };
-Texture2D SourceTexture : register(t0); SamplerState LinearClamp : register(s0);
-struct VertexOutput { float4 Position : SV_Position; float2 UV : TEXCOORD0; };
-VertexOutput VSMain(uint vertexId : SV_VertexID) { VertexOutput o; float2 p=float2((vertexId<<1)&2,vertexId&2); o.Position=float4(p*float2(2,-2)+float2(-1,1),0,1); o.UV=p; return o; }
-float roundedBox(float2 p,float2 h,float r) { float2 q=abs(p)-h+r; return length(max(q,0))+min(max(q.x,q.y),0)-r; }
-float segmentDistance(float2 p,float2 a,float2 b) { float2 ab=b-a; float h=saturate(dot(p-a,ab)/max(dot(ab,ab),0.0001)); return length(p-(a+h*ab)); }
-float cursorShape(float2 p) { const float2 v[7]={float2(0,0),float2(0,18),float2(4.7,13.7),float2(8.5,22),float2(11.5,20.7),float2(8.2,12.5),float2(15,12.2)}; bool inside=false; float edge=10000; [unroll] for(int i=0;i<7;i++){int j=(i+6)%7; float2 a=v[i],b=v[j]; edge=min(edge,segmentDistance(p,a,b)); bool crosses=((a.y>p.y)!=(b.y>p.y))&&(p.x<(b.x-a.x)*(p.y-a.y)/(b.y-a.y+0.00001)+a.x); if(crosses)inside=!inside;} return inside?-edge:edge; }
-float4 PSMain(VertexOutput i):SV_Target { float2 pixel=i.UV*OutputSourceSize.xy; float4 color=Background; float2 center=ScreenRect.xy+ScreenRect.zw*.5; float2 local=(pixel-ScreenRect.xy)/max(ScreenRect.zw,1); float2 halfSize=ScreenRect.zw*.5; float d=roundedBox(pixel-center,halfSize,Style.x); float sd=roundedBox(pixel-(center+float2(0,Style.y*.24)),halfSize,Style.x+Style.y*.4); float shadow=(1-smoothstep(-Style.y,Style.y,sd))*Style.z; color.rgb=lerp(color.rgb,float3(0,0,0),shadow); if(d<=0){float2 uv=Crop.xy+local*Crop.zw;color=SourceTexture.Sample(LinearClamp,uv);} if(d<=0&&Style.w>.001&&Cursor.z>.5){float2 cp=ScreenRect.xy+((Cursor.xy-Crop.xy)/max(Crop.zw,.00001))*ScreenRect.zw;float radius=5+Style.w*24;float ring=1-smoothstep(1.2,3.3,abs(length(pixel-cp)/max(Cursor.w,.0001)-radius));color.rgb=lerp(color.rgb,float3(1,.92,.35),ring*Style.w*.82);} if(d<=0&&Cursor.z>.5){float2 cp=ScreenRect.xy+((Cursor.xy-Crop.xy)/max(Crop.zw,.00001))*ScreenRect.zw;float d=cursorShape((pixel-cp)/max(Cursor.w,.0001));float outline=1-smoothstep(1,2,abs(d));float fill=1-smoothstep(-.4,.6,d);color.rgb=lerp(color.rgb,float3(1,1,1),fill);color.rgb=lerp(color.rgb,float3(.02,.025,.035),outline);} color.a=1;return color; }
-""";
+    private static readonly string ShaderSource = ReadShaderSource();
+    private static string ReadShaderSource()
+    {
+        using var stream = typeof(GpuFrameRenderer).Assembly.GetManifestResourceStream("FrameTrail.Media.Scene.hlsl")
+            ?? throw new InvalidOperationException("内嵌 GPU 场景 shader 缺失。");
+        using var reader = new StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 }

@@ -22,6 +22,7 @@ $licenseOutput = Join-Path $publishRoot 'licenses'
 $ffmpegOutput = Join-Path $portableRoot 'tools/ffmpeg'
 $zipPath = Join-Path $releaseRoot "FrameTrail-$Version-win-x64.zip"
 $installerPath = Join-Path $releaseRoot "FrameTrail-Setup-$Version-win-x64.exe"
+$upstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 
 if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
     throw "应用项目尚未集成：$project"
@@ -81,6 +82,28 @@ if (-not (Test-Path -LiteralPath $applicationExe -PathType Leaf)) {
     throw "发布目录中未找到应用主程序 $ApplicationExeName。检查 App 项目的 AssemblyName 后再运行 package.ps1。"
 }
 Copy-Item -LiteralPath $licenseRoot -Destination $licenseOutput -Recurse -Force
+foreach ($name in @('README.md', 'LICENSE')) {
+    $sourceFile = Join-Path $repoRoot $name
+    if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "发行材料缺失：$sourceFile" }
+    Copy-Item -LiteralPath $sourceFile -Destination $publishRoot -Force
+}
+$docsSource = Join-Path $repoRoot 'docs'
+if (-not (Test-Path -LiteralPath $docsSource -PathType Container)) { throw "文档目录缺失：$docsSource" }
+Copy-Item -LiteralPath $docsSource -Destination $publishRoot -Recurse -Force
+
+$recordingLimitNotice = @'
+当前预览版本限制：每次录制最长 60 秒。
+这是原生录制缓冲区的保护限制；请在录制前保存可恢复信息并按时结束录制。
+'@
+$recordingLimitNotice | Set-Content -LiteralPath (Join-Path $publishRoot 'RECORDING-LIMIT.txt') -Encoding utf8
+
+$gitHead = (& git -C $repoRoot rev-parse HEAD 2>$null | Select-Object -First 1).Trim()
+if ($LASTEXITCODE -ne 0 -or $gitHead -notmatch '^[0-9a-f]{40}$') { throw '无法读取仓库 HEAD 提交。' }
+& git -C (Join-Path $repoRoot 'upstream/dogsc') cat-file -e "$upstreamBaseSha^{commit}" 2>$null
+if ($LASTEXITCODE -ne 0) { throw "上游固定基线不存在：$upstreamBaseSha" }
+$gitStatusLines = @(& git -C $repoRoot status --porcelain 2>$null)
+if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
+$workingTreeState = if ($gitStatusLines.Count -eq 0) { 'clean' } else { 'dirty' }
 
 $ffmpegSourceMaterial = Join-Path $releaseRoot 'ffmpeg-corresponding-source'
 if (-not $WithoutFfmpeg) {
@@ -124,6 +147,9 @@ $buildInfo = @"
 配置：$Configuration
 打包用途：本地验证
 包含 FFmpeg：$(-not $WithoutFfmpeg)
+FrameTrail 源码提交：$gitHead
+DogSC 上游审计基线：$upstreamBaseSha
+打包时工作区：$workingTreeState
 "@
 $buildInfo | Set-Content -LiteralPath (Join-Path $publishRoot 'BUILD-INFO.txt') -Encoding utf8
 

@@ -10,6 +10,7 @@ internal sealed class InputSampler : IAsyncDisposable
     private readonly int _rate;
     private readonly Func<PixelRect> _boundsProvider;
     private readonly Action<InputEvent> _onEvent;
+    private readonly Action<Exception> _onError;
     private readonly CancellationTokenSource _stop = new();
     private readonly StreamWriter? _writer;
     private Task? _worker;
@@ -17,9 +18,9 @@ internal sealed class InputSampler : IAsyncDisposable
     private static readonly (int Code, string Name)[] Modifiers = [(0x10, "Shift"), (0x11, "Control"), (0x12, "Alt"), (0x5B, "Windows"), (0x5C, "Windows")];
     private static readonly (int Code, MouseButton Button)[] Buttons = [(0x01, MouseButton.Left), (0x02, MouseButton.Right), (0x04, MouseButton.Middle), (0x05, MouseButton.X1), (0x06, MouseButton.X2)];
 
-    internal InputSampler(InputTrackingOptions options, Func<PixelRect> boundsProvider, Action<InputEvent> onEvent)
+    internal InputSampler(InputTrackingOptions options, Func<PixelRect> boundsProvider, Action<InputEvent> onEvent, Action<Exception> onError)
     {
-        _rate = Math.Clamp(options.SampleRate, 1, 240); _boundsProvider = boundsProvider; _onEvent = onEvent;
+        _rate = Math.Clamp(options.SampleRate, 1, 240); _boundsProvider = boundsProvider; _onEvent = onEvent; _onError=onError;
         if (!string.IsNullOrWhiteSpace(options.OutputPath))
         {
             var fullPath = Path.GetFullPath(options.OutputPath);
@@ -32,14 +33,13 @@ internal sealed class InputSampler : IAsyncDisposable
     internal void Start() => _worker = Task.Run(RunAsync);
     private async Task RunAsync()
     {
-        var previousDpiContext = WindowsNative.SetThreadDpiAwarenessContext(new IntPtr(-4));
         var delay = TimeSpan.FromSeconds(1d / _rate);
         var oldPoint = new WindowsNative.Point { X = int.MinValue, Y = int.MinValue };
         try
         {
             while (!_stop.IsCancellationRequested)
             {
-                WindowsNative.GetCursorPos(out var point);
+                WindowsNative.GetPhysicalCursorPos(out var point);
                 var bounds = _boundsProvider();
                 if (point.X != oldPoint.X || point.Y != oldPoint.Y)
                 {
@@ -52,6 +52,7 @@ internal sealed class InputSampler : IAsyncDisposable
             }
         }
         catch (OperationCanceledException) { }
+        catch(Exception ex) { _onError(ex); }
     }
     private void Check(int code, Action changed)
     {
@@ -74,7 +75,7 @@ internal sealed class InputSampler : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _stop.Cancel();
-        if (_worker is not null) await _worker.ConfigureAwait(false);
-        _writer?.Dispose(); _stop.Dispose();
+        try { if (_worker is not null) await _worker.ConfigureAwait(false); }
+        finally { _writer?.Dispose(); _stop.Dispose(); }
     }
 }

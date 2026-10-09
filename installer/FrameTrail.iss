@@ -39,7 +39,14 @@ Name: "chinesesimp"; MessagesFile: "compiler:Languages\ChineseSimplified.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式："; Flags: unchecked
 
 [Files]
-Source: "{#ReleaseDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ReleaseDir}\BUILD-INFO.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\VC-RUNTIME-REQUIREMENT.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\RECORDING-LIMIT.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#ReleaseDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ReleaseDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ReleaseDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\FrameTrail"; Filename: "{app}\{#AppExeName}"

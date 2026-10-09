@@ -17,7 +17,7 @@ internal static class LongCaptureRunner
         var display = (await capture.EnumerateDisplaysAsync()).FirstOrDefault(d => d.IsPrimary)
             ?? throw new InvalidOperationException("No primary display was enumerated.");
         var audioDevices = await capture.EnumerateAudioDevicesAsync();
-        var loopback = audioDevices.FirstOrDefault(d => d.Kind == AudioDeviceKind.SystemLoopback && d.IsDefault);
+        var loopback = options.NoAudio ? null : audioDevices.FirstOrDefault(d => d.Kind == AudioDeviceKind.SystemLoopback && d.IsDefault);
         Console.WriteLine($"Display={display.Name}; bounds={display.Bounds.X},{display.Bounds.Y},{display.Bounds.Width},{display.Bounds.Height}");
         Console.WriteLine($"Audio devices={string.Join("; ", audioDevices.Select(d => $"{d.Kind}:{d.Name}{(d.IsDefault ? " (default)" : "")}"))}");
         Console.WriteLine($"Loopback={(loopback?.Name ?? "unavailable")}; output={output}; duration={options.DurationSeconds}s; fps={options.FrameRate}; requestedWidth={options.Width}");
@@ -30,7 +30,7 @@ internal static class LongCaptureRunner
         };
         capture.ErrorOccurred += (_, e) => Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} CaptureError={e.Message}; exception={e.Exception}");
         var video = new VideoOptions(FrameRate: options.FrameRate, Width: options.Width, Height: options.Height,
-            EncoderPreference: EncoderPreference.Automatic, Quality: 75);
+            EncoderPreference: options.Software ? EncoderPreference.Software : EncoderPreference.Automatic, Quality: 75);
         var audio = loopback is null ? new AudioOptions() : new AudioOptions(RecordSystemAudio: true, SystemAudioDeviceId: loopback.Id);
         var input = new InputTrackingOptions(Enabled: true, SampleRate: Math.Clamp(options.FrameRate, 1, 120),
             OutputPath: Path.ChangeExtension(output, ".input.jsonl"));
@@ -147,6 +147,14 @@ internal static class LongCaptureRunner
         if (string.IsNullOrWhiteSpace(executable))
             executable = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty).Split(Path.PathSeparator)
                 .Select(folder => Path.Combine(folder, "ffprobe.exe")).FirstOrDefault(File.Exists);
+        if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
+        {
+            var wingetRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WinGet", "Packages", "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe");
+            executable = Directory.Exists(wingetRoot)
+                ? Directory.GetDirectories(wingetRoot, "ffmpeg-*-full_build").OrderByDescending(path => path, StringComparer.OrdinalIgnoreCase)
+                    .Select(path => Path.Combine(path, "bin", "ffprobe.exe")).FirstOrDefault(File.Exists)
+                : null;
+        }
         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable)) return "unavailable: ffprobe not found";
         var start = new ProcessStartInfo(executable)
         {

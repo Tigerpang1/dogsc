@@ -21,6 +21,7 @@ internal static class WindowsNative
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     [DllImport("user32.dll")] internal static extern bool IsWindow(IntPtr window);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
+    [DllImport("user32.dll")] internal static extern bool GetPhysicalCursorPos(out Point point);
     [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
     [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }

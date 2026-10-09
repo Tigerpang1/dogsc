@@ -98,7 +98,7 @@ public sealed class ExportEngine
         catch (Exception ex) when (cancellation.IsCancellationRequested && ex is not OperationCanceledException) { throw new OperationCanceledException("导出已取消。", ex, cancellation); }
         finally
         {
-            if (decoder != null) { MediaTools.Kill(decoder); decoder.Dispose(); } if (encoder != null) { MediaTools.Kill(encoder); encoder.Dispose(); }
+            if (decoder != null) { await MediaTools.StopAsync(decoder); decoder.Dispose(); } if (encoder != null) { await MediaTools.StopAsync(encoder); encoder.Dispose(); }
             foreach (var file in new[] { temporary, audioPath, timelineFile, audioFile }) if (File.Exists(file)) File.Delete(file);
         }
     }

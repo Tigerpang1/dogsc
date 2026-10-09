@@ -78,6 +78,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
             if (_state is CaptureState.Starting or CaptureState.Recording or CaptureState.Stopping)
                 throw new InvalidOperationException("A recording is already active.");
             EnsureWindows();
+            await DisposeRecordingComponentsAsync().ConfigureAwait(false);
             _request = request;
             _warnings.Clear();
             ValidateRequest(request);
@@ -95,7 +96,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
             {
                 try
                 {
-                    _inputSampler = new InputSampler(tracking, () => ResolveTargetBounds(request.Target), evt => InputEventRecorded?.Invoke(this, evt));
+                    _inputSampler = new InputSampler(tracking, () => ResolveTargetBounds(request.Target), evt => InputEventRecorded?.Invoke(this, evt), ex => ErrorOccurred?.Invoke(this,new CaptureError("鼠标事件记录已中断，已写入的数据保留。",ex)));
                     _inputSampler.Start();
                 }
                 catch (Exception ex)

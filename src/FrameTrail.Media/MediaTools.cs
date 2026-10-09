@@ -28,15 +28,25 @@ public static class MediaTools
         return Process.Start(info) ?? throw new IOException($"无法启动 {executable}");
     }
     public static void Kill(Process p) { try { if (!p.HasExited) p.Kill(true); } catch (InvalidOperationException) { } }
+    public static async Task StopAsync(Process process)
+    {
+        Kill(process);
+        try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+        catch(InvalidOperationException) { }
+    }
     public static async Task<string> RunAsync(string executable, IEnumerable<string> arguments, CancellationToken cancellation = default)
     {
         using var p = Start(executable, arguments, output: true);
         using var registration = cancellation.Register(() => Kill(p));
         var error = p.StandardError.ReadToEndAsync(); var output = p.StandardOutput.ReadToEndAsync();
-        await p.WaitForExitAsync(cancellation); cancellation.ThrowIfCancellationRequested();
-        var stderr = await error; var stdout = await output;
-        if (p.ExitCode != 0) throw new IOException($"媒体处理失败 ({p.ExitCode})：{Tail(stderr)}");
-        return stdout;
+        try
+        {
+            await p.WaitForExitAsync(cancellation); cancellation.ThrowIfCancellationRequested();
+            var stderr = await error; var stdout = await output;
+            if (p.ExitCode != 0) throw new IOException($"媒体处理失败 ({p.ExitCode})：{Tail(stderr)}");
+            return stdout;
+        }
+        finally { await StopAsync(p); }
     }
     public static string Tail(string s) => s.Length <= 6000 ? s : s[^6000..];
     public static async Task<MediaInfo> ProbeAsync(string path, CancellationToken cancellation = default)
@@ -84,7 +94,7 @@ public static class MediaTools
         using var reg = cancellation.Register(() => Kill(p)); var errors = p.StandardError.ReadToEndAsync();
         var buffer = new byte[checked(width * height * 4)];
         try { await p.StandardOutput.BaseStream.ReadExactlyAsync(buffer, cancellation); await p.WaitForExitAsync(cancellation); if (p.ExitCode != 0) throw new IOException(await errors); }
-        finally { Kill(p); }
+        finally { await StopAsync(p); }
         return buffer;
     }
 }
