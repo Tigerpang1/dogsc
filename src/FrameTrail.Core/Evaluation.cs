@@ -559,6 +559,33 @@ public sealed class PreparedFrameSceneEvaluator
         return clip.Target with { Position = clip.Target.Position with { } };
     }
 
+    /// <summary>Samples the resolved screen motion on the original source clock for timeline editing.</summary>
+    internal ScreenMotionState SampleScreenMotionAtSourceTime(double sourceTime)
+    {
+        ValidateSourceSampleTime(sourceTime);
+        var canvas = project.Settings.Canvas;
+        var state = EvaluateScreenMotion(sourceTime) ?? new ScreenMotionState
+        {
+            Position = canvas?.ContentPosition ?? new NormalizedPoint(.5, .5),
+            Scale = canvas?.ContentScale ?? 1
+        };
+        return state with { Position = state.Position with { } };
+    }
+
+    /// <summary>Samples the resolved camera motion pose on the original source clock for timeline editing.</summary>
+    internal CameraMotionPose SampleCameraMotionAtSourceTime(double sourceTime)
+    {
+        ValidateSourceSampleTime(sourceTime);
+        return EvaluateCameraMotion(sourceTime) ?? cameraBasePose
+            ?? throw new InvalidOperationException("当前项目没有可采样的摄像头运动状态。");
+    }
+
+    private static void ValidateSourceSampleTime(double sourceTime)
+    {
+        if (!double.IsFinite(sourceTime) || sourceTime < 0)
+            throw new ArgumentOutOfRangeException(nameof(sourceTime), "源时间必须是有限的非负值。");
+    }
+
     private FrameOpeningState? EvaluateOpening(double outputTime, double sourceTime, OpeningElement element)
     {
         var opening = project.Settings.Opening?.ResolvePreset();

@@ -11,10 +11,27 @@ using System.Windows.Automation;
 using System.Windows.Interop;
 using System.Windows.Media.Imaging;
 
-// 面向交互桌面会话的 UIA 冒烟验收。传入已存在项目，程序会先复制项目目录再启动，避免修改用户工程。
+// 面向交互桌面会话的 UIA 冒烟验收。运行必须显式传入 --interactive-desktop。
+if (args.Contains("--guard-self-test", StringComparer.Ordinal))
+{
+    var passed = InteractiveDesktopGuard.RunPureSelfTest();
+    Console.WriteLine($"INTERACTIVE_DESKTOP_GUARD_SELF_TEST={(passed ? "PASS" : "FAIL")}");
+    return passed ? 0 : 1;
+}
+if (args.Length == 2 && string.Equals(args[0], "--restore-user-data", StringComparison.Ordinal))
+{
+    var restored = RestoreUserDataSnapshot(Path.GetFullPath(args[1]), out var recoveryMessage);
+    Console.WriteLine($"USER_DATA_RECOVERY={(restored ? "RESTORED" : "FAILED")}: {recoveryMessage}");
+    return restored ? 0 : 1;
+}
+if (!InteractiveDesktopGuard.HasExplicitConsent(args))
+{
+    Console.Error.WriteLine("已拒绝运行：UI Smoke 会操作真实桌面。请在明确授权后传入 --interactive-desktop；本次未启动应用或发送输入。");
+    return 3;
+}
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json]");
+    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop");
     return 2;
 }
 
@@ -24,11 +41,13 @@ var reportPath = Path.GetFullPath(args.Length > 2 ? args[2] : Path.Combine(Envir
 var progressPath = Path.ChangeExtension(reportPath, ".progress.log");
 File.WriteAllText(progressPath, $"UIA 开始 {DateTimeOffset.Now:O}{Environment.NewLine}");
 SmokeProgress.Path = progressPath;
+InteractiveDesktopGuard.Initialize(consented: true, progressPath);
 var testRoot = args.Contains("--relink-only")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-relink-fixture-audit-" + Guid.NewGuid().ToString("N"))
     : args.Contains("--effects-only")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-effect-fixture-audit-" + Guid.NewGuid().ToString("N"))
     : Path.Combine(Path.GetTempPath(), "frametrail-ui-smoke-" + Guid.NewGuid().ToString("N"));
+var userDataSnapshotPath = Path.Combine(testRoot, "user-data-snapshot.json");
 var projectCopy = Path.Combine(testRoot, Path.GetFileName(Path.GetDirectoryName(sourceProject)) ?? "project");
 var projectCopyFile = Path.Combine(projectCopy, Path.GetFileName(sourceProject));
 var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -51,6 +70,8 @@ try
     if (!File.Exists(appPath)) throw new FileNotFoundException("找不到 FrameTrail 应用程序。", appPath);
     if (!File.Exists(sourceProject)) throw new FileNotFoundException("找不到测试项目。", sourceProject);
     Directory.CreateDirectory(testRoot);
+    WriteUserDataSnapshot(userDataSnapshotPath, userDataSnapshots);
+    SmokeProgress.AppendMessage($"用户数据恢复快照已保存：{userDataSnapshotPath}");
     CopyDirectory(Path.GetDirectoryName(sourceProject)!, projectCopy);
     if (args.Contains("--relink-only"))
     {
@@ -58,7 +79,7 @@ try
         return results.All(x => x.Passed) ? 0 : 1;
     }
     PrepareFeatureFixture(projectCopyFile);
-    if ((args.Contains("--effects-only") && !args.Contains("--preserve-reordered-timeline")) || args.Contains("--full-uncut-effects"))
+    if ((args.Contains("--effects-only") && !args.Contains("--preserve-reordered-timeline")) || args.Contains("--full-uncut-effects") || args.Contains("--timeline-shortcuts-only"))
         PrepareUncutEffectTimeline(projectCopyFile);
     if (args.Contains("--motion-curves-only"))
     {
@@ -71,10 +92,30 @@ try
     var window = WaitForWindow(app, TimeSpan.FromSeconds(35));
     AddResult(new("应用启动并加载项目", window is not null, window is null ? "未找到该进程的主窗口。" : "已通过进程窗口句柄读取 UI Automation 树。"));
     if (window is null) throw new TimeoutException("FrameTrail 主窗口未出现。");
-    NativeMethods.SetWindowPos((IntPtr)window.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004);
+    var startupReady = args.Contains("--wait-for-foreground", StringComparer.Ordinal)
+        ? InteractiveDesktopGuard.WaitForTargetForegroundAtStartup((IntPtr)window.Current.NativeWindowHandle, TimeSpan.FromSeconds(180))
+        : InteractiveDesktopGuard.ActivateTargetOnceAtStartup((IntPtr)window.Current.NativeWindowHandle);
+    if (!startupReady)
+        throw new InvalidOperationException(args.Contains("--wait-for-foreground", StringComparer.Ordinal)
+            ? "等待测试应用自然成为前台超时；未发送输入，项目偏好已按恢复快照处理。"
+            : "启动时无法将焦点交给测试应用；守卫已停止本轮输入。");
+    SmokeProgress.AppendMessage(args.Contains("--wait-for-foreground", StringComparer.Ordinal)
+        ? "测试应用已自然成为前台；后续失焦会立即中止输入。"
+        : "测试应用已在启动阶段完成唯一一次前台激活；后续失焦会立即中止输入。");
+    NativeMethods.SetWindowPos((IntPtr)window.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004 | 0x0010);
     var projectTitle = WaitForProjectTitle(window, TimeSpan.FromSeconds(20));
     var projectLoaded = projectTitle is not null && projectTitle.Current.Name != "未命名项目";
     AddResult(new("命令行项目确实已打开", projectLoaded, projectLoaded ? projectTitle!.Current.Name : "标题仍为未命名项目；本轮后续交互结果只作界面诊断，不计功能通过。"));
+    if (args.Contains("--timeline-shortcuts-only"))
+    {
+        RunTimelineShortcutUiTests(window, projectCopyFile, results);
+        var closeSent = app.CloseMainWindow();
+        var exitedNormally = closeSent && app.WaitForExit(10000);
+        AddResult(new("编辑与逐帧操作后正常关闭", exitedNormally,
+            exitedNormally ? "应用完成预览取消与资源释放后自行退出，未强制终止。" : "关闭请求后应用未在10秒内自行退出。"));
+        if (exitedNormally) { app.Dispose(); app = null; }
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
     if (args.Contains("--effects-only"))
     {
         RunEffectUiTests(window, projectCopyFile, args, results);
@@ -218,7 +259,13 @@ try
         }
         if (scroll is not null)
         {
-            try { scroll.Scroll(ScrollAmount.NoAmount, ScrollAmount.LargeIncrement); Thread.Sleep(250); if (timelineProbe is not null) ancestry.Add($"after scroll bounds={timelineProbe.Current.BoundingRectangle} scroll={scroll.Current.VerticalScrollPercent:0.##}%"); }
+            try
+            {
+                if (InteractiveDesktopGuard.BeforeInput("UIA Scroll"))
+                    scroll.Scroll(ScrollAmount.NoAmount, ScrollAmount.LargeIncrement);
+                Thread.Sleep(250);
+                if (timelineProbe is not null) ancestry.Add($"after scroll bounds={timelineProbe.Current.BoundingRectangle} scroll={scroll.Current.VerticalScrollPercent:0.##}%");
+            }
             catch (Exception ex) { ancestry.Add("scroll test=" + ex.GetType().Name + ":" + ex.Message); }
         }
         Console.WriteLine("TIMELINE_PROBE=" + string.Join(Environment.NewLine, ancestry));
@@ -482,7 +529,7 @@ try
     {
         var folderEdit = prefsWindow.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit));
         var safeFolderSet = false;
-        try { if (folderEdit is not null) { var value = (ValuePattern)folderEdit.GetCurrentPattern(ValuePattern.Pattern); value.SetValue(testRoot); safeFolderSet = value.Current.Value == testRoot; } } catch { }
+        try { if (folderEdit is not null) safeFolderSet = TrySetValue(folderEdit, testRoot) && ((ValuePattern)folderEdit.GetCurrentPattern(ValuePattern.Pattern)).Current.Value == testRoot; } catch { }
         var savePreferences = FindButtonByHint(prefsWindow, "保存设置");
         if (safeFolderSet && excludeEditorPreference is not null && savePreferences is not null && TryInvoke(savePreferences))
         {
@@ -500,7 +547,7 @@ try
     var memoWindow = app is null ? null : WaitForWindow(app, TimeSpan.FromSeconds(20));
     if (memoWindow is not null)
     {
-        NativeMethods.SetWindowPos((IntPtr)memoWindow.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004);
+        NativeMethods.SetWindowPos((IntPtr)memoWindow.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004 | 0x0010);
         _ = WaitForProjectTitle(memoWindow, TimeSpan.FromSeconds(10));
         TestMemoPersistence(memoWindow, app!.Id, results);
     }
@@ -538,9 +585,20 @@ catch (Exception ex)
 }
 finally
 {
+    InteractiveDesktopGuard.Complete();
     if (app is { HasExited: false }) { app.CloseMainWindow(); if (!app.WaitForExit(3000)) app.Kill(entireProcessTree: true); }
     app?.Dispose();
-    foreach (var snapshot in userDataSnapshots) RestoreUserFile(snapshot.Key, snapshot.Value);
+    if (InteractiveDesktopGuard.IsAborted)
+        AddResult(new("交互中止（本轮结果不完整，需复核）", false, InteractiveDesktopGuard.AbortReason));
+    var userDataRestored = true;
+    foreach (var snapshot in userDataSnapshots)
+        userDataRestored &= RestoreUserFile(snapshot.Key, snapshot.Value);
+    if (userDataRestored)
+    {
+        try { if (File.Exists(userDataSnapshotPath)) File.Delete(userDataSnapshotPath); } catch { userDataRestored = false; }
+    }
+    if (!userDataRestored)
+        SmokeProgress.AppendMessage($"用户数据恢复未能完整确认；请使用 FrameTrail.App.Smoke.exe --restore-user-data \"{testRoot}\"，快照保留于 {userDataSnapshotPath}");
     Directory.CreateDirectory(Path.GetDirectoryName(reportPath)!);
     File.WriteAllText(reportPath, JsonSerializer.Serialize(new
     {
@@ -553,7 +611,7 @@ finally
     }, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"UIA_REPORT={reportPath}");
     foreach (var result in results) Console.WriteLine($"{(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}");
-    if (!args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
+    if (userDataRestored && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
 }
 return results.Count > 0 && results.All(x => x.Passed) ? 0 : 1;
 
@@ -631,17 +689,9 @@ static void RunNewPanelUiTests(AutomationElement window, Process app, string app
 
 static void RunAdvancedStyleUiTests(AutomationElement window, int processId, string projectFile, List<StepResult> results)
 {
-    var priorDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
-    try
-    {
-        var handle = (IntPtr)window.Current.NativeWindowHandle;
-        if (handle != IntPtr.Zero)
-        {
-            try { if (window.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern) windowPattern.SetWindowVisualState(WindowVisualState.Normal); } catch { }
-            ActivateOwnedWindow(handle);
-        }
-    }
-    finally { if (priorDpiContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(priorDpiContext); }
+    var handle = (IntPtr)window.Current.NativeWindowHandle;
+    if (handle != IntPtr.Zero && InteractiveDesktopGuard.BeforeInput("恢复测试窗口"))
+        try { if (window.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern) windowPattern.SetWindowVisualState(WindowVisualState.Normal); } catch { }
     Thread.Sleep(300);
     window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
 
@@ -838,15 +888,7 @@ static bool ClickPrimarySegment(AutomationElement timeline, AutomationElement ma
     var priorContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
     try
     {
-        try
-        {
-            if (mainWindow.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern)
-                windowPattern.SetWindowVisualState(WindowVisualState.Normal);
-        }
-        catch { }
-        var activation = ActivateOwnedWindow(handle);
-        try { mainWindow.SetFocus(); } catch { }
-        NativeMethods.SetForegroundWindow(handle);
+        if (!InteractiveDesktopGuard.BeforeInput("录制轨道时间线点击")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
         NativeMethods.SetCursorPos(x, y);
         Thread.Sleep(150);
         NativeMethods.GetCursorPos(out var cursor);
@@ -856,7 +898,7 @@ static bool ClickPrimarySegment(AutomationElement timeline, AutomationElement ma
         var processId = (int)mainWindow.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
         if (root != handle)
         {
-            diagnostic = $"点击被拦截：指针位于其他窗口。xy={x},{y},point={point.ToInt64():X},root={root.ToInt64():X}/pid{rootPid},app={handle.ToInt64():X}/pid{processId},activation={activation},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
+            diagnostic = $"点击被拦截：指针位于其他窗口。xy={x},{y},point={point.ToInt64():X},root={root.ToInt64():X}/pid{rootPid},app={handle.ToInt64():X}/pid{processId},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
             return false;
         }
         NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero);
@@ -1106,8 +1148,8 @@ static bool SetNativeOpenDialogPath(AutomationElement dialog, string path, out s
         var fileName = edits.FirstOrDefault(x => SafeAutomationId(x) == "1148")
             ?? edits.FirstOrDefault(x => SafeName(x).Contains("文件名", StringComparison.OrdinalIgnoreCase) || SafeName(x).Contains("File name", StringComparison.OrdinalIgnoreCase));
         if (fileName is null) { diagnostic = string.Join(";", details); return false; }
+        if (!TrySetValue(fileName, path)) { diagnostic = "前台已切离测试应用或 UIA 写入失败。"; return false; }
         var value = (ValuePattern)fileName.GetCurrentPattern(ValuePattern.Pattern);
-        value.SetValue(path);
         details.Add("ValueSet=" + (value.Current.Value == path));
         if (value.Current.Value != path) { diagnostic = string.Join(";", details); return false; }
         details.AddRange(dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>().Select(x => $"Button[{SafeName(x)}|{SafeAutomationId(x)}]"));
@@ -1116,10 +1158,16 @@ static bool SetNativeOpenDialogPath(AutomationElement dialog, string path, out s
             ?? dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()
                 .FirstOrDefault(x => SafeName(x).Contains("打开", StringComparison.OrdinalIgnoreCase) || SafeName(x).Equals("Open", StringComparison.OrdinalIgnoreCase));
         if (open is null) { diagnostic = string.Join(";", details) + ";未找到Open按钮"; return false; }
+        if (!InteractiveDesktopGuard.BeforeInput("文件选择对话框打开")) { diagnostic = "前台已切离测试应用；已停止后续输入。"; return false; }
         var invocation = (InvokePattern)open.GetCurrentPattern(InvokePattern.Pattern);
-        var invokeTask = Task.Run(invocation.Invoke);
+        var invokeTask = Task.Run(() =>
+        {
+            if (!InteractiveDesktopGuard.BeforeInput("文件选择对话框打开")) return false;
+            invocation.Invoke();
+            return true;
+        });
         var invoked = invokeTask.Wait(TimeSpan.FromSeconds(5));
-        if (invoked) invokeTask.GetAwaiter().GetResult();
+        if (invoked) invoked = invokeTask.GetAwaiter().GetResult();
         diagnostic = string.Join(";", details) + ";FileNameId=" + SafeAutomationId(fileName) + ";OpenId=" + SafeAutomationId(open) + ";InvokeCompleted=" + invoked;
         return invoked;
     }
@@ -1150,8 +1198,9 @@ static bool DecodeFrameWithBundledFfmpeg(string appPath, string mediaPath)
 
 static AutomationElement? WaitForWindow(Process process, TimeSpan timeout)
 {
+    InteractiveDesktopGuard.BindTargetProcess(process.Id);
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until && !process.HasExited)
+    while (DateTime.UtcNow < until && !process.HasExited && !InteractiveDesktopGuard.IsAborted)
     {
         process.Refresh();
         try
@@ -1169,6 +1218,7 @@ static AutomationElement? WaitForWindow(Process process, TimeSpan timeout)
 }
 static AutomationElement? WaitForMainWindow(int processId, TimeSpan timeout)
 {
+    InteractiveDesktopGuard.BindTargetProcess(processId);
     return WaitForWindowName(processId, "FrameTrail", timeout);
 }
 static AutomationElement? FindById(AutomationElement root, string id) => root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, id));
@@ -1211,19 +1261,68 @@ static byte[] ReadSharedBytes(string path)
     return memory.ToArray();
 }
 static byte[]? ReadIfPresent(string path) => File.Exists(path) ? ReadSharedBytes(path) : null;
-static void RestoreUserFile(string path, byte[]? original)
+static void WriteUserDataSnapshot(string path, IReadOnlyDictionary<string, byte[]?> snapshots)
+{
+    var document = new UserDataSnapshotDocument(1, snapshots
+        .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+        .Select(item => new UserDataSnapshotEntry(Path.GetFullPath(item.Key), item.Value is not null, item.Value is null ? null : Convert.ToBase64String(item.Value)))
+        .ToArray());
+    var bytes = System.Text.Encoding.UTF8.GetBytes(JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true }));
+    using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+    stream.Write(bytes);
+    stream.Flush(flushToDisk: true);
+}
+static bool RestoreUserDataSnapshot(string snapshotDirectory, out string message)
 {
     try
     {
-        if (original is null) { if (File.Exists(path)) File.Delete(path); }
-        else { Directory.CreateDirectory(Path.GetDirectoryName(path)!); File.WriteAllBytes(path, original); }
+        var path = Path.Combine(snapshotDirectory, "user-data-snapshot.json");
+        if (!File.Exists(path)) { message = "快照清单不存在。"; return false; }
+        var document = JsonSerializer.Deserialize<UserDataSnapshotDocument>(File.ReadAllText(path));
+        if (document is null || document.Version != 1 || document.Files is null || document.Files.Length != 4)
+        { message = "快照格式无效或文件清单数量不符。"; return false; }
+        var localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.GetFullPath(Path.Combine(localData, "FrameTrail", "settings.json")),
+            Path.GetFullPath(Path.Combine(localData, "FrameTrail", "recent-projects.json")),
+            Path.GetFullPath(Path.Combine(localData, "FrameTrail", "memo.txt")),
+            Path.GetFullPath(Path.Combine(localData, "FrameTrail", "memo.txt.settings.json"))
+        };
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in document.Files)
+        {
+            var target = Path.GetFullPath(entry.Path);
+            if (!allowed.Contains(target) || !seen.Add(target))
+            { message = $"快照包含不允许或重复的目标路径：{target}"; return false; }
+            byte[]? content = entry.Exists ? Convert.FromBase64String(entry.ContentBase64 ?? throw new InvalidDataException("存在的文件缺少内容。")) : null;
+            if (!RestoreUserFile(target, content))
+            { message = $"恢复或校验失败：{target}"; return false; }
+        }
+        message = $"已从 {path} 恢复并核对四个 FrameTrail 用户数据文件。";
+        return true;
     }
-    catch { }
+    catch (Exception ex) { message = $"恢复失败：{ex.GetType().Name}: {ex.Message}"; return false; }
+}
+static bool RestoreUserFile(string path, byte[]? original)
+{
+    try
+    {
+        if (original is null)
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return !File.Exists(path);
+        }
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllBytes(path, original);
+        return File.Exists(path) && File.ReadAllBytes(path).AsSpan().SequenceEqual(original);
+    }
+    catch { return false; }
 }
 static bool WaitForPreferenceValues(string path, int width, int fps, TimeSpan timeout)
 {
     var until=DateTime.UtcNow+timeout;
-    while(DateTime.UtcNow<until)
+    while(DateTime.UtcNow<until && !InteractiveDesktopGuard.IsAborted)
     {
         try
         {
@@ -1243,13 +1342,13 @@ static AutomationElement? FindComboByName(AutomationElement root, string name) =
 static AutomationElement? WaitForComboByName(AutomationElement root, string name, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until) { var combo = FindComboByName(root, name); if (combo is not null) return combo; Thread.Sleep(100); }
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted) { var combo = FindComboByName(root, name); if (combo is not null) return combo; Thread.Sleep(100); }
     return null;
 }
 static AutomationElement? WaitForProjectTitle(AutomationElement root, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         var title = FindById(root, "ProjectTitle");
         if (title is not null && !string.Equals(title.Current.Name, "未命名项目", StringComparison.Ordinal)) return title;
@@ -1286,31 +1385,59 @@ static AutomationElement? AncestorOfType(AutomationElement node, ControlType typ
 }
 static AutomationElement? WaitForName(string name, int processId, TimeSpan timeout)
 {
+    InteractiveDesktopGuard.BindTargetProcess(processId);
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
-        var matches = AutomationElement.RootElement.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, name));
-        foreach (AutomationElement item in matches) if ((int)item.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId) return item;
+        foreach (var item in FindOwnedProcessDescendants(processId, new PropertyCondition(AutomationElement.NameProperty, name)))
+            if (string.Equals(SafeName(item), name, StringComparison.Ordinal)) return item;
         Thread.Sleep(150);
     }
     return null;
 }
 static AutomationElement? WaitForWindowName(int processId, string namePart, TimeSpan timeout)
 {
+    InteractiveDesktopGuard.BindTargetProcess(processId);
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
-        var matches = AutomationElement.RootElement.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window));
-        foreach (AutomationElement item in matches)
-            if ((int)item.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId && item.Current.ControlType == ControlType.Window && item.Current.Name.Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item;
+        foreach (var item in FindOwnedProcessWindows(processId))
+            if (item.Current.Name.Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item;
         Thread.Sleep(200);
     }
     return null;
 }
+static AutomationElement[] FindOwnedProcessWindows(int processId)
+{
+    if (!InteractiveDesktopGuard.IsOwnedProcessId(processId)) return [];
+    try
+    {
+        return AutomationElement.RootElement.FindAll(TreeScope.Children, System.Windows.Automation.Condition.TrueCondition)
+            .Cast<AutomationElement>()
+            .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId
+                && x.Current.ControlType == ControlType.Window)
+            .ToArray();
+    }
+    catch { return []; }
+}
+static AutomationElement[] FindOwnedProcessDescendants(int processId, System.Windows.Automation.Condition condition)
+{
+    var elements = new List<AutomationElement>();
+    foreach (var window in FindOwnedProcessWindows(processId))
+    {
+        try
+        {
+            elements.AddRange(window.FindAll(TreeScope.Descendants, condition).Cast<AutomationElement>()
+                .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId));
+        }
+        catch { }
+    }
+    return elements.ToArray();
+}
 static AutomationElement? WaitForNameById(AutomationElement root, string id, Func<string, bool> predicate, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         var value = FindById(root, id);
         if (value is not null && predicate(SafeName(value))) return value;
@@ -1321,7 +1448,7 @@ static AutomationElement? WaitForNameById(AutomationElement root, string id, Fun
 static AutomationElement? WaitForControlName(AutomationElement root, ControlType controlType, string name, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         var match = root.FindFirst(TreeScope.Descendants, new AndCondition(
             new PropertyCondition(AutomationElement.ControlTypeProperty, controlType),
@@ -1335,27 +1462,30 @@ static IEnumerable<string> FindProcessNames(int processId)
 {
     try
     {
-        return AutomationElement.RootElement.FindAll(TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition).Cast<AutomationElement>()
-            .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId)
-            .Select(x => { try { return x.Current.Name; } catch { return ""; } }).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
+        return FindOwnedProcessWindows(processId).Concat(FindOwnedProcessDescendants(processId, System.Windows.Automation.Condition.TrueCondition))
+            .Select(x => SafeName(x)).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().ToArray();
     }
     catch { return []; }
 }
 static IEnumerable<string> FindProcessWindowNames(int processId)
 {
-    return AutomationElement.RootElement.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Window)).Cast<AutomationElement>()
-        .Where(x => (int)x.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId && x.Current.ControlType == ControlType.Window)
-        .Select(x => x.Current.Name).ToArray();
+    return FindOwnedProcessWindows(processId).Select(SafeName).ToArray();
 }
 static bool TryInvoke(AutomationElement element)
 {
     try
     {
-        var invocation = Task.Run(() =>
-            ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke());
-        if (!invocation.Wait(TimeSpan.FromSeconds(5))) return false;
-        invocation.GetAwaiter().GetResult();
         var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA Invoke")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA Invoke")) return false;
+        var invocation = Task.Run(() =>
+        {
+            if (!InteractiveDesktopGuard.BeforeInput("UIA Invoke")) return false;
+            ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+            return true;
+        });
+        if (!invocation.Wait(TimeSpan.FromSeconds(5))) return false;
+        if (!invocation.GetAwaiter().GetResult()) return false;
         Thread.Sleep(220);
         ThrowIfApplicationErrorDialog(processId);
         return true;
@@ -1369,10 +1499,17 @@ static bool TryExpand(AutomationElement element)
 {
     try
     {
-        var expansion = Task.Run(() => ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand());
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA Expand")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA Expand")) return false;
+        var expansion = Task.Run(() =>
+        {
+            if (!InteractiveDesktopGuard.BeforeInput("UIA Expand")) return false;
+            ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand();
+            return true;
+        });
         if (!expansion.Wait(TimeSpan.FromSeconds(5))) return false;
-        expansion.GetAwaiter().GetResult();
-        return true;
+        return expansion.GetAwaiter().GetResult();
     }
     catch { return false; }
 }
@@ -1380,14 +1517,54 @@ static bool TrySetToggleOn(AutomationElement element)
 {
     try
     {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA Toggle")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA Toggle")) return false;
         var toggleTask = Task.Run(() =>
         {
+            if (!InteractiveDesktopGuard.BeforeInput("UIA Toggle")) return false;
             var pattern = (TogglePattern)element.GetCurrentPattern(TogglePattern.Pattern);
             if (pattern.Current.ToggleState == ToggleState.Off) pattern.Toggle();
+            return true;
         });
         if (!toggleTask.Wait(TimeSpan.FromSeconds(5))) return false;
-        toggleTask.GetAwaiter().GetResult();
+        return toggleTask.GetAwaiter().GetResult();
+    }
+    catch { return false; }
+}
+static bool TrySetValue(AutomationElement element, string value)
+{
+    try
+    {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA SetValue")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA SetValue")) return false;
+        var pattern = (ValuePattern)element.GetCurrentPattern(ValuePattern.Pattern);
+        pattern.SetValue(value);
         return true;
+    }
+    catch { return false; }
+}
+static bool TryCollapse(AutomationElement element)
+{
+    try
+    {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA Collapse")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA Collapse")) return false;
+        ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Collapse();
+        return true;
+    }
+    catch { return false; }
+}
+static bool TrySetAutomationFocus(AutomationElement element)
+{
+    try
+    {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BeforeOwnedFocusChange(processId)) return false;
+        element.SetFocus();
+        return InteractiveDesktopGuard.WaitForTargetForeground(processId, TimeSpan.FromSeconds(2));
     }
     catch { return false; }
 }
@@ -1395,20 +1572,31 @@ static bool SetRangeValue(AutomationElement element, double value)
 {
     try
     {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA SetRangeValue")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA SetRangeValue")) return false;
         var setting = Task.Run(() =>
         {
+            if (!InteractiveDesktopGuard.BeforeInput("UIA SetRangeValue")) return false;
             var range = (RangeValuePattern)element.GetCurrentPattern(RangeValuePattern.Pattern);
             range.SetValue(Math.Clamp(value, range.Current.Minimum, range.Current.Maximum));
+            return true;
         });
         if (!setting.Wait(TimeSpan.FromSeconds(5))) return false;
-        setting.GetAwaiter().GetResult();
-        return true;
+        return setting.GetAwaiter().GetResult();
     }
     catch { return false; }
 }
 static bool TrySelect(AutomationElement element)
 {
-    try { ((SelectionItemPattern)element.GetCurrentPattern(SelectionItemPattern.Pattern)).Select(); return true; }
+    try
+    {
+        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA Select")) return false;
+        if (!InteractiveDesktopGuard.BeforeInput("UIA Select")) return false;
+        ((SelectionItemPattern)element.GetCurrentPattern(SelectionItemPattern.Pattern)).Select();
+        return true;
+    }
     catch { return TryInvoke(element); }
 }
 static bool SelectComboOption(AutomationElement combo, string option, int processId, int fallbackDown)
@@ -1418,12 +1606,12 @@ static bool SelectComboOption(AutomationElement combo, string option, int proces
         Thread.Sleep(150);
         var item = FindNamed(combo, option) ?? WaitForName(option, processId, TimeSpan.FromSeconds(1));
         if (item is not null && (TrySelect(item) || TryClickPhysical(item)))
-        { Thread.Sleep(250); try { ((ExpandCollapsePattern)combo.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Collapse(); } catch { } return true; }
-        try { ((ExpandCollapsePattern)combo.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Collapse(); } catch { }
+        { Thread.Sleep(250); TryCollapse(combo); return true; }
+        TryCollapse(combo);
     }
     try
     {
-        combo.SetFocus();
+        if (!TrySetAutomationFocus(combo)) return false;
         if (!TryClickPhysical(combo)) return false;
         for (var i = 0; i < fallbackDown; i++) SendKey(0x28, false);
         SendKey(0x0D, false); Thread.Sleep(250); return true;
@@ -1442,43 +1630,29 @@ static string DescribeInspector(AutomationElement root)
 }
 static bool TryClickPhysical(AutomationElement element, bool preferAutomationInvoke = true)
 {
+    int processId;
+    try { processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty); }
+    catch { return false; }
+    if (!InteractiveDesktopGuard.BindInputTargetIfForeground(processId, "UIA/鼠标点击")) return false;
+    if (!InteractiveDesktopGuard.BeforeInput("UIA/鼠标点击")) return false;
     var previousDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
     try
     {
-        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
         if (preferAutomationInvoke && element.Current.ControlType == ControlType.Button && TryInvoke(element))
         {
             Thread.Sleep(220);
             ThrowIfApplicationErrorDialog(processId);
             return true;
         }
-        IntPtr mainHandle;
-        using (var owner = Process.GetProcessById(processId))
-        {
-            mainHandle = owner.MainWindowHandle;
-            if (mainHandle != IntPtr.Zero)
-            {
-                NativeMethods.SetWindowPos(mainHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
-                NativeMethods.SetForegroundWindow(mainHandle);
-            }
-        }
-        Thread.Sleep(180);
         var rect = element.Current.BoundingRectangle;
         if (rect.IsEmpty || rect.Width < 2 || rect.Height < 2) return false;
         var x = (int)(rect.Left + rect.Width / 2); var y = (int)(rect.Top + rect.Height / 2);
         NativeMethods.SetCursorPos(x, y); Thread.Sleep(120);
         var cursor = new PointNative { X = x, Y = y };
         var pointWindow = NativeMethods.WindowFromPoint(cursor);
-        NativeMethods.GetWindowThreadProcessId(pointWindow, out var pointProcessId);
-        if (pointProcessId != (uint)processId && mainHandle != IntPtr.Zero)
-        {
-            NativeMethods.SetForegroundWindow(mainHandle);
-            Thread.Sleep(150);
-            NativeMethods.SetCursorPos(x, y); Thread.Sleep(120);
-            pointWindow = NativeMethods.WindowFromPoint(cursor);
-            NativeMethods.GetWindowThreadProcessId(pointWindow, out pointProcessId);
-        }
-        if (pointProcessId != (uint)processId) return false;
+        var pointRoot = NativeMethods.GetAncestor(pointWindow, 2);
+        NativeMethods.GetWindowThreadProcessId(pointRoot, out var pointProcessId);
+        if (pointProcessId != (uint)processId || !InteractiveDesktopGuard.IsOwnedProcessId((int)pointProcessId)) return false;
         NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(80);
         NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(250);
         ThrowIfApplicationErrorDialog(processId);
@@ -1524,12 +1698,12 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var sliders = memo.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Slider)).Cast<AutomationElement>().ToArray();
     const string marker = "FrameTrail UIA memo persistence fixture";
     var textSet = false; var sizeSet = false; var opacitySet = false;
-    try { ((ValuePattern)edits[0].GetCurrentPattern(ValuePattern.Pattern)).SetValue(marker); textSet = true; } catch { }
-    try { ((RangeValuePattern)sliders[0].GetCurrentPattern(RangeValuePattern.Pattern)).SetValue(32); sizeSet = true; } catch { }
-    try { ((RangeValuePattern)sliders[1].GetCurrentPattern(RangeValuePattern.Pattern)).SetValue(.61); opacitySet = true; } catch { }
+    try { textSet = edits.Length > 0 && TrySetValue(edits[0], marker); } catch { }
+    try { sizeSet = sliders.Length > 0 && SetRangeValue(sliders[0], 32); } catch { }
+    try { opacitySet = sliders.Length > 1 && SetRangeValue(sliders[1], .61); } catch { }
     var initial = memo.Current.BoundingRectangle;
     var moved = new Rect(initial.Left + 90, initial.Top + 70, initial.Width, initial.Height);
-    var movedWindow = initial.IsEmpty == false && NativeMethods.SetWindowPos((IntPtr)memo.Current.NativeWindowHandle, IntPtr.Zero, (int)moved.Left, (int)moved.Top, 0, 0, 0x0001 | 0x0004);
+    var movedWindow = initial.IsEmpty == false && NativeMethods.SetWindowPos((IntPtr)memo.Current.NativeWindowHandle, IntPtr.Zero, (int)moved.Left, (int)moved.Top, 0, 0, 0x0001 | 0x0004 | 0x0010);
     Thread.Sleep(400);
     var afterMove = memo.Current.BoundingRectangle;
     FocusWindow(memo); SendAltF4(); Thread.Sleep(500);
@@ -1616,7 +1790,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
                 var relativeAsset = "";
                 var validAsset = false;
                 var until = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-                while (clicked && DateTime.UtcNow < until)
+                while (clicked && DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
                 {
                     try
                     {
@@ -1709,7 +1883,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
 static bool WaitForWindowClosed(int processId, string namePart, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (WaitForWindowName(processId, namePart, TimeSpan.Zero) is null) return true;
         Thread.Sleep(100);
@@ -1738,11 +1912,10 @@ static bool OpenPresetMenu(AutomationElement mainWindow)
 static AutomationElement? WaitForMenuItem(int processId, string namePart, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
-        var items = AutomationElement.RootElement.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem));
-        foreach (AutomationElement item in items)
-            try { if ((int)item.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty) == processId && SafeName(item).Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item; } catch { }
+        foreach (var item in FindOwnedProcessDescendants(processId, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.MenuItem)))
+            if (SafeName(item).Contains(namePart, StringComparison.OrdinalIgnoreCase)) return item;
         Thread.Sleep(100);
     }
     return null;
@@ -1754,7 +1927,7 @@ static bool CompleteTextPrompt(int processId, string title, string value)
     if (dialog is null) return false;
     var edits = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit)).Cast<AutomationElement>().ToArray();
     var okay = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>().FirstOrDefault(x => SafeName(x) == "确定");
-    try { if (edits.Length == 0) return false; ((ValuePattern)edits[0].GetCurrentPattern(ValuePattern.Pattern)).SetValue(value); }
+    try { if (edits.Length == 0 || !TrySetValue(edits[0], value)) return false; }
     catch { return false; }
     return okay is not null && TryInvoke(okay);
 }
@@ -1786,7 +1959,7 @@ static string? WaitForPresetFile(string name, TimeSpan timeout)
         var path = FindPresetFile(name);
         if (path is not null) return path;
         Thread.Sleep(100);
-    } while (DateTime.UtcNow < until);
+    } while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted);
     return null;
 }
 
@@ -1809,21 +1982,19 @@ static string ReadNumberOrString(JsonElement root, params string[] path)
 static string Describe(AutomationElement? element) => element is null ? "未发现 AspectLabel 的 UIA automation id。" : $"AutomationId={element.Current.AutomationId}; Name={element.Current.Name}";
 static void FocusWindow(AutomationElement window)
 {
-    try
-    {
-        window.SetFocus();
-        var handle = (IntPtr)window.Current.NativeWindowHandle;
-        if (handle != IntPtr.Zero) NativeMethods.SetForegroundWindow(handle);
-    }
-    catch { }
+    _ = TrySetAutomationFocus(window);
 }
 static void SendKey(byte key, bool control, bool shift = false)
 {
-    if (shift) NativeMethods.KeybdEvent(0x10, 0, 0, UIntPtr.Zero);
-    if (control) NativeMethods.KeybdEvent(0x11, 0, 0, UIntPtr.Zero);
-    NativeMethods.KeybdEvent(key, 0, 0, UIntPtr.Zero); NativeMethods.KeybdEvent(key, 0, 2, UIntPtr.Zero);
-    if (control) NativeMethods.KeybdEvent(0x11, 0, 2, UIntPtr.Zero);
-    if (shift) NativeMethods.KeybdEvent(0x10, 0, 2, UIntPtr.Zero);
+    if (shift) NativeMethods.KeybdEvent(0xA0, 0x2A, 0, UIntPtr.Zero);
+    if (control) NativeMethods.KeybdEvent(0xA2, 0x1D, 0, UIntPtr.Zero);
+    if (shift || control) Thread.Sleep(35);
+    var scan = (byte)NativeMethods.MapVirtualKey(key, 0);
+    var flags = key is >= 0x21 and <= 0x28 or 0x2D or 0x2E ? 1u : 0u;
+    NativeMethods.KeybdEvent(key, scan, flags, UIntPtr.Zero); Thread.Sleep(35);
+    NativeMethods.KeybdEvent(key, scan, flags | 2, UIntPtr.Zero);
+    if (control) NativeMethods.KeybdEvent(0xA2, 0x1D, 2, UIntPtr.Zero);
+    if (shift) NativeMethods.KeybdEvent(0xA0, 0x2A, 2, UIntPtr.Zero);
     Thread.Sleep(300);
 }
 static void SendAltF4()
@@ -1857,7 +2028,7 @@ static string ReadJsonArrayString(string project, string arrayName, int index, p
 static bool WaitForJsonArrayString(string project, string arrayName, int index, string path, string value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (string.Equals(ReadJsonArrayString(project, arrayName, index, path), value, StringComparison.OrdinalIgnoreCase)) return true;
         Thread.Sleep(120);
@@ -1867,7 +2038,7 @@ static bool WaitForJsonArrayString(string project, string arrayName, int index, 
 static bool WaitForJsonArrayStringPath(string project, string arrayName, int index, string[] path, string value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (string.Equals(ReadJsonArrayString(project, arrayName, index, path), value, StringComparison.OrdinalIgnoreCase)) return true;
         Thread.Sleep(120);
@@ -1877,7 +2048,7 @@ static bool WaitForJsonArrayStringPath(string project, string arrayName, int ind
 static bool WaitForArrayObject(string project, string arrayName, int index, string property, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         try
         {
@@ -1907,7 +2078,7 @@ static double ReadTimelineSegmentSystemVolume(string project, int index)
 static bool WaitForTimelineSegmentSystemVolume(string project, int index, double value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (Math.Abs(ReadTimelineSegmentSystemVolume(project, index) - value) < .001) return true;
         Thread.Sleep(120);
@@ -1917,7 +2088,7 @@ static bool WaitForTimelineSegmentSystemVolume(string project, int index, double
 static bool WaitForTimelineSegmentRate(string project, int index, double value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (Math.Abs(ReadTimelineSegmentRate(project, index) - value) < .001) return true;
         Thread.Sleep(120);
@@ -1927,7 +2098,7 @@ static bool WaitForTimelineSegmentRate(string project, int index, double value, 
 static bool WaitForJsonArrayNumber(string project, string arrayName, int index, string[] path, double value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (Math.Abs(ReadJsonArrayNumber(project, arrayName, index, path) - value) < .001) return true;
         Thread.Sleep(120);
@@ -1946,7 +2117,7 @@ static bool ReadJsonArrayBoolean(string project, string arrayName, int index, pa
 static bool WaitForJsonArrayBoolean(string project, string arrayName, int index, string property, bool value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (ReadJsonArrayBoolean(project, arrayName, index, property) == value) return true;
         Thread.Sleep(120);
@@ -1961,7 +2132,7 @@ static double ReadJsonNumber(string project, params string[] path)
 static bool WaitForJsonNumber(string project, string[] path, double value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         if (Math.Abs(ReadJsonNumber(project, path) - value) < 1e-6) return true;
         Thread.Sleep(120);
@@ -1984,13 +2155,13 @@ static JsonElement Navigate(JsonElement root, string[] path)
 static bool WaitForJsonString(string project, string[] path, string value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until) { if (string.Equals(ReadJsonString(project, path), value, StringComparison.OrdinalIgnoreCase)) return true; Thread.Sleep(120); }
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted) { if (string.Equals(ReadJsonString(project, path), value, StringComparison.OrdinalIgnoreCase)) return true; Thread.Sleep(120); }
     return false;
 }
 static bool WaitForJsonBoolean(string project, string[] path, bool value, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until) { if (ReadJsonBoolean(project, path) == value) return true; Thread.Sleep(120); }
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted) { if (ReadJsonBoolean(project, path) == value) return true; Thread.Sleep(120); }
     return false;
 }
 static int ReadArrayCount(string project, string property)
@@ -2000,19 +2171,19 @@ static int ReadArrayCount(string project, string property)
 static bool WaitForArrayCount(string project, string property, int count, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until) { if (ReadArrayCount(project, property) == count) return true; Thread.Sleep(150); }
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted) { if (ReadArrayCount(project, property) == count) return true; Thread.Sleep(150); }
     return false;
 }
 static bool WaitForBackground(string project, string color, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until) { try { if (ReadBackground(project).Equals(color, StringComparison.OrdinalIgnoreCase)) return true; } catch { } Thread.Sleep(150); }
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted) { try { if (ReadBackground(project).Equals(color, StringComparison.OrdinalIgnoreCase)) return true; } catch { } Thread.Sleep(150); }
     return false;
 }
 static bool WaitForDimensions(string project, int width, int height, TimeSpan timeout)
 {
     var until = DateTime.UtcNow + timeout;
-    while (DateTime.UtcNow < until)
+    while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
     {
         try { if (ReadDimensions(project) == (width, height)) return true; } catch { }
         Thread.Sleep(150);
@@ -2050,11 +2221,11 @@ static bool TryMoveFirstZoom(AutomationElement timeline, AutomationElement mainW
         var x = (int)(bounds.Left + 152 * dpiScale + (outputClipTime + Math.Min(duration * .5, .2)) * scale);
         var y = (int)(bounds.Top + (40 + 90 + 26) * dpiScale);
         var before = start;
-        NativeMethods.SetForegroundWindow((IntPtr)timeline.Current.NativeWindowHandle);
+        if (!InteractiveDesktopGuard.BeforeInput("缩放片段时间线拖动")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
         NativeMethods.SetCursorPos(x, y); NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero);
         NativeMethods.SetCursorPos(Math.Min((int)bounds.Right - 20, x + 30), y); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero);
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTime.UtcNow < until)
+        while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
         {
             try
             {
@@ -2097,7 +2268,7 @@ static bool TryPasteZoomAttributes(AutomationElement timeline, AutomationElement
         if (!ClickZoomClip(timeline, mainWindow, doc.RootElement, 1)) { diagnostic = "无法选中属性目标缩放片段。"; return false; }
         FocusWindow(mainWindow); SendKey(0x56, true, shift: true);
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTime.UtcNow < until)
+        while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
         {
             try
             {
@@ -2181,7 +2352,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
         FocusWindow(mainWindow); TryFocusTimeline(timeline); SendKey(0x56, true, shift: true);
         var wait = DateTime.UtcNow + TimeSpan.FromSeconds(4);
         var attributesCopied = false;
-        while (DateTime.UtcNow < wait)
+        while (DateTime.UtcNow < wait && !InteractiveDesktopGuard.IsAborted)
         {
             using var after = JsonDocument.Parse(ReadSharedBytes(projectFile));
             var list = after.RootElement.GetProperty(arrayName);
@@ -2220,6 +2391,101 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
             try { timelineScroll.SetScrollPercent(ScrollPattern.NoScroll, original); Thread.Sleep(200); } catch { }
         }
     }
+}
+
+static void RunTimelineShortcutUiTests(AutomationElement window, string projectFile, List<StepResult> results)
+{
+    var timeline = FindById(window, "TimelineView") ?? throw new InvalidOperationException("时间线不可见。");
+    using var original = JsonDocument.Parse(ReadSharedBytes(projectFile));
+    var initial = original.RootElement;
+    var motion = initial.GetProperty("screenMotions")[0];
+    var start = motion.GetProperty("start").GetDouble();
+    var duration = motion.GetProperty("duration").GetDouble();
+    var midpoint = start + duration / 2;
+    var motionCount = initial.GetProperty("screenMotions").GetArrayLength();
+    var screenCount = initial.GetProperty("timeline").GetProperty("segments").GetArrayLength();
+    void SelectMotion()
+    {
+        using var current = JsonDocument.Parse(ReadSharedBytes(projectFile));
+        if (!ClickEffectClip(timeline, window, current.RootElement, 1, midpoint, out var detail))
+            throw new InvalidOperationException("无法选中屏幕3D内部：" + detail);
+        // Effect selection deliberately preserves the playhead. Seek through the ruler
+        // as a user would before issuing the edit command.
+        var handle = (IntPtr)window.Current.NativeWindowHandle;
+        var dpi = NativeMethods.GetDpiForWindow(handle) / 96d;
+        if (!PrepareTimelinePoint(timeline, current.RootElement, 18, dpi, out var viewport, out var scrollOffset, out var scrollDetail, out _))
+            throw new InvalidOperationException("时间标尺不在可见区域：" + scrollDetail);
+        var bounds = timeline.Current.BoundingRectangle;
+        var total = current.RootElement.GetProperty("timeline").GetProperty("duration").GetDouble();
+        var previousDpi = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
+        try
+        {
+            var x = (int)(bounds.Left + 152 * dpi + midpoint * (bounds.Width - 152 * dpi) / total);
+            var y = (int)(viewport.Top + (18 - scrollOffset) * dpi);
+            NativeMethods.SetCursorPos(x, y); Thread.Sleep(80);
+            NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(50);
+            NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(150);
+        }
+        finally { if (previousDpi != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(previousDpi); }
+        FocusWindow(window); TryFocusTimeline(timeline);
+        if (Math.Abs(Time() - midpoint) > .06)
+            throw new InvalidOperationException($"播放头未到效果内部：实际 {Time():0.###}，期望 {midpoint:0.###}。");
+    }
+    JsonDocument Read() => JsonDocument.Parse(ReadSharedBytes(projectFile));
+    void Check(bool success, string title, string detail)
+    {
+        AddStep(results, new(title, success, detail));
+        if (!success) throw new InvalidOperationException(title + "：" + detail);
+    }
+    bool WaitFor(Func<bool> predicate)
+    {
+        var timer = Stopwatch.StartNew();
+        do { if (predicate()) return true; Thread.Sleep(80); } while (timer.Elapsed < TimeSpan.FromSeconds(5) && !InteractiveDesktopGuard.IsAborted);
+        return false;
+    }
+    double MotionValue(string name) { using var state = Read(); return state.RootElement.GetProperty("screenMotions")[0].GetProperty(name).GetDouble(); }
+    double Time()
+    {
+        var text = SafeName(FindById(window, "TimeLabel")).Split(" / ")[0];
+        return TimeSpan.ParseExact(text, new[] { @"mm\:ss\.ff", @"h\:mm\:ss\.ff", @"hh\:mm\:ss\.ff" }, System.Globalization.CultureInfo.InvariantCulture).TotalSeconds;
+    }
+
+    SelectMotion(); SendKey(0x53, false);
+    var split = WaitForArrayCount(projectFile, "screenMotions", motionCount + 1, TimeSpan.FromSeconds(5));
+    using (var current = Read())
+        Check(split && current.RootElement.GetProperty("timeline").GetProperty("segments").GetArrayLength() == screenCount,
+            "S拆分当前屏幕3D，不误切主视频", $"效果数量{motionCount}→{ReadArrayCount(projectFile, "screenMotions")}；主视频仍{screenCount}段；time={Time():0.###}；inspector={SafeName(FindById(window, "InspectorTitle"))}；status={SafeName(FindById(window, "Status"))}；focus={AutomationElement.FocusedElement?.Current.AutomationId}/{AutomationElement.FocusedElement?.Current.ControlType.ProgrammaticName}。");
+    SendKey(0x5A, true);
+    Check(WaitForArrayCount(projectFile, "screenMotions", motionCount, TimeSpan.FromSeconds(5)), "效果分割可撤销", "Ctrl+Z恢复原片段数。");
+    SendKey(0x53, false);
+    using (var current = Read())
+    {
+        var repeated = WaitForArrayCount(projectFile, "screenMotions", motionCount + 1, TimeSpan.FromSeconds(5));
+        using var afterRepeat = Read();
+        Check(repeated && afterRepeat.RootElement.GetProperty("timeline").GetProperty("segments").GetArrayLength() == screenCount,
+            "撤销后再次S保持效果选择", "没有重新点击效果，仍只分割3D轨道且主视频段数不变。");
+    }
+    SendKey(0x5A, true);
+    WaitForArrayCount(projectFile, "screenMotions", motionCount, TimeSpan.FromSeconds(5));
+    SendKey(0x59, true);
+    Check(WaitForArrayCount(projectFile, "screenMotions", motionCount + 1, TimeSpan.FromSeconds(5)), "效果分割可重做", "Ctrl+Y恢复两段。");
+    SendKey(0x5A, true); WaitForArrayCount(projectFile, "screenMotions", motionCount, TimeSpan.FromSeconds(5));
+
+    SelectMotion(); SendKey(0x51, false);
+    Check(WaitFor(() => Math.Abs(MotionValue("start") - midpoint) < .06), "Q裁去所选效果左侧", "实际键盘输入后检查自动保存工程的开始时间。");
+    SendKey(0x5A, true); WaitFor(() => Math.Abs(MotionValue("start") - start) < .001);
+    SelectMotion(); SendKey(0x57, false);
+    Check(WaitFor(() => Math.Abs(MotionValue("duration") - duration / 2) < .06), "W裁去所选效果右侧", "实际键盘输入后检查自动保存工程的持续时间。");
+    SendKey(0x5A, true); WaitFor(() => Math.Abs(MotionValue("duration") - duration) < .001);
+    SelectMotion(); SendKey(0x44, false);
+    Check(WaitForArrayCount(projectFile, "screenMotions", motionCount - 1, TimeSpan.FromSeconds(5)), "D删除当前选择", "所选3D片段被移除。");
+    SendKey(0x5A, true); WaitForArrayCount(projectFile, "screenMotions", motionCount, TimeSpan.FromSeconds(5));
+
+    SelectMotion(); var before = Time(); var expectedDelta = 5d / initial.GetProperty("media").GetProperty("frameRate").GetDouble();
+    SendKey(0x27, false, shift: true);
+    Check(WaitFor(() => Math.Abs(Time() - before - expectedDelta) < .021), "Shift+右方向键前进5帧", $"前进量应为{expectedDelta:0.######}秒，实际{before:0.###}→{Time():0.###}，显示时码精度0.01秒。");
+    SendKey(0x25, false, shift: true);
+    Check(WaitFor(() => Math.Abs(Time() - before) < .021), "Shift+左方向键后退5帧", "时码回到操作前。");
 }
 
 static void RunEffectUiTests(AutomationElement window, string projectFile, string[] args, List<StepResult> results)
@@ -2339,7 +2605,7 @@ static int GetContentLaneIndex(JsonElement project, int requestedLane)
 
 static void TryFocusTimeline(AutomationElement timeline)
 {
-    try { timeline.SetFocus(); } catch { }
+    _ = TrySetAutomationFocus(timeline);
 }
 
 static string WaitForInspectorTitle(AutomationElement window, string expected, TimeSpan timeout)
@@ -2351,7 +2617,7 @@ static string WaitForInspectorTitle(AutomationElement window, string expected, T
         actual = SafeName(FindById(window, "InspectorTitle"));
         if (actual == expected) return actual;
         Thread.Sleep(50);
-    } while (DateTime.UtcNow < until);
+    } while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted);
     return actual;
 }
 
@@ -2381,11 +2647,7 @@ static bool ClickEffectClip(AutomationElement timeline, AutomationElement mainWi
     var rootAfter = IntPtr.Zero;
     try
     {
-        NativeMethods.SetWindowPos(mainHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
-        try { if (mainWindow.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern) windowPattern.SetWindowVisualState(WindowVisualState.Normal); } catch { }
-        var activation = ActivateOwnedWindow(mainHandle);
-        try { mainWindow.SetFocus(); } catch { }
-        var foregroundSet = NativeMethods.SetForegroundWindow(mainHandle);
+        if (!InteractiveDesktopGuard.BeforeInput("效果片段时间线点击")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
         NativeMethods.SetCursorPos(x, y); Thread.Sleep(100);
         NativeMethods.GetCursorPos(out var cursor);
         var pointWindow = NativeMethods.WindowFromPoint(cursor);
@@ -2396,36 +2658,16 @@ static bool ClickEffectClip(AutomationElement timeline, AutomationElement mainWi
         NativeMethods.GetWindowText(rootBefore, rootName, rootName.Capacity); NativeMethods.GetClassName(rootBefore, rootClass, rootClass.Capacity);
         if (rootBefore != mainHandle)
         {
-            diagnostic = $"点击被拦截：点位属于其他窗口。xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},root={rootBefore.ToInt64():X}/pid{rootPid},own={mainHandle.ToInt64():X},foregroundSet={foregroundSet},activation={activation},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
+            diagnostic = $"点击被拦截：点位属于其他窗口。xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},root={rootBefore.ToInt64():X}/pid{rootPid},own={mainHandle.ToInt64():X},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
             return false;
         }
         NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(65); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
         rootAfter = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(cursor), 2);
-    diagnostic = $"out={outputTime:0.###},xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},thread{pointOwner},root={rootBefore.ToInt64():X}->{rootAfter.ToInt64():X}/pid{rootPid},thread{rootOwner},own={mainHandle.ToInt64():X},foregroundSet={foregroundSet},activation={activation},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
+    diagnostic = $"out={outputTime:0.###},xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},thread{pointOwner},root={rootBefore.ToInt64():X}->{rootAfter.ToInt64():X}/pid{rootPid},thread{rootOwner},own={mainHandle.ToInt64():X},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
     }
     finally { if (previousDpiContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(previousDpiContext); }
     return rootAfter == mainHandle;
 }
-static string ActivateOwnedWindow(IntPtr handle)
-{
-    var foreground = NativeMethods.GetForegroundWindow();
-    var foregroundThread = NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
-    var currentThread = NativeMethods.GetCurrentThreadId();
-    var attached = foregroundThread != 0 && foregroundThread != currentThread && NativeMethods.AttachThreadInput(currentThread, foregroundThread, true);
-    try
-    {
-        NativeMethods.SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
-        NativeMethods.BringWindowToTop(handle);
-        NativeMethods.SetActiveWindow(handle);
-        var foregroundSet = NativeMethods.SetForegroundWindow(handle);
-        Thread.Sleep(120);
-        var actual = NativeMethods.GetForegroundWindow();
-        NativeMethods.GetWindowThreadProcessId(actual, out var actualPid);
-        return $"fg={foreground.ToInt64():X}/pid{foregroundPid},thread={foregroundThread},attached={attached},set={foregroundSet},actual={actual.ToInt64():X}/pid{actualPid}";
-    }
-    finally { if (attached) NativeMethods.AttachThreadInput(currentThread, foregroundThread, false); }
-}
-
 static double ReadNumberPath(JsonElement root, string path)
 {
     foreach (var part in path.Split('.')) root = root.GetProperty(part);
@@ -2445,7 +2687,7 @@ static bool TryDragCameraOnCanvas(AutomationElement window, string projectFile, 
         NativeMethods.SetCursorPos(x, y); Thread.Sleep(150); NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(80);
         NativeMethods.SetCursorPos(x + dx, y + dy); Thread.Sleep(160); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero);
         var until = DateTime.UtcNow + TimeSpan.FromSeconds(5);
-        while (DateTime.UtcNow < until)
+        while (DateTime.UtcNow < until && !InteractiveDesktopGuard.IsAborted)
         {
             try { using var after = JsonDocument.Parse(ReadSharedBytes(projectFile)); var p = after.RootElement.GetProperty("camera").GetProperty("position"); var nx = p.GetProperty("x").GetDouble(); var ny = p.GetProperty("y").GetDouble(); if (Math.Abs(nx-oldX)>.005 || Math.Abs(ny-oldY)>.005) { diagnostic=$"画布拖动已保存位置 ({oldX:0.###},{oldY:0.###})→({nx:0.###},{ny:0.###})。"; return true; } } catch { }
             Thread.Sleep(120);
@@ -2534,15 +2776,13 @@ static bool OpenScreenSegmentContext(AutomationElement timeline, AutomationEleme
         var handle = (IntPtr)window.Current.NativeWindowHandle;
         var processId = (int)window.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
         if (handle == IntPtr.Zero) { diagnostic = "主窗口句柄为空。"; return false; }
-        NativeMethods.SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
-        try { window.SetFocus(); } catch { }
-        var foregroundSet = NativeMethods.SetForegroundWindow(handle);
+        if (!InteractiveDesktopGuard.BeforeInput("速度菜单时间线点击")) { diagnostic = InteractiveDesktopGuard.AbortReason; return false; }
         NativeMethods.SetCursorPos(x, y); Thread.Sleep(100);
         var point = NativeMethods.WindowFromPoint(new PointNative { X = x, Y = y });
         NativeMethods.GetWindowThreadProcessId(point, out var pointProcessId);
         if (pointProcessId != (uint)processId)
         {
-            diagnostic = $"点击点不属于测试进程：xy={x},{y}，hwnd={point.ToInt64():X}，pid={pointProcessId}，期望pid={processId}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}，foregroundSet={foregroundSet}。";
+            diagnostic = $"点击点不属于测试进程：xy={x},{y}，hwnd={point.ToInt64():X}，pid={pointProcessId}，期望pid={processId}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}。";
             return false;
         }
         NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(60);
@@ -2550,7 +2790,7 @@ static bool OpenScreenSegmentContext(AutomationElement timeline, AutomationEleme
         NativeMethods.MouseEvent(0x0008, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(70);
         NativeMethods.MouseEvent(0x0010, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
         var menu = WaitForNameContaining("速度 0.5×", processId, TimeSpan.FromSeconds(2));
-        diagnostic = $"点击测试进程窗口：xy={x},{y}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}，foregroundSet={foregroundSet}，菜单={menu is not null}。";
+        diagnostic = $"点击测试进程窗口：xy={x},{y}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}，菜单={menu is not null}。";
         return true;
     }
     catch (Exception ex) { diagnostic = ex.GetType().Name + ": " + ex.Message; return false; }
@@ -2568,11 +2808,11 @@ static bool ClickTimelineAt(AutomationElement timeline,AutomationElement window,
 }
 static bool WaitForStatusContains(AutomationElement window,string fragment,TimeSpan timeout)
 {
-    var until=DateTime.UtcNow+timeout;while(DateTime.UtcNow<until){try{if((FindById(window,"Status")?.Current.Name??"").Contains(fragment,StringComparison.Ordinal))return true;}catch{}Thread.Sleep(100);}return false;
+    var until=DateTime.UtcNow+timeout;while(DateTime.UtcNow<until && !InteractiveDesktopGuard.IsAborted){try{if((FindById(window,"Status")?.Current.Name??"").Contains(fragment,StringComparison.Ordinal))return true;}catch{}Thread.Sleep(100);}return false;
 }
 static AutomationElement? WaitForNameContaining(string fragment,int processId,TimeSpan timeout)
 {
-    var until=DateTime.UtcNow+timeout;while(DateTime.UtcNow<until){try{foreach(var item in AutomationElement.RootElement.FindAll(TreeScope.Descendants,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.MenuItem)).Cast<AutomationElement>())if((int)item.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty)==processId&&(item.Current.Name??"").Contains(fragment,StringComparison.OrdinalIgnoreCase))return item;}catch{}Thread.Sleep(100);}return null;
+    var until=DateTime.UtcNow+timeout;while(DateTime.UtcNow<until && !InteractiveDesktopGuard.IsAborted){foreach(var item in FindOwnedProcessDescendants(processId,new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.MenuItem)))if((item.Current.Name??"").Contains(fragment,StringComparison.OrdinalIgnoreCase))return item;Thread.Sleep(100);}return null;
 }
 static void CopyDirectory(string source, string destination)
 {
@@ -2665,9 +2905,11 @@ static void PrepareUncutEffectTimeline(string projectFile)
 }
 static void CaptureWindow(AutomationElement window, string path)
 {
+    if (!InteractiveDesktopGuard.BeforeInput("读取测试窗口截图"))
+        throw new InvalidOperationException("前台已切离测试应用；已停止截图和后续输入。");
     var handle = (IntPtr)window.Current.NativeWindowHandle;
     if (handle == IntPtr.Zero) throw new InvalidOperationException("UIA 窗口没有原生句柄，无法截图。");
-    NativeMethods.SetForegroundWindow(handle); Thread.Sleep(250);
+    Thread.Sleep(100);
     NativeMethods.GetWindowRect(handle, out var rect);
     var width = rect.Right - rect.Left; var height = rect.Bottom - rect.Top;
     if (width <= 0 || height <= 0) throw new InvalidOperationException("主窗口截图尺寸无效。");
@@ -2692,6 +2934,11 @@ static void AddStep(List<StepResult> results, StepResult result)
 static class SmokeProgress
 {
     public static string Path = string.Empty;
+    public static void AppendMessage(string message)
+    {
+        if (string.IsNullOrWhiteSpace(Path)) return;
+        try { File.AppendAllText(Path, $"{DateTimeOffset.Now:O} 信息：{message}{Environment.NewLine}"); } catch { }
+    }
     public static void Append(StepResult result)
     {
         if (string.IsNullOrWhiteSpace(Path)) return;
@@ -2701,20 +2948,20 @@ static class SmokeProgress
 }
 
 record StepResult(string Name, bool Passed, string Detail);
+sealed record UserDataSnapshotEntry(string Path, bool Exists, string? ContentBase64);
+sealed record UserDataSnapshotDocument(int Version, UserDataSnapshotEntry[] Files);
 sealed class ApplicationErrorDialogException(string message) : Exception(message);
 
 static class NativeMethods
 {
-    [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
-    [DllImport("user32.dll")] internal static extern IntPtr SetActiveWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] internal static extern bool BringWindowToTop(IntPtr hWnd);
-    [DllImport("user32.dll")] internal static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachState);
-    [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
-    [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
-    [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hWnd, int command);
+    internal static bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags)
+    {
+        return InteractiveDesktopGuard.RunGuardedInput("SetWindowPos", () => SetWindowPosNative(hWnd, insertAfter, x, y, width, height, flags | 0x0010)); // SWP_NOACTIVATE
+    }
+    [DllImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)] private static extern bool SetWindowPosNative(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(IntPtr hWnd);
-    [DllImport("user32.dll")] internal static extern bool SetCursorPos(int x, int y);
+    internal static bool SetCursorPos(int x, int y) => InteractiveDesktopGuard.RunGuardedInput("SetCursorPos", () => SetCursorPosNative(x, y));
+    [DllImport("user32.dll", EntryPoint = "SetCursorPos")] private static extern bool SetCursorPosNative(int x, int y);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out PointNative point);
     [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(PointNative point);
     [DllImport("user32.dll")] internal static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
@@ -2722,8 +2969,15 @@ static class NativeMethods
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
-    [DllImport("user32.dll", EntryPoint = "mouse_event")] internal static extern void MouseEvent(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
-    [DllImport("user32.dll", EntryPoint = "keybd_event")] internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+    internal static void MouseEvent(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo)
+    {
+        _ = InteractiveDesktopGuard.SendMouseEvent(flags, dx, dy, data, extraInfo);
+    }
+    internal static void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo)
+    {
+        _ = InteractiveDesktopGuard.SendKeyEvent(virtualKey, scanCode, flags, extraInfo);
+    }
+    [DllImport("user32.dll")] internal static extern uint MapVirtualKey(uint code, uint mapType);
     [DllImport("user32.dll")] internal static extern IntPtr GetWindowDC(IntPtr hWnd);
     [DllImport("user32.dll", EntryPoint = "GetDC")] internal static extern IntPtr GetDC(IntPtr hWnd);
     [DllImport("user32.dll", EntryPoint = "ReleaseDC")] internal static extern int ReleaseWindowDC(IntPtr hWnd, IntPtr hDc);

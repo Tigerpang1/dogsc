@@ -15,8 +15,8 @@ public partial class MainWindow
   {
    var selected=EqualityComparer<T>.Default.Equals(current,item.Value);var content=new StackPanel{HorizontalAlignment=HorizontalAlignment.Stretch};
    var visual=preview?.Invoke(item.Value)??new EditorIcon{Kind=item.Icon,Width=24,Height=24,HorizontalAlignment=HorizontalAlignment.Center};visual.Margin=new(0,3,0,7);content.Children.Add(visual);
-   content.Children.Add(new TextBlock{Text=item.Label,FontSize=11,HorizontalAlignment=HorizontalAlignment.Center,TextWrapping=TextWrapping.Wrap});
-   var button=new Button{Content=content,HorizontalContentAlignment=HorizontalAlignment.Stretch,Margin=new(3),Padding=new(7,9,7,8),Background=Brush(selected?"Chrome":"ControlSurface"),BorderBrush=Brush(selected?"Ink":"Hairline"),BorderThickness=new(selected?1.3:.5),ToolTip=item.Label};
+   content.Children.Add(new TextBlock{Text=item.Label,FontSize=13,FontWeight=selected?FontWeights.Medium:FontWeights.Normal,Foreground=Brush(selected?"Ink":"Secondary"),HorizontalAlignment=HorizontalAlignment.Center,TextWrapping=TextWrapping.Wrap});
+   var button=new Button{Content=content,HorizontalContentAlignment=HorizontalAlignment.Stretch,Margin=new(3),Padding=new(7,9,7,8),Background=Brush(selected?"Chrome":"ControlSurface"),BorderBrush=Brush("Hairline"),BorderThickness=new(.75),ToolTip=item.Label};
    AutomationProperties.SetName(button,item.Label);AutomationProperties.SetItemStatus(button,selected?"已选择":"未选择");button.Click+=(_,_)=>apply(item.Value);grid.Children.Add(button);
   }
   InspectorHost.Children.Add(grid);

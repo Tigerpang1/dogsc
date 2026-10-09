@@ -35,7 +35,7 @@ public partial class MainWindow : Window
     private PreparedFrameSceneEvaluator? previewEvaluator;
     private TimelineAssetData? timelineAssets;
     private CancellationTokenSource? assetsCancellation;
-    private bool refreshing, playing, closeReady;
+    private bool refreshing, playing, closeReady, closingInProgress;
     private string? proxyPath, recordingFolder;
     private string? diagnosticRecordingRoot;
     private PixelRect? region;
@@ -94,6 +94,7 @@ public partial class MainWindow : Window
         var editorSmoke=Array.IndexOf(args,"--editor-smoke");if(editorSmoke>=0&&args.Length>editorSmoke+1){await VerifyEditorRegression(args[editorSmoke+1]);closeReady=true;Close();return;}
         var recoverySmoke=Array.IndexOf(args,"--recovery-smoke");if(recoverySmoke>=0&&args.Length>recoverySmoke+2){try{var recovered=await RecoverReadableRecording(args[recoverySmoke+1]);var p=FrameTrailProjectStore.Load(recovered);await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=true,Project=recovered,AudioTracks=p.AudioTracks.Count,Markers=p.Markers.Count,PointerEvents=p.PointerEvents.Count}));}catch(Exception ex){await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=false,Error=ex.ToString()}));}closeReady=true;Close();return;}
         var playbackSmoke=Array.IndexOf(args,"--playback-smoke");if(playbackSmoke>=0&&args.Length>playbackSmoke+1){await VerifyRealtimePlayback(args[playbackSmoke+1]);closeReady=true;Close();return;}
+        var exportSmoke=Array.IndexOf(args,"--export-panel-smoke");if(exportSmoke>=0&&args.Length>exportSmoke+1){await VerifyExportPanel(args[exportSmoke+1]);closeReady=true;Close();return;}
         var visuals=Array.IndexOf(args,"--visual-states");
         if(visuals>=0&&args.Length>visuals+1){await Guard(()=>CaptureVisualStates(args[visuals+1]));closeReady=true;Close();return;}
         var workflow = Array.IndexOf(args, "--workflow-smoke");
@@ -365,16 +366,13 @@ public partial class MainWindow : Window
         if(Playhead.Value<start-1e-8||Playhead.Value>start+selected.OutputDuration+1e-8) throw new InvalidOperationException("请把播放头放在选中片段内，再执行分割或裁剪。");
         return selected.SourceStart+Math.Clamp(Playhead.Value-start,0,selected.OutputDuration)*selected.PlaybackRate;
     }
-    private async void SplitClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Split(s.Id, SelectedSourceAtPlayhead(p,s)); }); return Task.CompletedTask; });
-    private async void TrimLeftClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Trim(s.Id, SelectedSourceAtPlayhead(p,s), s.SourceEnd); }); return Task.CompletedTask; });
-    private async void TrimRightClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Trim(s.Id, s.SourceStart, SelectedSourceAtPlayhead(p,s)); }); return Task.CompletedTask; });
     private async void MoveLeftClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Max(0,p.Timeline.Segments.IndexOf(s)-1)); }); return Task.CompletedTask; });
     private async void MoveRightClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Min(p.Timeline.Segments.Count-1,p.Timeline.Segments.IndexOf(s)+1)); }); return Task.CompletedTask; });
     private async void SpeedClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.SetPlaybackRate(Selected(p).Id, new[] {.25,.5,.75,1d,1.5,2,4}[Speed.SelectedIndex])); return Task.CompletedTask; });
     private async void RestoreClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.Segments = [new() { SourceDuration = p.Media.Duration }]); return Task.CompletedTask; });
     private void ClipSelected(object sender, SelectionChangedEventArgs e) { if (refreshing || project == null || Clips.SelectedItem is not ClipItem item) return; var time = 0d; foreach (var s in project.Timeline.Segments) { if (s.Id == item.Id) break; time += s.OutputDuration; } Playhead.Value = time; }
-    private void UndoClick(object sender, RoutedEventArgs e) { if (history?.CanUndo != true) return; project = history.Undo(); SaveProject(); InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
-    private void RedoClick(object sender, RoutedEventArgs e) { if (history?.CanRedo != true) return; project = history.Redo(); SaveProject(); InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
+    private void UndoClick(object sender, RoutedEventArgs e) { if (history?.CanUndo != true) return; var selection=CaptureEffectSelectionForHistory(); project = history.Undo(); SaveProject(); InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
+    private void RedoClick(object sender, RoutedEventArgs e) { if (history?.CanRedo != true) return; var selection=CaptureEffectSelectionForHistory(); project = history.Redo(); SaveProject(); InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
     private void MarkerJump(object sender, MouseButtonEventArgs e) { if (Markers.SelectedItem is MarkerItem m && project != null) { var at = project.Timeline.MapSourceToOutput(m.SourceTime); if (at.HasValue) Playhead.Value = at.Value; else Status.Text = "此标记所在素材已从时间线裁去。"; } }
     private void DeleteMarkerClick(object sender, RoutedEventArgs e) { if (Markers.SelectedItem is MarkerItem m) Edit(p => p.Markers.RemoveAll(x => x.Id == m.Id)); }
     private async void ApplySettingsClick(object sender, RoutedEventArgs e) => await Guard(() => { if (!System.Text.RegularExpressions.Regex.IsMatch(BackgroundColor.Text,"^#[0-9a-fA-F]{6}$")) throw new ArgumentException("背景色请使用 #RRGGBB 格式。"); Edit(p => { p.Settings.Background = BackgroundColor.Text; p.Settings.Padding = PaddingSlider.Value; p.Settings.CornerRadius = RadiusSlider.Value; p.Settings.Shadow = ShadowSlider.Value; p.Settings.CursorVisible = ShowCursor.IsChecked == true; }); return Task.CompletedTask; });
@@ -405,7 +403,7 @@ public partial class MainWindow : Window
     private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
     private async Task RenderPreview(double time)
     {
-        if (project == null || projectFile == null) return; seekCancellation?.Cancel(); seekCancellation = new(); var token = seekCancellation.Token;
+        if (closingInProgress || project == null || projectFile == null) return; seekCancellation?.Cancel(); seekCancellation = new(); var token = seekCancellation.Token;
         var snapshot = project; var path = FrameTrailProjectStore.ResolveMediaPath(projectFile,snapshot);
         try
         {
@@ -431,8 +429,8 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { }
         catch (Exception) when (token.IsCancellationRequested) { }
     }
-    private void PreviousFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Max(0,Playhead.Value-1d/(project?.Media.FrameRate??30));
-    private void NextFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Min(Playhead.Maximum,Playhead.Value+1d/(project?.Media.FrameRate??30));
+    private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
+    private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
     private void InvalidateProxy() { StopPlayback(); if (proxyPath != null && File.Exists(proxyPath)) { Player.Close(); try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; }
     private void StopPlayback() { playbackCancellation?.Cancel(); playing=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; }
     private async void PlayClick(object sender, RoutedEventArgs e) => await Guard(async () =>
@@ -447,7 +445,7 @@ public partial class MainWindow : Window
     private async Task ChooseExport(bool audio)
     {
         if (project==null || projectFile==null || operationCancellation!=null) return; StopPlayback();var snapshot=ExportSnapshot();var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
-        var dialog=new ExportWindow(snapshot,PreviewImage.Source,ProjectTitle.Text,(path,options,progress,token)=>Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options with{ProjectFilePath=file},progress,token))){Owner=this};dialog.ShowDialog();await Task.CompletedTask;
+        var dialog=new ExportWindow(snapshot,PreviewImage.Source,ProjectTitle.Text,(path,options,progress,token)=>Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options with{ProjectFilePath=file},progress,token)),initialAudioOnly:audio){Owner=this};dialog.ShowDialog();await Task.CompletedTask;
     }
     private async Task RunExport(string path,ExportOptions options,bool preview,CancellationToken cancellation=default)
     {
@@ -471,20 +469,33 @@ public partial class MainWindow : Window
     });
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
-        if (Keyboard.FocusedElement is TextBox || Keyboard.FocusedElement is ComboBox) return;
-        if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.S) { SaveProject(); e.Handled=true; }
-        else if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.Z) { UndoClick(this,new()); e.Handled=true; }
-        else if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.Y) { RedoClick(this,new()); e.Handled=true; }
-        else if(Keyboard.Modifiers==ModifierKeys.Control&&e.Key==Key.C){CopyEffect();e.Handled=true;}
-        else if((Keyboard.Modifiers==ModifierKeys.Control||Keyboard.Modifiers==(ModifierKeys.Control|ModifierKeys.Shift))&&e.Key==Key.V){PasteEffect(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));e.Handled=true;}
-        else if(Keyboard.Modifiers==ModifierKeys.None&&e.Key==Key.Delete){DeleteSelectionClick(this,new());e.Handled=true;}
-        else if (Keyboard.Modifiers==ModifierKeys.None) { if(e.Key==Key.Space) PlayClick(this,new()); else if(e.Key==Key.I) SetExportRange(true); else if(e.Key==Key.O) SetExportRange(false); else if(e.Key==Key.S) SplitClick(this,new()); else if(e.Key==Key.Left) PreviousFrame(this,new()); else if(e.Key==Key.Right) NextFrame(this,new()); else return; e.Handled=true; }
+        HandleTimelineShortcut(e);
     }
     private async void WindowClosing(object? sender,CancelEventArgs e)
     {
         if(closeReady) return; e.Cancel=true;
+        if(closingInProgress) return;
         if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { MessageBox.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
         if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，请稍后关闭。"; return; }
-        await Guard(async()=>{ SaveProject(); seekCancellation?.Cancel(); StopPlayback(); Player.Close(); NativeWindows.UnregisterHotKey(new WindowInteropHelper(this).Handle,17); await capture.DisposeAsync();await trackCapture.DisposeAsync();previewAssets?.Dispose();previewRenderer?.Dispose(); closeReady=true; Application.Current.Shutdown(); });
+        closingInProgress=true;
+        try
+        {
+            await Guard(async()=>
+            {
+                SaveProject(); seekCancellation?.Cancel(); assetsCancellation?.Cancel(); StopPlayback(); Player.Close();
+                NativeWindows.UnregisterHotKey(new WindowInteropHelper(this).Handle,17);
+                await capture.DisposeAsync(); await trackCapture.DisposeAsync();
+                // A cancelled seek may still be decoding a layer. Let it leave the preview critical section first.
+                await previewGate.WaitAsync();
+                try
+                {
+                    previewAssets?.Dispose(); previewAssets=null;
+                    previewRenderer?.Dispose(); previewRenderer=null;
+                }
+                finally { previewGate.Release(); }
+                closeReady=true; Application.Current.Shutdown();
+            });
+        }
+        finally { if(!closeReady) closingInProgress=false; }
     }
 }

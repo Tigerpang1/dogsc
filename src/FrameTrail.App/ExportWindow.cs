@@ -14,7 +14,7 @@ using FrameTrail.Media;
 namespace FrameTrail.App;
 
 /// <summary>DogSC 风格的独立导出面板。执行和进度均由调用方提供的导出引擎负责。</summary>
-public sealed class ExportWindow : Window
+public sealed partial class ExportWindow : Window
 {
     private readonly FrameTrailProject project;
     private readonly ImageSource? preview;
@@ -40,6 +40,7 @@ public sealed class ExportWindow : Window
     private readonly Button openFileButton = new();
     private readonly Button openFolderButton = new();
     private readonly Button closeButton = new();
+    private readonly Button browseButton = new();
     private RowDefinition? progressSpacerRow;
     private bool audioOnly;
     private bool running;
@@ -50,12 +51,14 @@ public sealed class ExportWindow : Window
     private CancellationTokenSource? cancellation;
 
     public ExportWindow(FrameTrailProject project, ImageSource? preview, string projectName,
-        Func<string, ExportOptions, IProgress<ExportProgress>, CancellationToken, Task<ExportResult>> execute)
+        Func<string, ExportOptions, IProgress<ExportProgress>, CancellationToken, Task<ExportResult>> execute,
+        bool initialAudioOnly = false)
     {
         this.project = project ?? throw new ArgumentNullException(nameof(project));
         this.preview = preview;
         this.execute = execute ?? throw new ArgumentNullException(nameof(execute));
         outputDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail");
+        audioOnly = initialAudioOnly;
         Title = "导出作品 · " + projectName;
         Width = 840;
         Height = 634;
@@ -88,16 +91,16 @@ public sealed class ExportWindow : Window
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
-        var icon = new EditorIcon { Kind = "export", Width = 19, Height = 19, Stroke = Brush("Ink"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(-2.5, 0, 0, 0) };
+        var icon = new EditorIcon { Kind = "export", Width = 19, Height = 19, Stroke = Brush("Ink"), Opacity = .72, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(-2.5, 0, 0, 0) };
         header.Children.Add(icon);
         var titleStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
-        titleStack.Children.Add(new TextBlock { Text = "导出作品", FontSize = 18, FontWeight = FontWeights.SemiBold });
+        titleStack.Children.Add(new TextBlock { Text = "导出作品", FontSize = 20, FontWeight = FontWeights.Medium });
         titleStack.Children.Add(new TextBlock { Text = projectName, FontSize = 12, Foreground = Brush("Secondary"), Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis });
         Grid.SetColumn(titleStack, 1); header.Children.Add(titleStack);
         closeButton.Width = 36; closeButton.Height = 36; closeButton.Style = FindStyle("PlainButton"); closeButton.Padding = new Thickness(0);
-        closeButton.Content = new Border { Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Background = Brush("ControlSurface"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1), Child = new TextBlock { Text = "×", FontSize = 20, Foreground = Brush("Secondary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, -2, 0, 0) } };
+        closeButton.Content = new Border { Width = 30, Height = 30, CornerRadius = new CornerRadius(15), Background = Brush("ControlSurface"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(.75), Child = new EditorIcon { Kind = "close", Width = 12, Height = 12, Stroke = Brush("Secondary"), Opacity = .68, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center } };
         closeButton.Click += (_, _) => Close(); System.Windows.Automation.AutomationProperties.SetName(closeButton, "关闭导出窗口"); Grid.SetColumn(closeButton, 2); header.Children.Add(closeButton);
-        Border headerBorder = new() { Child = header, Padding = new Thickness(22, 0, 18, 0), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(0, 0, 0, 1) };
+        Border headerBorder = new() { Child = header, Background = Brush("Chrome"), Padding = new Thickness(22, 0, 18, 0), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(0, 0, 0, 1) };
         headerBorder.MouseLeftButtonDown += (_, e) => { if (e.ChangedButton == System.Windows.Input.MouseButton.Left && e.OriginalSource is not Button) DragMove(); };
         Grid.SetRow(headerBorder, 0); root.Children.Add(headerBorder);
 
@@ -111,7 +114,7 @@ public sealed class ExportWindow : Window
         fileName.Margin = new Thickness(0); fileName.Padding = new Thickness(13, 1, 4, 1); fileName.Height = 44; fileName.MinHeight = 0; fileName.VerticalContentAlignment = VerticalAlignment.Center; fileName.Background = Brushes.Transparent; fileName.FontSize = 13; fileName.TextChanged += (_, _) => RefreshPreview();
         System.Windows.Automation.AutomationProperties.SetName(fileName, "导出文件名");
         nameRow.Children.Add(fileName);
-        var nameShell = new Border { Background = Brush("Chrome"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(0, 0, 5, 0) };
+        var nameShell = new Border { Background = Brush("Chrome"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(.75), CornerRadius = new CornerRadius(12), Padding = new Thickness(0, 0, 5, 0) };
         nameShell.Child = nameRow;
         var badge = new Border { Background = Brush("ControlSurface"), CornerRadius = new CornerRadius(13), Padding = new Thickness(10, 5, 10, 5), Margin = new Thickness(4, 0, 1, 0), VerticalAlignment = VerticalAlignment.Center };
         badge.Child = extensionBadge; Grid.SetColumn(badge, 1); nameRow.Children.Add(badge);
@@ -124,20 +127,20 @@ public sealed class ExportWindow : Window
         dirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); dirRow.ColumnDefinitions.Add(new ColumnDefinition()); dirRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         var folderIcon = new EditorIcon { Kind = "folder", Width = 16, Height = 16, Stroke = Brush("Secondary"), VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(7, 0, 9, 0) }; dirRow.Children.Add(folderIcon);
         directoryText.TextTrimming = TextTrimming.CharacterEllipsis; directoryText.VerticalAlignment = VerticalAlignment.Center; directoryText.Foreground = Brush("Secondary"); System.Windows.Automation.AutomationProperties.SetName(directoryText, "保存到"); Grid.SetColumn(directoryText, 1); dirRow.Children.Add(directoryText);
-        var browse = new Button { Content = new EditorIcon { Kind = "chevron", Width = 13, Height = 13, Stroke = Brush("Secondary") }, Style = FindStyle("PlainButton"), Padding = new Thickness(8), ToolTip = "选择保存位置" };
-        System.Windows.Automation.AutomationProperties.SetName(browse, "选择保存位置"); browse.Click += (_, _) => ChooseOutputPath(); Grid.SetColumn(browse, 2); dirRow.Children.Add(browse); left.Children.Add(dirRow);
+        browseButton.Content = new EditorIcon { Kind = "chevron", Width = 13, Height = 13, Stroke = Brush("Secondary") }; browseButton.Style = FindStyle("PlainButton"); browseButton.Padding = new Thickness(8); browseButton.ToolTip = "选择保存位置";
+        System.Windows.Automation.AutomationProperties.SetName(browseButton, "选择保存位置"); browseButton.Click += (_, _) => ChooseOutputPath(); Grid.SetColumn(browseButton, 2); dirRow.Children.Add(browseButton); left.Children.Add(dirRow);
 
-        var contentLabel = Label("导出内容"); contentLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(contentLabel);
+        var contentLabel = Label("导出内容"); contentLabel.Foreground = Brush("Ink"); contentLabel.FontSize = 13; contentLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(contentLabel);
         var modes = new UniformGrid { Columns = 2, Height = 40 };
         videoModeButton.Content = ModeOptionContent("视频成片"); System.Windows.Automation.AutomationProperties.SetName(videoModeButton, "视频成片"); videoModeButton.Style = FindStyle("PlainButton"); videoModeButton.Height = 36; videoModeButton.Margin = new Thickness(2); videoModeButton.Click += (_, _) => { audioOnly = false; UpdateMode(); RefreshPreview(); };
         audioModeButton.Content = ModeOptionContent("仅导出音频"); System.Windows.Automation.AutomationProperties.SetName(audioModeButton, "仅导出音频"); audioModeButton.Style = FindStyle("PlainButton"); audioModeButton.Height = 36; audioModeButton.Margin = new Thickness(2); audioModeButton.Click += (_, _) => { audioOnly = true; UpdateMode(); RefreshPreview(); };
         modes.Children.Add(videoModeButton); modes.Children.Add(audioModeButton); left.Children.Add(modes);
 
-        var resolutionLabel = Label("分辨率"); resolutionLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(resolutionLabel);
+        var resolutionLabel = Label("分辨率"); resolutionLabel.Foreground = Brush("Ink"); resolutionLabel.FontSize = 13; resolutionLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(resolutionLabel);
         var resolutions = new UniformGrid { Columns = 4, Height = 40 };
         AddChoice(resolutions, resolutionChoices, new[] { "原始素材", "1080p", "1440p", "4K" }, index => { resolutionIndex = index; UpdateChoiceStates(); RefreshPreview(); }, "ExportResolution");
         left.Children.Add(resolutions);
-        var frameRateLabel = Label("帧率"); frameRateLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(frameRateLabel);
+        var frameRateLabel = Label("帧率"); frameRateLabel.Foreground = Brush("Ink"); frameRateLabel.FontSize = 13; frameRateLabel.Margin = new Thickness(0, 17, 0, 16); left.Children.Add(frameRateLabel);
         var rates = new UniformGrid { Columns = 2, Height = 40 };
         AddChoice(rates, frameRateChoices, new[] { "30 FPS", "60 FPS" }, index => { frameRateIndex = index; UpdateChoiceStates(); RefreshPreview(); }, "ExportFrameRate");
         left.Children.Add(rates);
@@ -148,7 +151,7 @@ public sealed class ExportWindow : Window
         var right = new Grid(); right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) }); right.RowDefinitions.Add(new RowDefinition { Height = new GridLength(203) }); right.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         var previewTitle = new TextBlock { Text = "当前画面", FontSize = 13, Foreground = Brush("Secondary"), VerticalAlignment = VerticalAlignment.Center };
         System.Windows.Automation.AutomationProperties.SetAutomationId(previewTitle, "ExportPreviewTitle"); Grid.SetRow(previewTitle, 0); right.Children.Add(previewTitle);
-        var imageFrame = new Border { Background = DottedPreviewSurface(), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(18), ClipToBounds = true, Margin = new Thickness(0, 11, 0, 0) };
+        var imageFrame = new Border { Background = DottedPreviewSurface(), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(.75), CornerRadius = new CornerRadius(16), ClipToBounds = true, Margin = new Thickness(0, 11, 0, 0) };
         if (preview != null)
         {
             imageFrame.Child = new Image { Source = preview, Stretch = Stretch.Uniform, Margin = new Thickness(18, 8, 18, 8) };
@@ -185,7 +188,9 @@ public sealed class ExportWindow : Window
         Grid.SetRow(actions, 2); footer.Children.Add(actions);
         Border footerBorder = new() { Child = footer, BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(0, 1, 0, 0) };
         Grid.SetRow(footerBorder, 2); root.Children.Add(footerBorder);
-        return new Border { Background = Brush("Surface"), CornerRadius = new CornerRadius(18), ClipToBounds = true, Child = root };
+        var shell = new Border { Background = Brush("Surface"), CornerRadius = new CornerRadius(18), Child = root };
+        shell.SizeChanged += (_, _) => shell.Clip = new RectangleGeometry(new Rect(0, 0, shell.ActualWidth, shell.ActualHeight), 18, 18);
+        return shell;
     }
 
     private static TextBlock Label(string text) => new() { Text = text, Foreground = Brush("Secondary"), FontSize = 12, Margin = new Thickness(0, 17, 0, 9) };
@@ -193,7 +198,7 @@ public sealed class ExportWindow : Window
     {
         var content = new Grid(); content.ColumnDefinitions.Add(new ColumnDefinition()); content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         content.Children.Add(new TextBlock { Text = text, VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center });
-        var check = new TextBlock { Text = "✓", FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 7, 0) };
+        var check = new TextBlock { Text = "✓", FontSize = 9, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, 7, 0) };
         Grid.SetColumn(check, 1); content.Children.Add(check); return content;
     }
     private static DrawingBrush DottedPreviewSurface()
@@ -217,9 +222,9 @@ public sealed class ExportWindow : Window
             var selectedIndex = index;
             var content = new Grid(); content.ColumnDefinitions.Add(new ColumnDefinition()); content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             content.Children.Add(new TextBlock { Text = labels[index], VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center });
-            var check = new TextBlock { Text = "✓", FontSize = 11, FontWeight = FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, -3, 0) };
+            var check = new TextBlock { Text = "✓", FontSize = 9, FontWeight = FontWeights.Medium, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(3, 0, -3, 0) };
             Grid.SetColumn(check, 1); content.Children.Add(check);
-            var button = new Button { Content = content, Height = 36, Margin = new Thickness(2), Padding = new Thickness(3, 5, 3, 5), FontSize = 12, BorderThickness = new Thickness(1), BorderBrush = Brush("Hairline") };
+            var button = new Button { Content = content, Height = 36, Margin = new Thickness(2), Padding = new Thickness(3, 5, 3, 5), FontSize = 13, BorderThickness = new Thickness(.75), BorderBrush = Brush("Hairline") };
             System.Windows.Automation.AutomationProperties.SetName(button, labels[index]);
             System.Windows.Automation.AutomationProperties.SetAutomationId(button, automationPrefix + "_" + index);
             button.Click += (_, _) => select(selectedIndex);
@@ -258,11 +263,14 @@ public sealed class ExportWindow : Window
         exportButton.Visibility = completedPath is null ? Visibility.Visible : Visibility.Collapsed;
         videoModeButton.Background = audioOnly ? Brush("ControlSurface") : Brush("Chrome");
         audioModeButton.Background = audioOnly ? Brush("Chrome") : Brush("ControlSurface");
+        videoModeButton.FontWeight = audioOnly ? FontWeights.Normal : FontWeights.Medium;
+        audioModeButton.FontWeight = audioOnly ? FontWeights.Medium : FontWeights.Normal;
         if (videoModeButton.Content is Grid videoContent && videoContent.Children.Count > 1) videoContent.Children[1].Visibility = audioOnly ? Visibility.Collapsed : Visibility.Visible;
         if (audioModeButton.Content is Grid audioContent && audioContent.Children.Count > 1) audioContent.Children[1].Visibility = audioOnly ? Visibility.Visible : Visibility.Collapsed;
         foreach (var choice in resolutionChoices) choice.IsEnabled = !audioOnly && !running;
-        foreach (var choice in frameRateChoices) choice.IsEnabled = !running;
+        foreach (var choice in frameRateChoices) choice.IsEnabled = !audioOnly && !running;
         hardware.IsEnabled = !audioOnly && !running;
+        videoModeButton.IsEnabled = audioModeButton.IsEnabled = browseButton.IsEnabled = !running;
         fileName.IsEnabled = !running; cancelButton.IsEnabled = true;
     }
 

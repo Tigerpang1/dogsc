@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.1',
+    [string]$Version = '0.2.2',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]
@@ -167,7 +167,7 @@ try {
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
     $testScript = Join-Path $repoRoot 'scripts/test.ps1'
     $testResult = Invoke-LoggedProcess -Name 'tests' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $testScript, '-Configuration', 'Release') `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $testScript, '-Configuration', 'Release', '-IncludeCaptureProbe') `
         -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
 
     $appProject = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
@@ -220,3 +220,4 @@ Write-Host "Result: $resultPath"
 Write-Host "Extracted source retained at: $tempRoot"
 Write-Host "Logs retained at: $logsDirectory"
 if ($run.status -ne 'passed') { exit 1 }
+exit 0

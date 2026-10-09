@@ -22,8 +22,8 @@ public partial class MainWindow
  {
   if(c.Selection.Kind=="screen"){var s=p.Timeline.Segments.First(x=>x.Id==c.Selection.Id);if(c.Operation=="reorder")p.Timeline.Reorder(s.Id,c.NewIndex);else{s.SourceStart=c.SourceStart;s.SourceDuration=c.SourceDuration;}}
   else if(c.Selection.Kind=="zoom"){var z=p.ZoomClips.First(x=>x.Id==c.Selection.Id);var startChanged=Math.Abs(z.Start-c.SourceStart)>1e-6;var endChanged=Math.Abs(z.End-(c.SourceStart+c.SourceDuration))>1e-6;z.Start=c.SourceStart;z.End=c.SourceStart+c.SourceDuration;if(c.Operation=="move"&&startChanged){z.EnterProgressOffset=0;z.ExitProgressOffset=0;}else{if(c.Operation=="trim-start"&&startChanged)z.EnterProgressOffset=0;if(c.Operation=="trim-end"&&endChanged)z.ExitProgressOffset=0;}}
-  else if(c.Selection.Kind=="motion"){var z=p.ScreenMotions.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;}
-  else if(c.Selection.Kind=="cameraMotion"){var z=p.CameraMotions.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;}
+  else if(c.Selection.Kind=="motion"){var z=p.ScreenMotions.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;if(c.Operation is "trim-start" or "trim-end")z.ReturnDuration=Math.Min(z.ReturnDuration,z.Duration);}
+  else if(c.Selection.Kind=="cameraMotion"){var z=p.CameraMotions.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;if(c.Operation is "trim-start" or "trim-end")z.ReturnDuration=Math.Min(z.ReturnDuration,z.Duration);}
   else if(c.Selection.Kind=="overlay"){var z=p.Overlays.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;}
   else if(c.Selection.Kind=="blur"){var z=p.BlurClips.First(x=>x.Id==c.Selection.Id);z.Start=c.SourceStart;z.Duration=c.SourceDuration;}
   else if(c.Selection.Kind=="camera"&&p.Camera!=null){var a=p.Camera;if(a.SyncSegments is {Count:>0}){if(c.Operation=="trim-start")CameraTimelineOperations.TrimTimelineStart(a,Math.Clamp(c.SourceStart,a.TimelineStart,a.TimelineStart+a.Duration-.04));else if(c.Operation=="trim-end")CameraTimelineOperations.TrimTimelineEnd(a,a.TimelineStart+Math.Clamp(c.SourceDuration,.04,a.Duration));else CameraTimelineOperations.Move(a,c.SourceStart-a.TimelineStart);return;}var available=AvailableAssetDuration(a.MediaPath,a.SourceStart+a.Duration);if(c.Operation=="trim-start"){var delta=Math.Clamp(c.SourceStart-a.TimelineStart,-a.SourceStart,a.Duration-.04);a.SourceStart+=delta;a.TimelineStart+=delta;a.Duration-=delta;}else{a.TimelineStart=c.SourceStart;a.Duration=Math.Min(c.SourceDuration,available-a.SourceStart);}}
@@ -50,10 +50,14 @@ public partial class MainWindow
  private void TimelineContextMenu()
  {
   var menu=new ContextMenu();void Item(string label,RoutedEventHandler action){var m=new MenuItem{Header=label};m.Click+=action;menu.Items.Add(m);}
-  Item("分割屏幕片段  S",SplitClick);Item("删除所选  Delete",DeleteSelectionClick);
+  var selection=CurrentTimelineSelection();var isTimedEffect=selection is not null&&ToTimelineEffectKind(selection.Kind) is not null;var isPrimary=selection is null||selection.Kind=="screen";
+  Item(isTimedEffect?"在播放头分割所选效果  S":isPrimary?"在播放头分割所在主片段  S":"当前选择不支持分割  S",SplitClick);
+  Item("删除所选  D / Delete",(_,_)=>DeleteCurrentSelection());
   Item("设置导出起点  I",(_,_)=>SetExportRange(true));Item("设置导出终点  O",(_,_)=>SetExportRange(false));Item("清除导出范围",(_,_)=>{TimelineView.RangeStart=null;TimelineView.RangeEnd=null;TimelineView.InvalidateVisual();});
-  if(selectedEffect!=null){Item("复制效果  Ctrl+C",(_,_)=>CopyEffect());Item(selectedEffect.Kind=="camera"?"粘贴效果并替换摄像头轨  Ctrl+V":"粘贴效果  Ctrl+V",(_,_)=>PasteEffect(false));Item("粘贴属性  Ctrl+Shift+V",(_,_)=>PasteEffect(true));}
-  else{Item("裁去播放头左侧",TrimLeftClick);Item("裁去播放头右侧",TrimRightClick);foreach(var rate in new[]{.25,.5,.75,1d,1.5,2,4,8})Item($"速度 {rate}×",(_,_)=>ApplyEdit(p=>p.Timeline.SetPlaybackRate(Selected(p).Id,rate)));Item("向左重排",MoveLeftClick);Item("向右重排",MoveRightClick);}
+  if(isTimedEffect||isPrimary){Item(isTimedEffect?"裁去效果起点  Q":"波纹删除播放头之前  Q",TrimLeftClick);Item(isTimedEffect?"裁去效果终点  W":"波纹删除播放头之后  W",TrimRightClick);}
+  else{var unsupported=new MenuItem{Header="Q/W 不支持当前摄像头或音轨选择",IsEnabled=false};menu.Items.Add(unsupported);}
+  if(selection is {Kind:"zoom" or "motion" or "cameraMotion" or "camera" or "overlay" or "blur"}){Item("复制效果  Ctrl+C",(_,_)=>CopyEffect());Item(selection.Kind=="camera"?"粘贴效果并替换摄像头轨  Ctrl+V":"粘贴效果  Ctrl+V",(_,_)=>PasteEffect(false));Item("粘贴属性  Ctrl+Shift+V",(_,_)=>PasteEffect(true));}
+  else if(isPrimary){foreach(var rate in new[]{.25,.5,.75,1d,1.5,2,4,8})Item($"速度 {rate}×",(_,_)=>ApplyEdit(p=>p.Timeline.SetPlaybackRate(Selected(p).Id,rate)));Item("向左重排",MoveLeftClick);Item("向右重排",MoveRightClick);}
   menu.PlacementTarget=TimelineView;menu.IsOpen=true;
  }
  private void CopyEffect()

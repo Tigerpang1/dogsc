@@ -85,6 +85,7 @@ if (ffmpegAvailable) await ColorAndSlowMotionProbe.Run();
 if (ffmpegAvailable) await OverlaySceneExportProbe.Run();
 if (ffmpegAvailable) await CameraMediaPipelineProbe.RunAsync();
 if (ffmpegAvailable) await CameraClockMediaProbe.RunAsync();
+if (ffmpegAvailable) await SceneAssetCacheProbe.RunAsync();
 var hlslPath = FindWorkspaceFile(Path.Combine("src", "FrameTrail.Media", "Scene.hlsl"));
 var hlsl = File.ReadAllText(hlslPath);
 _ = Compiler.Compile(hlsl, "VSMain", "Scene.hlsl", "vs_5_0");

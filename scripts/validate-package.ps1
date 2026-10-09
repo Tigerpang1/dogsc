@@ -1,12 +1,17 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.1', [switch]$SkipInstallation)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.2', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly)
 
 $ErrorActionPreference = 'Stop'
+if (-not $ContentOnly -and -not $InteractiveDesktop) {
+    throw '包运行验收会打开窗口、播放声音并操作真实桌面。请安排主机交互时段后显式传入 -InteractiveDesktop；本次未启动应用或安装程序。'
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64"
 $validation = Join-Path $repo "artifacts/validation/package-$Version"
 $null = New-Item -ItemType Directory -Path $validation -Force
-$report = [ordered]@{ Version=$Version; StartedUtc=[DateTime]::UtcNow.ToString('O'); Passed=$false; Checks=@(); Limitations=@('本机 Windows 11 x64，隔离 PATH 与 DOTNET_ROOT；不代替没有运行库的干净虚拟机。') }
+$report = [ordered]@{ Version=$Version; Scope=$(if ($ContentOnly) { 'content-only' } elseif ($SkipInstallation) { 'portable-only' } else { 'interactive-package' }); StartedUtc=[DateTime]::UtcNow.ToString('O'); Passed=$false; Checks=@(); Limitations=@('本机 Windows 11 x64；不代替没有运行库的干净虚拟机。') }
+if ($ContentOnly) { $report.Limitations += '仅后台检查包内容与哈希，未执行播放、录制或安装卸载，不替代交互运行验收。' }
+else { $report.Limitations += '应用运行验证隔离 PATH 与 DOTNET_ROOT，使用当前真实桌面。' }
 function Run-OwnedProcess([string]$Exe, [string[]]$Arguments, [bool]$Isolate = $false, [int]$TimeoutSeconds = 180) {
     $start = [Diagnostics.ProcessStartInfo]::new($Exe)
     $start.UseShellExecute = $false
@@ -34,13 +39,44 @@ function Check-Report([string]$Path, [string]$Name) {
     if (-not $data.Passed) { throw "$Name 未通过：$($data.Error)" }
     $report.Checks += [ordered]@{ Name=$Name; Passed=$true; Report=$Path }
 }
+function Assert-PortableArchive([string]$ArchivePath, [string]$DirectoryPath) {
+    # Inspect the archive itself so a stale ZIP cannot inherit a newer directory's result.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $directoryRoot = [IO.Path]::GetFullPath($DirectoryPath).TrimEnd('\') + '\'
+    $expected = @{}
+    foreach ($file in Get-ChildItem -LiteralPath $DirectoryPath -Recurse -File) {
+        $relative = $file.FullName.Substring($directoryRoot.Length).Replace('\', '/')
+        $expected.Add($relative, $file)
+    }
+    $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
+    try {
+        $seen = @{}
+        foreach ($entry in $archive.Entries) {
+            if ($entry.FullName.EndsWith('/')) { continue }
+            $name = $entry.FullName.Replace('\', '/')
+            if ($seen.ContainsKey($name) -or -not $expected.ContainsKey($name)) { throw "ZIP包含重复或非预期文件：$name" }
+            $seen.Add($name, $true)
+            $file = $expected[$name]
+            if ($entry.Length -ne $file.Length) { throw "ZIP文件长度与发布目录不一致：$name" }
+            $stream = $entry.Open()
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            try { $entryHash = [Convert]::ToHexString($algorithm.ComputeHash($stream)) }
+            finally { $algorithm.Dispose(); $stream.Dispose() }
+            if ($entryHash -ne (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash) { throw "ZIP文件内容与发布目录不一致：$name" }
+        }
+        if ($seen.Count -ne $expected.Count) { throw 'ZIP缺少发布目录中的文件。' }
+        return $seen.Count
+    } finally { $archive.Dispose() }
+}
 try {
     $exe = Join-Path $release 'app/FrameTrail.exe'
     $sample = Join-Path $release 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
-    foreach ($path in @($exe, $sample, (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
+    foreach ($path in @($exe, $sample, (Join-Path $release 'app/coreclr.dll'), (Join-Path $release 'app/hostfxr.dll'), (Join-Path $release 'app/hostpolicy.dll'), (Join-Path $release 'app/FrameTrail.runtimeconfig.json'), (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
-    $report.Checks += [ordered]@{ Name='主程序、原创样例与许可证齐备'; Passed=$true }
+    $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+    $report.Checks += [ordered]@{ Name='主程序、自包含运行库、原创样例与许可证齐备，ZIP逐文件内容一致'; Passed=$true }
+    if (-not $ContentOnly) {
     $playback = Join-Path $validation 'portable-playback.json'
     Run-OwnedProcess $exe @('--open', $sample, '--playback-smoke', $playback) $true
     Check-Report $playback '隔离开发环境后的便携版有声播放与暂停恢复'
@@ -67,11 +103,16 @@ try {
         if ((Test-Path -LiteralPath $registry) -or (Test-Path -LiteralPath $installedExe)) { throw '卸载后仍残留应用主程序或安装注册项。' }
         $report.Checks += [ordered]@{ Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
-    $report.Artifacts = @(Get-ChildItem -LiteralPath (Join-Path $repo 'artifacts/release') -File | Where-Object { $_.Name -in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe") } | ForEach-Object { [ordered]@{ Name=$_.Name; Bytes=$_.Length; SHA256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
+    }
+    $report.Artifacts = @(foreach ($artifactName in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe")) {
+        $artifact = Get-Item -LiteralPath (Join-Path $repo "artifacts/release/$artifactName")
+        [ordered]@{ Name=$artifact.Name; Bytes=$artifact.Length; SHA256=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash }
+    })
     $report.BuildInfo = Get-Content -LiteralPath (Join-Path $release 'BUILD-INFO.txt') -Raw
     $report.Passed = $true
 } catch { $report.Error = $_.Exception.ToString(); throw }
 finally {
     $report.CompletedUtc = [DateTime]::UtcNow.ToString('O')
-    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $validation 'result.json') -Encoding utf8
+    $resultName = if ($ContentOnly) { 'content-result.json' } else { 'result.json' }
+    $report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $validation $resultName) -Encoding utf8
 }

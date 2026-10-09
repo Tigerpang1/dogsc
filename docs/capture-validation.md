@@ -6,7 +6,41 @@
 
 显示器录制可通过 `IFrameCaptureService.CurrentCapturePrivateBytes` 读取当前 FFmpeg 子进程的 Private Bytes；暂停或无活动子进程时为 `null`。建议主UI同时采样主进程和此属性，按每个录制子进程及整个应用设置独立内存停止阈值。中断录制会在 `<输出MP4>.parts/<会话GUID>/manifest.json` 保留已正常封段的媒体段和错误摘要；`FrameCaptureService.FindRecoverableRecordings(directory)` 只读取此清单并跳过符号链接目录，`RecoverReadableRecordingAsync(info, destination)` 可将清单里的完整 MP4 段无损拼接为可编辑 MP4。被强制终止时当前未完成段只作为部分诊断文件保存，不列为可读段。成功完成的正常录制会清理 `.parts` 会话目录。
 
-独立摄像头素材和独立音轨使用 `ICaptureTrackService`。摄像头输出 MP4，系统回环和麦克风各自输出 WAV；音频轨用 NAudio.Wasapi 直接采集 Core Audio 端点，不创建含屏幕画面的临时文件。`CaptureTrackHandle.MediaPath` 是 UI 应转换为项目相对路径的最终素材地址，`StartStopwatchTicks`/`StopwatchFrequency` 与 `CaptureTrackResult.StopStopwatchTicks` 提供单调时钟范围。摄像头 start tick 来自 ScreenRecorderLib Recording 状态回调，音轨 start tick 取 `StartRecording()` 前的单调时钟；二者都不等于实际首个视频帧或音频样本的 PTS。WASAPI DataAvailable 事件也不携带设备采样时间戳，因此音轨由20ms时钟泵以100ms重排窗口将包到达时刻映射到样本时间线，按采样时钟补静音、修剪重叠包，并在停止时填到有效录制时长。包时间仍是回调到达时间估计，结果会明确警告这一限制。暂停/恢复会将停顿作为 `PausedIntervals` 返回并从 WAV 时间线排除；WASAPI 停顿边界精度受实际 packet 大小限制，结果警告会给出观测最大包时长。音频 WAV 使用端点的实际采样率、通道数和 PCM/IEEE-float 格式，UI 不应假定固定的 48kHz PCM16。
+独立摄像头素材和独立音轨使用 `ICaptureTrackService`。摄像头输出 MP4，系统回环和麦克风各自输出 WAV；音频轨通过 NAudio 的 Core Audio 接口采集端点，不创建含屏幕画面的临时文件。`CaptureTrackHandle.MediaPath` 是 UI 应转换为项目相对路径的最终素材地址，`StartStopwatchTicks`/`StopwatchFrequency` 与 `CaptureTrackResult.StopStopwatchTicks` 提供单调时钟范围。摄像头 start tick 来自 ScreenRecorderLib Recording 状态回调，音轨 start tick 取 `StartRecording()` 前的单调时钟，作为 WAV 的时间零点。
+
+0.2.2 使用 `IAudioCaptureClient.GetBuffer` 提供的包首帧 QPC 时间（100ns 单位）放置音频样本，按运行时 `Stopwatch.Frequency` 换算，不再把全部包的回调到达时刻当作采样时刻。时间戳错误或缺失时，才退回到达时刻减包时长的估计，并在结果记录次数。20ms 时钟泵保留100ms重排窗口，按有效时钟补静音、裁掉启动前样本及停止后的尾包；暂停区间按样本位置剪除。暂停期间仍按源时钟排空输入队列，避免录音暂停越久内存越大。包缓冲在同一采集线程的 `finally` 中释放后才进入应用回调。API 单位和缓冲规则依据 [Microsoft GetBuffer 文档](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)。音频 WAV 使用端点实际采样率、通道数及 PCM/IEEE-float 格式，UI 不应假定固定48kHz PCM16。音频设备时钟不消除视频首帧观测、播放器和声卡的端到端误差，仍需以下实测与手动校准。
+
+## 0.2.2 音频包时钟验证
+
+2026-10-09 的30分钟候选记录在 `artifacts/validation/capture-qpc-long-final-v8/qpc-av-30min-v2.report.json`。视频完成封装与全片解码：320×180、60/1、1800.383333秒、108023帧；WAV为48kHz双声道float、1800.23925秒。每5秒检查受控播放器是否覆盖录制区域，共360次；录像检测到1065个闪光。采集探针最高private约62.2MiB、编码进程约442.4MiB，采样未显示持续内存增长。
+
+**这次长测不能算音画同步通过。** 名义1080个事件只匹配485个（44.9%），最后匹配在994.2秒，跨度993.066667秒，未满足预先设定的95%名义覆盖、90%双向检测覆盖及1700秒跨度。已匹配区间的原始A−V绝对P95为43.424ms、最大71.757ms，回归漂移−1.973ms/min仅适用于该区间，不能外推到30分钟。扣除fixture三个事件的中位偏差只是估计；原始数据和失败判定均保留。
+
+原始PCM逐10秒数值分析发现930–980秒间有全零块，1030秒后持续全零；后474个闪光附近的频谱搜索没有通过1kHz刺激判据。最长RMS候选465ms，未发现大量背景声合并多个刺激导致漏检的证据。现有日志没有按时间记录Silent标志、补零帧数或被覆盖的迟到帧，且探针未保存ffplay stderr，无法区分声源/端点静音、缺包补零和迟包裁切；原因仍未定位。没有播放、转写或上传原始音轨。
+
+该长测使用v8目录中固定的采集运行库，包含QPC放置、暂停裁切及启动/释放串行化；后续增加的通知订阅者异常隔离未包含在该二进制中。报告保留运行库与源码哈希，后续改动不能直接继承这次实采认证。20秒预检的12个闪光与12个音频事件均匹配，原始绝对P95为29.508ms，也不能替代长时覆盖验收。
+
+`polish-capture-pure-final3.log` 记录 Core、导入器与四个采集纯逻辑入口通过：包时钟换算/裁切、诊断分桶、启动与释放并发、故障收尾。并发用例在无设备条件下阻塞启动、请求多次释放，确认所有释放等待同一任务且后续启动被拒绝。故障用例还检查状态及错误事件的第一个订阅者抛异常时，后续订阅者仍能收到通知，异常不会逃出通知派发。启动失败和停止异常均有资源清理路径；这些纯检查不能代替物理摄像头故障或设备热插拔验收。
+
+final8增加与WAV同目录的 `<文件名>.wav.diagnostics.json`，每10秒记录包数、样本数、Silent标志样本、实际写入、迟到重叠裁切，以及时钟泵、包间隙和停止收尾的补零帧数。最多保存2160桶（6小时），超出后淘汰最早桶，并保留全程总计与淘汰数量。分桶和 `LastPacketElapsedMs` 使用回调到达时间，不是最后QPC样本位置。文件不包含原始音频、按键或文本；正常写入不增加界面素材警告，副档失败不会使有效WAV收尾失败。该诊断帮助下一次实录归因，不回填v8缺失证据，也不改变QPC映射。视听探针同时保存ffplay stderr，并在播放器取得前台时中止，避免未观测的播放器快捷键污染刺激。
+
+探针可显式启用 `--sync-playback --interactive-playback`：准备阶段只激活自有播放器一次，以 `GetLastInputInfo` 的活动时间戳变化检测录制期间的输入干扰，出现变化便中止；它不读取按键、文本，也不能确定哪个键触发了播放器。此模式适用于无人操作的短测，不能用于允许同时操作主机的长测。默认模式继续使用不激活及前台检查，两个模式都保留录制区域五点遮挡校验。未知参数和多余位置参数会在启动设备前报错，避免拼错探针模式时落入默认录制。
+
+之后的20秒独立短测位于 `artifacts/validation/capture-qpc-interactive-v2/run20s/`：`qpc-interactive-20s-v2.mp4` 为320×180、60fps、20.205秒；`.sync-playback.json` 保存录制汇总，同名 `.wav.diagnostics.json` 保存分桶。2020个WASAPI包共969600帧，全部带SILENT标志；实际写入包来源帧966308，时钟泵补零1842，包间隙补零1005，重叠裁切282。时间戳回退和设备位置不匹配均为0，discontinuity为1。录制区域、前台和系统输入时间戳守卫未触发；正常收尾但没有可测音调，不算同步通过。`fixture-analysis.json` 则检测到源刺激的3次闪光与3个1kHz音调，排除fixture本身没有声音这一情况。
+
+只读端点元数据 `capture-qpc-interactive-v2/audio-endpoint-metadata.json` 显示当前Console、Multimedia、Communications默认输出均为 `耳机 (Realtek USB Audio)`，端点未静音、主音量1.0。另一次5秒自有播放器会话诊断 `loopback-session-diagnostic-20261009-170820-retry/audio-session-diagnostic.json` 中，36次采样均为 `Mute=true`、`Volume=0.0`，播放器路由正是该默认loopback端点，进程正常退出。它能解释最近短测的刺激缺失；当时未改变会话或系统音量。v8长测未记录这些会话状态，不能追溯断定其后段全零音频也来自相同原因。解除自有会话静音后的实际复验仍待交互时段。
+
+未来获准的短测可显式加入 `--restore-own-playback-session`，要求同时启用 `--sync-playback --interactive-playback --loop-playback` 且时长不超过30秒。它只匹配本轮ffplay精确PID的唯一音频会话，并确认路由等于所选loopback端点；在ffplay `-volume 3` 基础上把该会话临时设为0.03并解除静音，收尾时先恢复原值再结束自有播放器，不操作端点主音量。报告区分请求值和实际读回值；Apply异常保留回滚结果，恢复错误或读回不一致使本次测试失败。默认不启用该选项。
+
+`polish-capture-pure-final4.log` 记录Core、导入器及六项采集纯测通过，Release构建0警告0错误。新增模拟会话测试覆盖正常/异常恢复、幂等、读写故障、无/多会话、其他PID和路由不匹配，未调用设备。`ffplay-volume-numeric-20261009-172159/attenuation-comparison.json` 对fixture进行离线幅度缩放；在线性×0.0009模型下，原分析阈值仍识别并配对3/3个音调，最小目标频带功率占比0.9492，高于0.85。该结果只验证离线检测余量，不证明Windows实际增益、系统回环中的信噪比或实录成功。
+
+`--audio-packet-clock-test` 覆盖10MHz及非10MHz计数器、错误时间戳回退、跨暂停包、暂停内部开始的包、负起点和停止上限。三次15秒区域录制使用同一 `sync-export.mp4` 循环刺激，原始 A−V 绝对P95分别17.155、29.543、28.308ms；配对分别9、9、8组。检测闪帧数分别10、10、10，音频事件分别9、9、9，第三次有1组音频未配对，保留检测覆盖限制。证据在 `artifacts/validation/capture-qpc-candidate/sync-qpc-0*-analysis.json` 及逐事件CSV。
+
+fixture本身三个事件测得A−V为−25、−35、−35ms。扣除其中位数−35ms后的估计P95分别45.225、51.124、40.441ms，最大值49.225、53.790、41.608ms。这是中位偏差估计，不是逐cue校准或绝对同步精度证明；一次略超50ms，不能报告短测全部通过。原始与估计两组数据都保留，不把估计偏差写成产品中的固定补偿。
+
+另一次约30秒独立loopback测量含约10秒暂停，WAV为20.34175秒、48kHz双声道float。采样队列在暂停前、暂停中、恢复后的最大值均17包，中位数均15包，暂停期间没有持续增长；244次采样保存在 `audio-pause-queue-30s.csv`。对应结果有3014包，时间戳回退/错误均0、discontinuity为1、device position mismatch为0。可用 `tests/FrameTrail.Capture.Probe/audio-pause-queue-test.ps1` 复测。
+
+初始化失败清理覆盖音频client初始化、WAV创建、session注册和开始事件。WAV采用 `CreateNew`，启动失败只清理本次创建的文件。`--audio-writer-failure-test` 使用占位目录触发实际 `UnauthorizedAccessException`，同一service随后成功录制并收尾有效WAV；证据为 `artifacts/validation/audio-writer-failure-v2/probe.log`。下文0.2.0的30分钟WASAPI指标属于旧到达时刻实现，不能替代0.2.2的长测。
 
 显示器和区域使用外部 FFmpeg `ddagrab`（Windows Desktop Duplication API）采集，H.264/MP4 由检测可用的 FFmpeg 编码器输出；窗口目标保留 ScreenRecorderLib，并按 DWM 可见边界动态裁切。光标与点击叠层关闭；输入跟踪另以约 60Hz 采样，输出 JSONL，记录 `Stopwatch` ticks、物理屏幕坐标、目标内归一化坐标、鼠标按键和修饰键，不采集键入文本。输入事件 ticks 与服务状态 ticks 使用同一进程单调时钟域。显示器/区域的 `RecordingResult.FirstFrameObservedStopwatchTicks` 当前由 `ddagrab` 输出首帧时的 FFmpeg 墙钟与进程启动附近的 UTC/Stopwatch 配对换算，属于首帧进入滤镜的观测估计，不是原生捕获 PTS；`ProgressEstimatedFirstFrameStopwatchTicks` 提供旧 progress 反推值供诊断比较，`FirstFrameNumber` 为空。窗口路径的首帧回调保留 ScreenRecorderLib 提供的帧号和墙钟毫秒时间，但该时间不是 Media Foundation sample PTS。两种路径都不能宣称精确曝光时刻或精确 PTS。
 

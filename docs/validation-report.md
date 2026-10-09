@@ -1,4 +1,22 @@
-# FrameTrail 0.2.1 验证报告
+# FrameTrail 0.2.2 验证报告
+
+## 0.2.2 新增验证（2026-10-09）
+
+`polish-app-build-final8.log` 为0警告、0错误。`polish-tests-v3.log` 中Core、DogSC只读导入、完整GPU/媒体探针、逐片段音量、普通集成及1080p60同步集成均通过；图片LRU测试真实执行A/B/A/C驱逐、超预算素材直用、驱逐后重解码像素一致、Windows路径大小写，以及标题大小写/分隔符身份检查。小预算探针验证8192字节图片及110000字节文字预算，生产默认每个素材加载器256MiB，不能解释为整个应用内存峰值。五类效果分割检查非法切点不污染项目、独立ID/样式副本、保持期接缝及摄像头布局字段保留。
+
+后台收尾的 `polish-app-build-release-candidate.log` 再次为0警告0错误；`polish-release-product-hashes.json` 确认本次重建的App/Core/Capture/Media四个产品DLL与final8逐一SHA256相同。`polish-capture-pure-final4.log` 的Core、导入器和六项采集纯逻辑测试通过，`polish-desktop-guard-final.log` 的模拟桌面守卫测试通过；这些检查没有启动GUI、播放音频或采集设备。发行脚本的临时ZIP对照测试确认同长度异内容、缺文件与重复条目均被拒绝。
+
+`editor-polish-final8.json` 为53/53通过。`export-panel-polish-final8.json` 为12/12通过：直接进入M4A模式，真实生成纯音频且时长正确；不可用输出目录失败后恢复按钮、原占位文件不变；真实编码进度出现后取消、控件锁定、清理临时文件；同一面板再次导出MP4并探测流和时长。诊断调用实际WPF按钮和真实ExportEngine，没有用假进度替代导出。`ui-shortcuts-polish-final10.json` 为12/12通过，使用App final7，覆盖鼠标定位、快捷键及主窗口自然关闭。
+
+音频包时钟纯测试、三次实际区域视听短测、含10秒暂停的30秒队列测试，以及启动失败后再次录制的真实探针见 `capture-validation.md`。本轮原始音画偏差和扣fixture中位偏差后的估计均保留；不将旧版30分钟到达时刻音轨结果当作新QPC实现的验收。
+
+53项编辑回归覆盖效果分割、主片段按播放头分割、重排/变速后Q/W映射，以及屏幕和相机运动裁短后的返回时长上限。快捷键专项包含中文IME的`ImeProcessedKey`修复和撤销后的效果选择恢复。早期专项保留失败报告：测试曾未定位播放头或未滚到标尺；五帧键的测试注入修正为带左右修饰键扫描码的输入。
+
+参考工程11页和原创填充样例12页分别保存于 `visual-polish-final4/`、`visual-polish-populated-final4/`，后一组实际展示开启的开场、摄像头、选中缩放和贴图参数。截图范围及不同构图时间见 `visual-spec.md`。
+
+最新完整桌面回归 `ui-full-polish-final10` 在7/32后由前台保护中断；报告没有证明余下项目通过，也没有确认它们是产品失败。final9曾出现多实例守卫误判，已修正；final10仍因守卫中断，待可交互时段再跑完整验收。更早的 `ui-full-polish-final3.json` 42/42及final7失败日志属于历史证据，不能继承为当前候选全量通过。3840×2160屏幕内的输入坐标2698×1294并未越界，当前证据不足以将早期交互失败归因于DPI。final8另有采集诊断侧车与4项纯测试通过，详见采集验证文档。
+
+较早QPC候选v8的30分钟同步试验曾只匹配485/1080个名义事件，音频后段为全零；这是历史结果，不能代表当前短测。当前20秒交互短测收到2020个包、969600帧，均为SILENT。系统默认耳机端点未静音；另一次5秒ffplay会话诊断观察到该进程音频会话`Mute=true`、`Volume=0.0`（36次采样）。这提示测试刺激可能未进入回环，但v8没有会话状态记录，不能据此追溯归因。诊断文件为 `artifacts/validation/loopback-session-diagnostic-20261009-170820-retry/audio-session-diagnostic.json`；20秒采集媒体、汇总、音频分桶和事件表位于 `artifacts/validation/capture-qpc-interactive-v2/run20s/`，文件前缀为 `qpc-interactive-20s-v2`。
 
 ## 0.2.1 新增验证（2026-10-09）
 
@@ -64,7 +82,7 @@ ScreenRecorderLib旧后端完成的30分钟样片有4,095帧、1800.049秒视频
 
 本报告和测试结果不代表完整DogSC兼容或整个迁移阶段结束。平台光标资源、部分原生采集时钟精度、真实设备矩阵以及长录制质量仍有限制。
 
-源码包已完成工作区外独立重建预验（2026-10-09 09:04–09:05 UTC）：归档无 Git 元数据，Core/导入器测试、App 构建和无 FFmpeg 便携包生成均通过，BUILD-INFO 正确标注 source archive。最终发行物的源码 SHA 与二进制 SHA 以 DELIVERY-MANIFEST.json 和 package-0.2.0 下最后报告为准。
+0.2.0源码包曾完成工作区外独立重建预验；该历史结果不覆盖0.2.2候选。0.2.2源码包重建与包内容可后台验证，需以 `artifacts/validation/package-0.2.2/source-validation.json`、`content-result.json` 及对应候选清单的实际结果为准。最终发行包的播放/录制、安装与卸载验收仍待交互时段完成。
 
 桌面截图 `visual-final20-audit/` 含主界面及10个检查器/录制/导出页面，共11张，使用同一合成参考工程。截图用于结构与控件顺序检查，不证明与Mac版逐像素一致；投影四角仍有位置/姿态差异，缺少原Mac工程参数，暂不能归因于整体平移或渲染误差。其余硬件、真实Mac工程互操作及95%全功能目标仍未得到证明。
 

@@ -9,9 +9,75 @@ if (args.Length == 1 && args[0] == "--failure-lifecycle-probe")
     CaptureFailureLifecycleProbe.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--track-dispose-race-test")
+{
+    await CaptureTrackDisposeRaceProbe.RunAsync();
+    return;
+}
+if (args.Length == 1 && args[0] == "--audio-packet-clock-test")
+{
+    AudioPacketClockProbe.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--audio-packet-diagnostics-test")
+{
+    AudioPacketDiagnosticsProbe.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--playback-options-test")
+{
+    var interactive = ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--fps60"]);
+    if (!interactive.SyncPlayback || !interactive.InteractivePlayback)
+        throw new InvalidOperationException("Interactive playback option parsing failed.");
+    if (interactive.FrameRate != 60) throw new InvalidOperationException("The existing --fps60 shorthand no longer parses.");
+    var scopedRestore = ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--restore-own-playback-session"]);
+    if (!scopedRestore.RestoreOwnPlaybackSession) throw new InvalidOperationException("The explicit owned-session restore option did not parse.");
+    try
+    {
+        ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--restore-own-playback-session"]);
+        throw new InvalidOperationException("Session restore was accepted without looped interactive playback.");
+    }
+    catch (ArgumentException ex) when (ex.Message.Contains("requires --sync-playback, --interactive-playback, and --loop-playback", StringComparison.Ordinal)) { }
+    try
+    {
+        ProbeOptions.Parse(["--sync-playback", "--interactive-playback", "--loop-playback", "--restore-own-playback-session", "--duration", "31"]);
+        throw new InvalidOperationException("Session restore accepted a sample longer than 30 seconds.");
+    }
+    catch (ArgumentOutOfRangeException) { }
+    try
+    {
+        ProbeOptions.Parse(["--interactive-playback"]);
+        throw new InvalidOperationException("Interactive playback was accepted without --sync-playback.");
+    }
+    catch (ArgumentException ex) when (ex.Message.Contains("requires --sync-playback", StringComparison.Ordinal)) { }
+    try
+    {
+        ProbeOptions.Parse(["--sync-playback", "--not-a-real-flag"]);
+        throw new InvalidOperationException("Unknown probe flag was silently accepted.");
+    }
+    catch (ArgumentException ex) when (ex.Message.Contains("Unknown capture probe option", StringComparison.Ordinal)) { }
+    try
+    {
+        ProbeOptions.Parse(["first.mp4", "second.mp4"]);
+        throw new InvalidOperationException("An extra positional argument was silently accepted.");
+    }
+    catch (ArgumentException ex) when (ex.Message.Contains("Only one positional output path", StringComparison.Ordinal)) { }
+    Console.WriteLine("Playback option parsing passed: interactive mode validation, unknown flag and extra positional rejection, and --fps60 shorthand; no device or window was started.");
+    return;
+}
+if (args.Length == 1 && args[0] == "--playback-session-volume-test")
+{
+    PlaybackSessionVolumeProbe.Run();
+    return;
+}
 if (args.Length >= 2 && args[0] == "--failure-lifecycle-test")
 {
     await CaptureFailureLifecycleProbe.RunNativeAsync(Path.GetFullPath(args[1]));
+    return;
+}
+if (args.Length >= 2 && args[0] == "--audio-writer-failure-test")
+{
+    await AudioWriterFailureProbe.RunAsync(Path.GetFullPath(args[1]));
     return;
 }
 if (args.Length > 0 && args[0] == "--cursor-shapes")

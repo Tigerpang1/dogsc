@@ -12,20 +12,33 @@ public sealed class SceneAssetLoader : IDisposable
 {
     private readonly string projectFile;
     private readonly int outputWidth, outputHeight;
-    private readonly Dictionary<string, (int Width, int Height, byte[] Pixels)> images = new(StringComparer.OrdinalIgnoreCase);
+    internal const long DefaultImageCacheBudgetBytes = 256L * 1024 * 1024;
+    private readonly ByteBudgetLruCache<AssetCacheKey, (int Width, int Height, byte[] Pixels)> imageCache;
     private readonly Dictionary<string, MediaInfo> mediaInfo = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, CameraFrameStream> cameraStreams = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, BackgroundVideoFrameStream> backgroundVideoStreams = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, (int Width, int Height, byte[] Pixels)> textLayers = new(StringComparer.Ordinal);
     private readonly SemaphoreSlim gate = new(1, 1);
     private bool disposed;
 
     public SceneAssetLoader(string projectFile, int outputWidth, int outputHeight)
+        : this(projectFile, outputWidth, outputHeight, DefaultImageCacheBudgetBytes)
+    {
+    }
+
+    internal SceneAssetLoader(string projectFile, int outputWidth, int outputHeight, long imageCacheBudgetBytes)
     {
         if (string.IsNullOrWhiteSpace(projectFile)) throw new ArgumentException("项目路径不能为空。", nameof(projectFile));
         if (outputWidth < 16 || outputHeight < 16) throw new ArgumentOutOfRangeException(nameof(outputWidth));
+        if (imageCacheBudgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(imageCacheBudgetBytes));
         this.projectFile = Path.GetFullPath(projectFile); this.outputWidth = outputWidth; this.outputHeight = outputHeight;
+        imageCache = new ByteBudgetLruCache<AssetCacheKey, (int Width, int Height, byte[] Pixels)>(imageCacheBudgetBytes, AssetCacheKeyComparer.Instance);
     }
+
+    internal long CachedImageBytes => imageCache.CachedBytes;
+    internal int CachedImageCount => imageCache.Count;
+    internal long ImageCacheHitCount => imageCache.HitCount;
+    internal long ImageCacheMissCount => imageCache.MissCount;
+    internal long ImageCacheEvictionCount => imageCache.EvictionCount;
 
     /// <summary>Probes the camera asset for evaluator geometry without mutating the caller's project snapshot.</summary>
     public static async Task<double?> ProbeCameraAspectRatioAsync(FrameTrailProject project, string projectFile, CancellationToken cancellation = default)
@@ -81,8 +94,13 @@ public sealed class SceneAssetLoader : IDisposable
             {
                 var rect = FrameHeaderRect(scene, frameCanvas);
                 var tileWidth = 1024; var tileHeight = Math.Clamp((int)Math.Round(tileWidth * rect.Height * outputHeight / Math.Max(rect.Width * outputWidth, 1)), 24, 128);
-                var key = $"{tileWidth}x{tileHeight}|{frameCanvas.Frame}|{frameCanvas.Title}|{frameCanvas.Address}";
-                if (!textLayers.TryGetValue(key, out var textTile)) textLayers.Add(key, textTile = BuildFrameText(frameCanvas, tileWidth, tileHeight, cancellation));
+                var textKey = new AssetCacheKey(AssetCacheKeyKind.Text, null, tileWidth, tileHeight,
+                    frameCanvas.Frame, frameCanvas.Title, frameCanvas.Address);
+                if (!imageCache.TryGetValue(textKey, out var textTile))
+                {
+                    textTile = BuildFrameText(frameCanvas, tileWidth, tileHeight, cancellation);
+                    imageCache.Set(textKey, textTile, ByteSize(textTile));
+                }
                 result.Add(new(textTile.Width, textTile.Height, textTile.Pixels, rect, Layer: int.MinValue, FollowScreenTransform: true));
             }
             foreach (var overlay in scene.Overlays ?? [])
@@ -126,10 +144,31 @@ public sealed class SceneAssetLoader : IDisposable
 
     private async Task<(int Width, int Height, byte[] Pixels)> LoadImage(string path, int width, int height, CancellationToken cancellation)
     {
-        var key = $"{path}|{width}x{height}";
-        if (images.TryGetValue(key, out var cached)) return cached;
+        var key = new AssetCacheKey(AssetCacheKeyKind.Image, path, width, height, default, null, null);
+        if (imageCache.TryGetValue(key, out var cached)) return cached;
         var pixels = await MediaTools.DecodeFrameAsync(path, 0, width, height, cancellation);
-        var entry = (width, height, pixels); images.Add(key, entry); return entry;
+        var entry = (width, height, pixels); imageCache.Set(key, entry, ByteSize(entry)); return entry;
+    }
+
+    private static long ByteSize((int Width, int Height, byte[] Pixels) entry) => entry.Pixels.LongLength;
+
+    private enum AssetCacheKeyKind { Image, Text }
+    private readonly record struct AssetCacheKey(AssetCacheKeyKind Kind, string? Path, int Width, int Height,
+        ScreenFrameKind Frame, string? Title, string? Address);
+    private sealed class AssetCacheKeyComparer : IEqualityComparer<AssetCacheKey>
+    {
+        public static AssetCacheKeyComparer Instance { get; } = new();
+        public bool Equals(AssetCacheKey x, AssetCacheKey y) => x.Kind == y.Kind && x.Width == y.Width && x.Height == y.Height
+            && x.Frame == y.Frame && (x.Kind == AssetCacheKeyKind.Image
+                ? StringComparer.OrdinalIgnoreCase.Equals(x.Path, y.Path)
+                : StringComparer.Ordinal.Equals(x.Title, y.Title) && StringComparer.Ordinal.Equals(x.Address, y.Address));
+        public int GetHashCode(AssetCacheKey value)
+        {
+            var hash = new HashCode(); hash.Add(value.Kind); hash.Add(value.Width); hash.Add(value.Height); hash.Add(value.Frame);
+            if (value.Kind == AssetCacheKeyKind.Image) hash.Add(value.Path, StringComparer.OrdinalIgnoreCase);
+            else { hash.Add(value.Title, StringComparer.Ordinal); hash.Add(value.Address, StringComparer.Ordinal); }
+            return hash.ToHashCode();
+        }
     }
 
     /// <summary>Center-crops within the user's camera crop so the source fills the target geometry without stretching.</summary>
@@ -173,7 +212,7 @@ public sealed class SceneAssetLoader : IDisposable
 
     public void Dispose()
     {
-        if (disposed) return; disposed = true; images.Clear(); mediaInfo.Clear(); textLayers.Clear();
+        if (disposed) return; disposed = true; imageCache.Clear(); mediaInfo.Clear();
         foreach (var stream in cameraStreams.Values) stream.Dispose();
         foreach (var stream in backgroundVideoStreams.Values) stream.Dispose();
         cameraStreams.Clear(); backgroundVideoStreams.Clear(); gate.Dispose();
@@ -247,6 +286,69 @@ public sealed class SceneAssetLoader : IDisposable
         thread.SetApartmentState(ApartmentState.STA); thread.Start(); thread.Join();
         if (failure is not null) throw new InvalidOperationException("无法生成窗口标题图层。", failure);
         return (textWidth, textHeight, buffer);
+    }
+}
+
+/// <summary>Byte-bounded least-recently-used cache. Values larger than the budget are returned by callers but are not retained.</summary>
+internal sealed class ByteBudgetLruCache<TKey, TValue> where TKey : notnull
+{
+    private sealed record Entry(TKey Key, TValue Value, long Size);
+    private readonly long budgetBytes;
+    private readonly Dictionary<TKey, LinkedListNode<Entry>> entries;
+    private readonly LinkedList<Entry> recency = new();
+    private long cachedBytes;
+
+    public ByteBudgetLruCache(long budgetBytes, IEqualityComparer<TKey>? comparer = null)
+    {
+        if (budgetBytes < 0) throw new ArgumentOutOfRangeException(nameof(budgetBytes));
+        this.budgetBytes = budgetBytes;
+        entries = new Dictionary<TKey, LinkedListNode<Entry>>(comparer);
+    }
+
+    public long CachedBytes => cachedBytes;
+    public int Count => entries.Count;
+    public long HitCount { get; private set; }
+    public long MissCount { get; private set; }
+    public long EvictionCount { get; private set; }
+
+    public bool TryGetValue(TKey key, out TValue value)
+    {
+        if (!entries.TryGetValue(key, out var node)) { MissCount++; value = default!; return false; }
+        HitCount++;
+        recency.Remove(node);
+        recency.AddFirst(node);
+        value = node.Value.Value;
+        return true;
+    }
+
+    public void Set(TKey key, TValue value, long sizeBytes)
+    {
+        if (sizeBytes < 0) throw new ArgumentOutOfRangeException(nameof(sizeBytes));
+        Remove(key);
+        if (sizeBytes > budgetBytes || budgetBytes == 0) return;
+        while (cachedBytes > budgetBytes - sizeBytes && recency.Last is { } leastRecent)
+            RemoveNode(leastRecent, eviction: true);
+        var node = recency.AddFirst(new Entry(key, value, sizeBytes));
+        entries.Add(key, node);
+        cachedBytes += sizeBytes;
+    }
+
+    public void Clear()
+    {
+        entries.Clear(); recency.Clear(); cachedBytes = 0;
+    }
+
+    private void Remove(TKey key)
+    {
+        if (entries.TryGetValue(key, out var node)) RemoveNode(node, eviction: false);
+    }
+
+    private void RemoveNode(LinkedListNode<Entry> node, bool eviction)
+    {
+        recency.Remove(node);
+        entries.Remove(node.Value.Key);
+        cachedBytes -= node.Value.Size;
+        if (eviction) EvictionCount++;
     }
 }
 

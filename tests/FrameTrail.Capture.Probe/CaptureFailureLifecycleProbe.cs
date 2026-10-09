@@ -7,6 +7,20 @@ internal static class CaptureFailureLifecycleProbe
 {
     internal static void Run()
     {
+        var stateCalls = 0;
+        EventHandler<CaptureTrackStateChanged> stateSubscribers = (_, _) => throw new IOException("injected state subscriber failure");
+        stateSubscribers += (_, _) => stateCalls++;
+        CaptureTrackService.NotifySubscribersSafely(stateSubscribers, new object(),
+            new CaptureTrackStateChanged(Guid.NewGuid(), CaptureTrackKind.Camera, CaptureTrackState.Starting, Stopwatch.GetTimestamp()), "StateChanged");
+        Require(stateCalls == 1, "a throwing state observer cannot prevent later observers or escape notification dispatch");
+
+        var errorCalls = 0;
+        EventHandler<CaptureError> errorSubscribers = (_, _) => throw new IOException("injected error subscriber failure");
+        errorSubscribers += (_, _) => errorCalls++;
+        CaptureTrackService.NotifySubscribersSafely(errorSubscribers, new object(),
+            new CaptureError("injected service error"), "ErrorOccurred");
+        Require(errorCalls == 1, "a throwing error observer cannot escape notification dispatch");
+
         var runningStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var runningCompleted = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         Exception? remembered = null;
@@ -33,7 +47,7 @@ internal static class CaptureFailureLifecycleProbe
             Require(!CaptureFailurePolicy.HasNonEmptyCandidate(path), "empty output is rejected as a salvage candidate");
         }
         finally { try { File.Delete(path); } catch { } }
-        Console.WriteLine("Capture failure lifecycle probe passed: startup/runtime fault signaling, faulted-track cleanup, and partial-output candidate checks.");
+        Console.WriteLine("Capture failure lifecycle probe passed: per-subscriber notification isolation, startup/runtime fault signaling, faulted-track cleanup, and partial-output candidate checks.");
     }
 
     internal static async Task RunNativeAsync(string output)

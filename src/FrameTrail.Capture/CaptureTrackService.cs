@@ -14,7 +14,9 @@ public sealed class CaptureTrackService : ICaptureTrackService
 {
     private readonly ConcurrentDictionary<Guid, TrackSession> _sessions = new();
     private readonly SemaphoreSlim _startGate = new(1, 1);
-    private bool _disposed;
+    private readonly object _disposeSync = new();
+    private volatile bool _disposeRequested;
+    private Task? _disposeTask;
 
     public event EventHandler<CaptureTrackStateChanged>? StateChanged;
     public event EventHandler<CaptureError>? ErrorOccurred;
@@ -53,7 +55,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
     public async Task<CaptureTrackHandle> StartCameraAsync(CameraRecordingRequest request, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(request);
-        await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterStartGateAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -86,7 +88,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
         ArgumentNullException.ThrowIfNull(request);
         if (request.DeviceKind is not (AudioDeviceKind.SystemLoopback or AudioDeviceKind.Microphone))
             throw new ArgumentOutOfRangeException(nameof(request));
-        await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await EnterStartGateAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             ThrowIfDisposed();
@@ -99,59 +101,75 @@ public sealed class CaptureTrackService : ICaptureTrackService
             ValidateAudioOutput(request.OutputPath);
             using var enumerator = new MMDeviceEnumerator();
             using var endpoint = enumerator.GetDevice(device.Id);
-            IWaveIn audioCapture = request.DeviceKind == AudioDeviceKind.SystemLoopback
-                ? new WasapiLoopbackCapture(endpoint)
-                : new WasapiCapture(endpoint);
-            var session = new TrackSession(kind, request.OutputPath)
-            {
-                AudioCapture = audioCapture,
-                WaveFileWriter = new WaveFileWriter(Path.GetFullPath(request.OutputPath), audioCapture.WaveFormat)
-            };
-            session.Warnings.Add($"WASAPI audio format: {audioCapture.WaveFormat}; standalone WAV contains no video.");
-            session.Warnings.Add("WASAPI DataAvailable arrival times are approximate. A 100 ms clocked reorder window fills silent gaps; no endpoint sample timestamp is exposed by this capture API.");
-            audioCapture.DataAvailable += (_, args) =>
-            {
-                try
-                {
-                    var packetDuration = args.BytesRecorded * 1000d / Math.Max(1, audioCapture.WaveFormat.AverageBytesPerSecond);
-                    if (packetDuration > session.MaxAudioPacketMilliseconds) session.MaxAudioPacketMilliseconds = packetDuration;
-                    var blockAlign = Math.Max(1, audioCapture.WaveFormat.BlockAlign);
-                    var bytesRecorded = args.BytesRecorded - args.BytesRecorded % blockAlign;
-                    if (bytesRecorded <= 0) return;
-                    var packet = new byte[bytesRecorded];
-                    Buffer.BlockCopy(args.Buffer, 0, packet, 0, bytesRecorded);
-                    lock (session.AudioWriteGate)
-                    {
-                        if (session.AudioPaused || session.AudioStartTicks == 0) return;
-                        var frames = bytesRecorded / blockAlign;
-                        var activeTicks = GetAudioActiveTicks(session, Stopwatch.GetTimestamp());
-                        var startFrame = Math.Max(0, (long)(activeTicks * (double)audioCapture.WaveFormat.SampleRate / Stopwatch.Frequency) - frames);
-                        session.AudioPackets.Enqueue(new AudioPacket(startFrame, packet));
-                    }
-                }
-                catch (Exception ex) { ErrorOccurred?.Invoke(this, new CaptureError($"WASAPI audio write failed: {ex.Message}", ex)); }
-            };
-            audioCapture.RecordingStopped += (_, args) =>
-            {
-                session.AudioRecordingStopped = true;
-                if (args.Exception is not null)
-                {
-                    session.AudioFailure = args.Exception;
-                    session.AudioStopped.TrySetException(args.Exception);
-                    SetState(session, CaptureTrackState.Faulted, Stopwatch.GetTimestamp(), args.Exception.Message);
-                    try { ErrorOccurred?.Invoke(this, new CaptureError($"Audio capture stopped unexpectedly: {args.Exception.Message}", args.Exception)); } catch { }
-                }
-                else session.AudioStopped.TrySetResult(true);
-            };
-            if (!_sessions.TryAdd(session.Id, session))
-            {
-                audioCapture.Dispose(); session.WaveFileWriter.Dispose();
-                throw new InvalidOperationException("Could not register audio track.");
-            }
-            SetState(session, CaptureTrackState.Starting);
+            TimestampedWasapiCapture? audioCapture = null;
+            WaveFileWriter? waveWriter = null;
+            FileStream? outputStream = null;
+            var ownsOutputFile = false;
+            TrackSession? session = null;
+            var registered = false;
             try
             {
+                audioCapture = new TimestampedWasapiCapture(endpoint, request.DeviceKind == AudioDeviceKind.SystemLoopback);
+                outputStream = new FileStream(Path.GetFullPath(request.OutputPath), FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                ownsOutputFile = true;
+                waveWriter = new WaveFileWriter(outputStream, audioCapture.WaveFormat);
+                outputStream = null; // The WaveFileWriter now owns the stream.
+                session = new TrackSession(kind, request.OutputPath) { AudioCapture = audioCapture, WaveFileWriter = waveWriter };
+                session.Warnings.Add($"WASAPI audio format: {audioCapture.WaveFormat}; standalone WAV contains no video.");
+                session.Warnings.Add("WASAPI packet QPC timestamps are used for audio sample placement; timestamp-error packets fall back to callback arrival time.");
+                audioCapture.PacketAvailable += (packet, frames, devicePosition, qpcPosition, arrivalTicks, flags) =>
+                {
+                    try
+                    {
+                        var packetDuration = frames * 1000d / Math.Max(1, audioCapture.WaveFormat.SampleRate);
+                        if (packetDuration > session.MaxAudioPacketMilliseconds) session.MaxAudioPacketMilliseconds = packetDuration;
+                        var timing = AudioPacketClock.Resolve(qpcPosition, arrivalTicks, frames,
+                            audioCapture.WaveFormat.SampleRate, flags, Stopwatch.Frequency);
+                        lock (session.AudioWriteGate)
+                        {
+                            if (session.AudioStartTicks == 0) return;
+                            session.AudioDiagnostics ??= new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
+                            var startFrame = (long)((decimal)(timing.StartStopwatchTicks - session.AudioStartTicks) * audioCapture.WaveFormat.SampleRate / Stopwatch.Frequency);
+                            var mismatch = session.ExpectedDevicePosition is long expected && devicePosition != expected && !timing.DataDiscontinuity;
+                            session.AudioDiagnostics.Packet(arrivalTicks, frames, (flags & AudioClientBufferFlags.Silent) != 0,
+                                timing.ArrivalLatencyMilliseconds, timing.UsedArrivalFallback, timing.TimestampError,
+                                timing.DataDiscontinuity, mismatch);
+                            session.AudioPackets.Enqueue(new AudioPacket(startFrame, packet, timing, arrivalTicks,
+                                (flags & AudioClientBufferFlags.Silent) != 0));
+                            session.AudioPacketCount++;
+                            if (session.FirstDevicePosition is null)
+                            {
+                                session.FirstDevicePosition = devicePosition;
+                                session.FirstPacketOffsetMilliseconds = (timing.StartStopwatchTicks - session.AudioStartTicks) * 1000d / Stopwatch.Frequency;
+                            }
+                            if (mismatch)
+                                session.DevicePositionMismatchCount++;
+                            session.ExpectedDevicePosition = checked(devicePosition + frames);
+                            if (timing.UsedArrivalFallback) session.TimestampFallbackCount++;
+                            if (timing.TimestampError) session.TimestampErrorCount++;
+                            if (timing.DataDiscontinuity) session.DataDiscontinuityCount++;
+                            if (double.IsFinite(timing.ArrivalLatencyMilliseconds)) AddLatencySample(session, timing.ArrivalLatencyMilliseconds);
+                        }
+                    }
+                    catch (Exception ex) { NotifyError(new CaptureError($"WASAPI audio write failed: {ex.Message}", ex)); }
+                };
+                audioCapture.RecordingStopped += exception =>
+                {
+                    session.AudioRecordingStopped = true;
+                    if (exception is not null)
+                    {
+                        session.AudioFailure = exception;
+                        session.AudioStopped.TrySetException(exception);
+                        try { SetState(session, CaptureTrackState.Faulted, Stopwatch.GetTimestamp(), exception.Message); } catch { }
+                        NotifyError(new CaptureError($"Audio capture stopped unexpectedly: {exception.Message}", exception));
+                    }
+                    else session.AudioStopped.TrySetResult(true);
+                };
+                if (!_sessions.TryAdd(session.Id, session)) throw new InvalidOperationException("Could not register audio track.");
+                registered = true;
+                SetState(session, CaptureTrackState.Starting);
                 session.AudioStartTicks = Stopwatch.GetTimestamp();
+                session.AudioDiagnostics = new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
                 audioCapture.StartRecording();
                 var startedTicks = session.AudioStartTicks;
                 session.Handle = new CaptureTrackHandle(session.Id, kind, session.OutputPath, startedTicks, Stopwatch.Frequency);
@@ -162,10 +180,27 @@ public sealed class CaptureTrackService : ICaptureTrackService
             }
             catch
             {
-                _sessions.TryRemove(session.Id, out _);
-                try { audioCapture.Dispose(); } catch { }
-                try { session.WaveFileWriter.Dispose(); } catch { }
-                try { File.Delete(session.OutputPath); } catch { }
+                if (registered && session is not null) _sessions.TryRemove(session.Id, out _);
+                if (session?.AudioPumpCancellation is { } pumpCancellation)
+                {
+                    pumpCancellation.Cancel();
+                    if (session.AudioPumpTask is not null)
+                    {
+                        try { await session.AudioPumpTask.ConfigureAwait(false); } catch { }
+                    }
+                    pumpCancellation.Dispose();
+                    session.AudioPumpCancellation = null;
+                    session.AudioPumpTask = null;
+                }
+                try { audioCapture?.StopRecording(); } catch { }
+                try { audioCapture?.Dispose(); } catch { }
+                try { outputStream?.Dispose(); } catch { }
+                try { waveWriter?.Dispose(); } catch { }
+                if (ownsOutputFile)
+                {
+                    try { if (File.Exists(request.OutputPath)) File.Delete(request.OutputPath); } catch { }
+                }
+                if (session is not null) try { SetState(session, CaptureTrackState.Faulted, "Audio track startup failed."); } catch { }
                 throw;
             }
         }
@@ -211,16 +246,33 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 lock (session.AudioWriteGate)
                 {
                     var blockAlign = Math.Max(1, session.AudioCapture.WaveFormat.BlockAlign);
-                    DrainAudioPackets(session, long.MaxValue);
                     var activeTicks = GetAudioActiveTicks(session, stopTicks);
                     var targetFrames = Math.Max(0, (long)(activeTicks * (double)session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
-                    WriteAudioSilence(session, Math.Max(0, targetFrames - session.AudioFramesWritten), blockAlign);
+                    var sourceStopFrame = Math.Max(0, (long)((decimal)(stopTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
+                    DrainAudioPackets(session, long.MaxValue, sourceStopFrame, targetFrames);
+                    WriteAudioSilence(session, Math.Max(0, targetFrames - session.AudioFramesWritten), blockAlign,
+                        stopTicks, AudioSilenceSource.Finalization);
                 }
                 session.AudioPumpCancellation?.Dispose(); session.AudioPumpCancellation = null; session.AudioPumpTask = null;
                 session.WaveFileWriter?.Dispose();
                 session.AudioCapture.Dispose();
+                if (session.AudioDiagnostics is { } diagnostics)
+                {
+                    var diagnosticsPath = session.OutputPath + ".diagnostics.json";
+                    var diagnosticTicks = Stopwatch.GetTimestamp();
+                    var totals = diagnostics.Snapshot(diagnosticTicks);
+                    try
+                    {
+                        await diagnostics.WriteJsonAsync(diagnosticsPath, diagnosticTicks, CancellationToken.None).ConfigureAwait(false);
+                    }
+                    catch (Exception diagnosticsException)
+                    {
+                        session.Warnings.Add($"Audio packet diagnostics file could not be written: {diagnosticsException.Message}; totals packets={totals.PacketCount}, packetFrames={totals.PacketFrames}, silentFlagFrames={totals.SilentFlagFrames}, writtenFrames={totals.ActuallyWrittenFrames}, overlapDroppedFrames={totals.OverlapDroppedFrames}, pumpSilenceFrames={totals.PumpGeneratedSilenceFrames}.");
+                    }
+                }
                 if (session.PausedIntervals.Count > 0)
-                    session.Warnings.Add($"Pause drops whole WASAPI packets; the largest observed packet was {session.MaxAudioPacketMilliseconds:F1} ms, so pause boundaries have no finer sample timestamp.");
+                    session.Warnings.Add($"Audio pause boundaries were clipped to WASAPI packet QPC timestamps; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
+                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
             }
             else
             {
@@ -263,10 +315,22 @@ public sealed class CaptureTrackService : ICaptureTrackService
         }
         catch (Exception ex)
         {
-            ErrorOccurred?.Invoke(this, new CaptureError($"Capture track failed: {ex.Message}", ex));
+            NotifyError(new CaptureError($"Capture track failed: {ex.Message}", ex));
             try { session.AudioCapture?.StopRecording(); } catch { }
-            try { session.AudioCapture?.Dispose(); } catch { }
+            if (session.AudioPumpCancellation is { } pumpCancellation)
+            {
+                try { pumpCancellation.Cancel(); } catch (Exception cleanupException) { Trace.TraceError("Audio pump cancellation failed: {0}", cleanupException); }
+                if (session.AudioPumpTask is { } pumpTask)
+                {
+                    try { await pumpTask.ConfigureAwait(false); }
+                    catch (Exception cleanupException) { Trace.TraceError("Audio pump completion after track failure failed: {0}", cleanupException); }
+                }
+                try { pumpCancellation.Dispose(); } catch (Exception cleanupException) { Trace.TraceError("Audio pump cancellation disposal failed: {0}", cleanupException); }
+                session.AudioPumpCancellation = null;
+                session.AudioPumpTask = null;
+            }
             try { session.WaveFileWriter?.Dispose(); } catch { }
+            try { session.AudioCapture?.Dispose(); } catch { }
             try { session.Recorder?.Dispose(); } catch { }
             _sessions.TryRemove(trackId, out _);
             SetState(session, CaptureTrackState.Faulted, ex.Message);
@@ -280,28 +344,30 @@ public sealed class CaptureTrackService : ICaptureTrackService
     {
         ValidateOutput(outputPath);
         var session = new TrackSession(kind, outputPath);
-        session.Recorder = Recorder.CreateRecorder(options);
-        session.Recorder.OnStatusChanged += (_, args) => OnStatusChanged(session, args);
-        session.Recorder.OnRecordingFailed += (_, args) =>
-        {
-            var ex = new InvalidOperationException(args.Error);
-            session.FailureException = ex;
-            session.FailureSignal.TrySetResult(ex);
-            if (session.State == CaptureTrackState.Starting)
-            {
-                session.Started.TrySetException(ex);
-                session.Finished.TrySetException(ex);
-            }
-            else session.Warnings.Add("Capture backend failure: " + args.Error);
-            ErrorOccurred?.Invoke(this, new CaptureError(args.Error, ex));
-            SetState(session, CaptureTrackState.Faulted, args.Error);
-        };
-        session.Recorder.OnRecordingComplete += (_, args) => session.Finished.TrySetResult(args.FilePath);
-        ConfigureOutputMetadata(session, options);
-        if (!_sessions.TryAdd(session.Id, session)) throw new InvalidOperationException("Could not register capture track.");
-        SetState(session, CaptureTrackState.Starting);
+        var registered = false;
         try
         {
+            session.Recorder = Recorder.CreateRecorder(options);
+            session.Recorder.OnStatusChanged += (_, args) => OnStatusChanged(session, args);
+            session.Recorder.OnRecordingFailed += (_, args) =>
+            {
+                var ex = new InvalidOperationException(args.Error);
+                session.FailureException = ex;
+                session.FailureSignal.TrySetResult(ex);
+                if (session.State == CaptureTrackState.Starting)
+                {
+                    session.Started.TrySetException(ex);
+                    session.Finished.TrySetException(ex);
+                }
+                else session.Warnings.Add("Capture backend failure: " + args.Error);
+                NotifyError(new CaptureError(args.Error, ex));
+                SetState(session, CaptureTrackState.Faulted, args.Error);
+            };
+            session.Recorder.OnRecordingComplete += (_, args) => session.Finished.TrySetResult(args.FilePath);
+            ConfigureOutputMetadata(session, options);
+            if (!_sessions.TryAdd(session.Id, session)) throw new InvalidOperationException("Could not register capture track.");
+            registered = true;
+            SetState(session, CaptureTrackState.Starting);
             await Task.Run(() => session.Recorder.Record(session.OutputPath), cancellationToken).ConfigureAwait(false);
             var startedTicks = await session.Started.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken).ConfigureAwait(false);
             session.Handle = new CaptureTrackHandle(session.Id, kind, session.OutputPath, startedTicks, Stopwatch.Frequency);
@@ -310,10 +376,10 @@ public sealed class CaptureTrackService : ICaptureTrackService
         catch (Exception ex)
         {
             try { await Task.Run(session.Recorder.Stop).ConfigureAwait(false); } catch { }
-            session.Recorder.Dispose();
-            _sessions.TryRemove(session.Id, out _);
+            try { session.Recorder?.Dispose(); } catch (Exception cleanupException) { Trace.TraceError("Recorder disposal after startup failure failed: {0}", cleanupException); }
+            if (registered) _sessions.TryRemove(session.Id, out _);
             try { if (File.Exists(session.OutputPath)) File.Delete(session.OutputPath); } catch { }
-            SetState(session, ex is OperationCanceledException ? CaptureTrackState.Faulted : CaptureTrackState.Faulted, ex.Message);
+            SetState(session, CaptureTrackState.Faulted, ex.Message);
             throw;
         }
     }
@@ -423,10 +489,24 @@ public sealed class CaptureTrackService : ICaptureTrackService
     private void SetState(TrackSession session, CaptureTrackState state, long? ticks = null, string? detail = null)
     {
         session.State = state;
-        StateChanged?.Invoke(this, new CaptureTrackStateChanged(session.Id, session.Kind, state, ticks ?? Stopwatch.GetTimestamp(), detail));
+        NotifySubscribersSafely(StateChanged, this,
+            new CaptureTrackStateChanged(session.Id, session.Kind, state, ticks ?? Stopwatch.GetTimestamp(), detail), nameof(StateChanged));
     }
     private void SetState(TrackSession session, CaptureTrackState state, string? detail) =>
         SetState(session, state, Stopwatch.GetTimestamp(), detail);
+
+    private void NotifyError(CaptureError error) =>
+        NotifySubscribersSafely(ErrorOccurred, this, error, nameof(ErrorOccurred));
+
+    internal static void NotifySubscribersSafely<T>(EventHandler<T>? subscribers, object sender, T args, string eventName)
+    {
+        if (subscribers is null) return;
+        foreach (EventHandler<T> subscriber in subscribers.GetInvocationList())
+        {
+            try { subscriber(sender, args); }
+            catch (Exception ex) { Trace.TraceError("CaptureTrackService {0} subscriber failed: {1}", eventName, ex); }
+        }
+    }
 
     private static void ValidateOutput(string outputPath)
     {
@@ -464,18 +544,21 @@ public sealed class CaptureTrackService : ICaptureTrackService
             {
                 lock (session.AudioWriteGate)
                 {
-                    if (session.AudioPaused || session.AudioStartTicks == 0) continue;
-                    var activeTicks = GetAudioActiveTicks(session, Stopwatch.GetTimestamp());
-                    var targetFrame = Math.Max(0, (long)(activeTicks * (double)format.SampleRate / Stopwatch.Frequency) - reorderFrames);
-                    DrainAudioPackets(session, targetFrame);
-                    WriteAudioSilence(session, Math.Max(0, targetFrame - session.AudioFramesWritten), blockAlign);
+                    if (session.AudioStartTicks == 0) continue;
+                    var nowTicks = Stopwatch.GetTimestamp();
+                    var targetSourceFrame = Math.Max(0, (long)((decimal)(nowTicks - session.AudioStartTicks) * format.SampleRate / Stopwatch.Frequency) - reorderFrames);
+                    DrainAudioPackets(session, targetSourceFrame);
+                    var activeTicks = GetAudioActiveTicks(session, nowTicks);
+                    var targetOutputFrame = Math.Max(0, (long)(activeTicks * (double)format.SampleRate / Stopwatch.Frequency) - reorderFrames);
+                    WriteAudioSilence(session, Math.Max(0, targetOutputFrame - session.AudioFramesWritten), blockAlign,
+                        nowTicks, AudioSilenceSource.Pump);
                 }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { }
     }
 
-    private static void DrainAudioPackets(TrackSession session, long dueThroughFrame)
+    private static void DrainAudioPackets(TrackSession session, long dueThroughFrame, long? sourceStopFrame = null, long? outputStopFrame = null)
     {
         var writer = session.WaveFileWriter;
         var blockAlign = Math.Max(1, session.AudioCapture!.WaveFormat.BlockAlign);
@@ -483,18 +566,34 @@ public sealed class CaptureTrackService : ICaptureTrackService
         {
             session.AudioPackets.Dequeue();
             var packetFrames = packet.Data.Length / blockAlign;
-            WriteAudioSilence(session, Math.Max(0, packet.StartFrame - session.AudioFramesWritten), blockAlign);
-            var overlapFrames = Math.Max(0, session.AudioFramesWritten - packet.StartFrame);
-            var remainingFrames = Math.Max(0, packetFrames - overlapFrames);
-            if (remainingFrames == 0 || writer is null) continue;
-            var offset = checked((int)(overlapFrames * blockAlign));
-            var count = checked((int)(remainingFrames * blockAlign));
-            writer.Write(packet.Data, offset, count);
-            session.AudioFramesWritten += remainingFrames;
+            var pauseRanges = session.PausedIntervals.Select(interval => (
+                StartFrame: Math.Max(0, (long)((decimal)(interval.PauseStartStopwatchTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency)),
+                EndFrame: Math.Max(0, (long)((decimal)(interval.ResumeStopwatchTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency)))).ToList();
+            if (session.AudioPaused && session.PauseStartTicks > 0)
+            {
+                var start = Math.Max(0, (long)((decimal)(session.PauseStartTicks - session.AudioStartTicks) * session.AudioCapture.WaveFormat.SampleRate / Stopwatch.Frequency));
+                pauseRanges.Add((start, long.MaxValue));
+            }
+            foreach (var segment in AudioPacketTimeline.MapPacket(packet.StartFrame, packetFrames, pauseRanges,
+                         sourceStopFrame ?? long.MaxValue, outputStopFrame ?? long.MaxValue))
+            {
+                var segmentFrameCount = segment.FrameCount;
+                WriteAudioSilence(session, Math.Max(0, segment.OutputStartFrame - session.AudioFramesWritten), blockAlign,
+                    packet.ArrivalStopwatchTicks, AudioSilenceSource.PacketGap);
+                var overlapFrames = Math.Max(0, session.AudioFramesWritten - segment.OutputStartFrame);
+                var remainingFrames = Math.Max(0, segmentFrameCount - overlapFrames);
+                if (overlapFrames > 0) session.AudioDiagnostics?.OverlapDropped(packet.ArrivalStopwatchTicks, Math.Min(overlapFrames, segmentFrameCount));
+                if (remainingFrames == 0 || writer is null) continue;
+                var offset = checked((int)((segment.InputFrameOffset + overlapFrames) * blockAlign));
+                var count = checked((int)(remainingFrames * blockAlign));
+                writer.Write(packet.Data, offset, count);
+                session.AudioFramesWritten += remainingFrames;
+                session.AudioDiagnostics?.Written(packet.ArrivalStopwatchTicks, remainingFrames, packet.EndpointSilent);
+            }
         }
     }
 
-    private static void WriteAudioSilence(TrackSession session, long frameCount, int blockAlign)
+    private static void WriteAudioSilence(TrackSession session, long frameCount, int blockAlign, long eventTicks, AudioSilenceSource source)
     {
         var writer = session.WaveFileWriter;
         if (frameCount <= 0 || writer is null) return;
@@ -509,6 +608,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
             for (var i = 0; i < bytes.Length; i += blockAlign) Buffer.BlockCopy(silenceFrame, 0, bytes, i, blockAlign);
             writer.Write(bytes, 0, bytes.Length);
             session.AudioFramesWritten += frames;
+            session.AudioDiagnostics?.SilenceWritten(eventTicks, frames, source);
             frameCount -= frames;
         }
     }
@@ -522,19 +622,79 @@ public sealed class CaptureTrackService : ICaptureTrackService
         return Math.Max(0, nowTicks - session.AudioStartTicks - pausedTicks);
     }
 
+    private static double Percentile(List<double> values, double percentile)
+    {
+        if (values.Count == 0) return double.NaN;
+        var sorted = values.OrderBy(value => value).ToArray();
+        return sorted[(int)Math.Clamp(Math.Ceiling(percentile * sorted.Length) - 1, 0, sorted.Length - 1)];
+    }
+
+    private static void AddLatencySample(TrackSession session, double value)
+    {
+        session.ArrivalLatencySampleCount++;
+        const int reservoirSize = 4096;
+        if (session.ArrivalLatencySamples.Count < reservoirSize)
+        {
+            session.ArrivalLatencySamples.Add(value);
+            return;
+        }
+        var replacement = Random.Shared.NextInt64(session.ArrivalLatencySampleCount);
+        if (replacement < reservoirSize) session.ArrivalLatencySamples[(int)replacement] = value;
+    }
+
     private static int Even(int value) => Math.Max(2, value - value % 2);
     private static void EnsureWindows() { if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("FrameTrail.Capture requires Windows."); }
-    private void ThrowIfDisposed() { if (_disposed) throw new ObjectDisposedException(nameof(CaptureTrackService)); }
-
-    public async ValueTask DisposeAsync()
+    private async Task EnterStartGateAsync(CancellationToken cancellationToken)
     {
-        if (_disposed) return;
-        _disposed = true;
-        foreach (var session in _sessions.Values.ToArray())
+        await _startGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try { ThrowIfDisposed(); }
+        catch { _startGate.Release(); throw; }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposeRequested) throw new ObjectDisposedException(nameof(CaptureTrackService));
+    }
+
+    internal async Task RunStartGateProbeAsync(Func<Task> action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        await EnterStartGateAsync(CancellationToken.None).ConfigureAwait(false);
+        try { await action().ConfigureAwait(false); }
+        finally { _startGate.Release(); }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        lock (_disposeSync)
         {
-            try { await StopTrackAsync(session.Id).ConfigureAwait(false); } catch { }
+            if (_disposeTask is not null) return new ValueTask(_disposeTask);
+            _disposeRequested = true;
+            var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _disposeTask = completion.Task;
+            _ = DisposeCoreAsync(completion);
+            return new ValueTask(_disposeTask);
         }
-        _startGate.Dispose();
+    }
+
+    private async Task DisposeCoreAsync(TaskCompletionSource<bool> completion)
+    {
+        try
+        {
+            await _startGate.WaitAsync().ConfigureAwait(false);
+            TrackSession[] sessions;
+            try
+            {
+                sessions = _sessions.Values.ToArray();
+            }
+            finally { _startGate.Release(); }
+            foreach (var session in sessions)
+            {
+                try { await StopTrackAsync(session.Id).ConfigureAwait(false); } catch { }
+            }
+            completion.TrySetResult(true);
+        }
+        catch (Exception ex) { completion.TrySetException(ex); }
     }
 
     private sealed class TrackSession(CaptureTrackKind kind, string outputPath)
@@ -543,7 +703,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal CaptureTrackKind Kind { get; } = kind;
         internal string OutputPath { get; } = Path.GetFullPath(outputPath);
         internal Recorder Recorder { get; set; } = null!;
-        internal IWaveIn? AudioCapture { get; set; }
+        internal TimestampedWasapiCapture? AudioCapture { get; set; }
         internal WaveFileWriter? WaveFileWriter { get; set; }
         internal object AudioWriteGate { get; } = new();
         internal Queue<AudioPacket> AudioPackets { get; } = new();
@@ -572,6 +732,17 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal int FrameRate { get; set; }
         internal EncoderMode EncoderMode { get; set; }
         internal double MaxAudioPacketMilliseconds { get; set; }
+        internal long AudioPacketCount { get; set; }
+        internal long TimestampFallbackCount { get; set; }
+        internal long TimestampErrorCount { get; set; }
+        internal long DataDiscontinuityCount { get; set; }
+        internal long DevicePositionMismatchCount { get; set; }
+        internal long? FirstDevicePosition { get; set; }
+        internal long? ExpectedDevicePosition { get; set; }
+        internal double FirstPacketOffsetMilliseconds { get; set; } = double.NaN;
+        internal long ArrivalLatencySampleCount { get; set; }
+        internal List<double> ArrivalLatencySamples { get; } = [];
+        internal AudioPacketDiagnostics? AudioDiagnostics { get; set; }
     }
-    private sealed record AudioPacket(long StartFrame, byte[] Data);
+    private sealed record AudioPacket(long StartFrame, byte[] Data, AudioPacketTiming Timing, long ArrivalStopwatchTicks, bool EndpointSilent);
 }

@@ -1,4 +1,4 @@
-"""Measure recurring fixture flashes and 1 kHz pulses in a screen/WASAPI capture pair."""
+"""Measure recurring fixture flashes and spectral 1 kHz pulses in a screen/WASAPI capture pair."""
 import csv
 import json
 import pathlib
@@ -6,6 +6,16 @@ import subprocess
 import sys
 
 import numpy as np
+from tone_spectrum import (
+    COMPARISON_BAND_HZ,
+    MIN_TARGET_POWER_FRACTION,
+    RULE_VERSION,
+    SAMPLE_RATE_HZ,
+    TARGET_BAND_HZ,
+    WINDOW_DURATION_MS,
+    WINDOW_SAMPLES,
+    target_power_fraction,
+)
 
 
 def run(args):
@@ -44,7 +54,11 @@ def main():
                      "pan=mono|c0=0.5*c0+0.5*c1,bandpass=f=1000:width_type=h:width=180,aresample=8000",
                      "-f", "f32le", "-ac", "1", "-"])
     samples = np.frombuffer(audio_raw, dtype="<f4")
-    window, hop, sample_rate = 160, 40, 8000
+    spectral_raw = run([ffmpeg, "-v", "error", "-i", str(audio_path), "-vn", "-af",
+                        "pan=mono|c0=0.5*c0+0.5*c1,aresample=8000",
+                        "-f", "f32le", "-ac", "1", "-"])
+    spectral_samples = np.frombuffer(spectral_raw, dtype="<f4")
+    window, hop, sample_rate = 160, 40, SAMPLE_RATE_HZ
     windows = np.lib.stride_tricks.sliding_window_view(samples, window)[::hop]
     rms = np.sqrt(np.mean(windows.astype(np.float64) ** 2, axis=1))
     audio_times = np.arange(len(rms), dtype=np.float64) * hop / sample_rate
@@ -57,7 +71,24 @@ def main():
             bursts.append([int(index)])
         else:
             bursts[-1].append(int(index))
-    tone_events = [float(audio_times[group[0]]) for group in bursts if len(group) >= 8]
+    tone_candidates = []
+    tone_events = []
+    for group in bursts:
+        if len(group) < 8:
+            continue
+        start = float(audio_times[group[0]])
+        sample_start = int(round((start + 0.015) * sample_rate))
+        tone_samples = spectral_samples[sample_start:sample_start + WINDOW_SAMPLES].astype(np.float64)
+        if len(tone_samples) < WINDOW_SAMPLES:
+            continue
+        concentration = target_power_fraction(tone_samples, sample_rate)
+        candidate = {"time_seconds": start, "duration_ms": (group[-1] - group[0]) * hop * 1000 / sample_rate,
+                     "window_start_seconds": start + 0.015, "window_duration_ms": WINDOW_DURATION_MS,
+                     "target_band_hz": list(TARGET_BAND_HZ), "comparison_band_hz": list(COMPARISON_BAND_HZ),
+                     "target_power_fraction": concentration, "accepted_as_1khz_fixture_tone": concentration >= MIN_TARGET_POWER_FRACTION}
+        tone_candidates.append(candidate)
+        if candidate["accepted_as_1khz_fixture_tone"]:
+            tone_events.append(start)
 
     frequency = int(summary["StopwatchFrequency"])
     video_zero = int(summary["FirstFrameObservedStopwatchTicks"])
@@ -65,8 +96,9 @@ def main():
     # Match by absolute capture-clock time; the first bright startup frame can be unrelated to a cue.
     matches = []
     remaining_video = set(range(len(flash_events)))
+    remaining_audio = set(range(len(tone_events)))
     capture_start_offset = (audio_zero - video_zero) / frequency
-    for audio_time in tone_events:
+    for audio_index, audio_time in enumerate(tone_events):
         expected_video = audio_time + capture_start_offset
         if not remaining_video:
             break
@@ -76,6 +108,7 @@ def main():
         if abs(offset_ms) <= 250:
             matches.append((video_time, audio_time, offset_ms))
             remaining_video.remove(video_index)
+            remaining_audio.remove(audio_index)
     if matches:
         x = np.array([(a + b) / 2 for a, b, _ in matches], dtype=np.float64)
         y = np.array([c for _, _, c in matches], dtype=np.float64)
@@ -102,9 +135,24 @@ def main():
         writer.writerow(["video_flash_seconds", "audio_tone_seconds", "audio_minus_video_ms"])
         writer.writerows([[f"{v:.6f}", f"{a:.6f}", f"{o:.3f}"] for v, a, o in matches])
     report = {"video": str(media), "audio": str(audio_path), "video_frames": len(video_times),
+              "tone_spectrum_rule": {"version": RULE_VERSION, "sample_rate_hz": SAMPLE_RATE_HZ,
+                                     "window_duration_ms": WINDOW_DURATION_MS, "window_samples": WINDOW_SAMPLES,
+                                     "fft_bin_width_hz": SAMPLE_RATE_HZ / WINDOW_SAMPLES,
+                                     "target_band_hz": list(TARGET_BAND_HZ),
+                                     "comparison_band_hz": list(COMPARISON_BAND_HZ),
+                                     "minimum_target_power_fraction": MIN_TARGET_POWER_FRACTION},
               "flash_events": len(flash_events), "tone_events": len(tone_events), "matched_events": len(matches),
+              "wideband_tone_candidate_count": len(tone_candidates),
+              "rejected_non_fixture_tone_candidate_count": sum(not item["accepted_as_1khz_fixture_tone"] for item in tone_candidates),
+              "tone_candidate_spectrum": tone_candidates,
               "match_tolerance_ms": 250,
               "matched_coverage_percent_of_detected_events": 100.0 * len(matches) / max(len(flash_events), len(tone_events), 1),
+              "matched_coverage_percent_of_video_events": 100.0 * len(matches) / max(len(flash_events), 1),
+              "matched_coverage_percent_of_classified_tone_events": 100.0 * len(matches) / max(len(tone_events), 1),
+              "matched_coverage_percent_of_wideband_audio_candidates": 100.0 * len(matches) / max(len(tone_candidates), 1),
+              "unmatched_video_flash_seconds": [flash_events[i] for i in sorted(remaining_video)],
+              "unmatched_audio_tone_seconds": [tone_events[i] for i in sorted(remaining_audio)],
+              "rejected_non_fixture_tone_candidate_seconds": [item["time_seconds"] for item in tone_candidates if not item["accepted_as_1khz_fixture_tone"]],
               "median_audio_minus_video_ms": float(np.median([m[2] for m in matches])) if matches else None,
               "p95_abs_audio_minus_video_ms": float(np.percentile(np.abs([m[2] for m in matches]), 95)) if matches else None,
               "p99_abs_audio_minus_video_ms": float(np.percentile(offsets, 99)) if len(offsets) else None,

@@ -41,7 +41,11 @@ try {
         }
         & dotnet build $captureProbe --configuration $Configuration -p:Platform=x64
         if ($LASTEXITCODE -ne 0) { throw "采集探针构建失败，退出码 $LASTEXITCODE" }
-        Write-Host '采集探针仅完成构建；脚本不会启动录制、访问设备或请求权限。'
+        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test')) {
+            & dotnet run --no-build --project $captureProbe --configuration $Configuration -p:Platform=x64 -- $pureProbe
+            if ($LASTEXITCODE -ne 0) { throw "采集纯逻辑探针 $pureProbe 失败，退出码 $LASTEXITCODE" }
+        }
+        Write-Host '采集探针构建和纯逻辑检查通过；脚本不会启动录制、访问设备或请求权限。'
     }
 }
 finally {

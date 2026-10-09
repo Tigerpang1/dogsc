@@ -12,14 +12,49 @@ public partial class MainWindow
  private async Task CaptureVisualStates(string directory)
  {
   Directory.CreateDirectory(directory);Width=1920;Height=1249;UpdateLayout();await Task.Delay(700);
-  foreach(var state in new[]{("frame","layout","editor"),("frame","background","background"),("frame","frame","mockup"),("zoom","motion","motion"),("zoom","zoom","zoom"),("cursor","","cursor"),("camera","","camera"),("audio","","audio"),("opening","","opening")})
+  var states=new List<(string Inspector,string Tab,string Name)>{("frame","layout","editor"),("frame","background","background"),("frame","frame","mockup"),("zoom","motion","motion"),("zoom","zoom","zoom"),("cursor","","cursor"),("camera","","camera"),("audio","","audio"),("opening","","opening")};
+  if(project?.Overlays.FirstOrDefault() is {} firstOverlay)states.Add(("overlay","","overlay"));
+  if(project?.BlurClips.FirstOrDefault() is {} firstBlur)states.Add(("blur","","blur"));
+  foreach(var state in states)
   {
-   inspectorTab=state.Item1;if(inspectorTab=="frame")frameTab=state.Item2;if(inspectorTab=="zoom")motionTab=state.Item2;
-   if(state.Item3=="motion"&&project?.ScreenMotions.FirstOrDefault() is {} motion)selectedEffect=new("motion",motion.Id);else selectedEffect=null;
-   BuildInspector();InspectorScroll.ScrollToTop();var at=state.Item3=="motion"?12.8:project?.Settings.Opening is { Enabled:true } opening?opening.Duration+opening.Stagger*2+.2:.26;at=Math.Min(at,project?.Timeline.Duration??0);refreshing=true;Playhead.Value=at;refreshing=false;UpdateTime();TimelineView.Selection=selectedEffect;await RenderPreview(at);await Task.Delay(150);UpdateLayout();SaveSnapshot(Path.Combine(directory,state.Item3+".png"));
+   inspectorTab=state.Inspector;if(inspectorTab=="frame")frameTab=state.Tab;if(inspectorTab=="zoom")motionTab=state.Tab;
+   selectedEffect=state.Name switch
+   {
+    "motion" when project?.ScreenMotions.FirstOrDefault() is {} motion=>new("motion",motion.Id),
+    "zoom" when project?.ZoomClips.FirstOrDefault() is {} zoom=>new("zoom",zoom.Id),
+    "overlay" when project?.Overlays.FirstOrDefault() is {} overlay=>new("overlay",overlay.Id),
+    "blur" when project?.BlurClips.FirstOrDefault() is {} blur=>new("blur",blur.Id),
+    _=>null
+   };
+   BuildInspector();InspectorScroll.ScrollToTop();
+   var at=state.Name switch
+   {
+    "motion" when project?.ScreenMotions.FirstOrDefault() is {} motion=>MapSourceRangeToOutput(motion.Start,motion.Start+motion.Duration),
+    "zoom" when project?.ZoomClips.FirstOrDefault() is {} zoom=>MapSourceRangeToOutput(zoom.Start,zoom.End),
+    "overlay" when project?.Overlays.FirstOrDefault() is {} overlay=>MapSourceRangeToOutput(overlay.Start,overlay.End),
+    "blur" when project?.BlurClips.FirstOrDefault() is {} blur=>MapSourceRangeToOutput(blur.Start,blur.End),
+    _=>project?.Settings.Opening is { Enabled:true } opening?opening.Duration+opening.Stagger*2+.2:.26
+   };
+   at=Math.Clamp(at,0,project?.Timeline.Duration??0);refreshing=true;Playhead.Value=at;refreshing=false;UpdateTime();TimelineView.Selection=selectedEffect;await RenderPreview(at);await Task.Delay(150);UpdateLayout();SaveSnapshot(Path.Combine(directory,state.Name+".png"));
   }
   await ShowFloatingRecorder();await Task.Delay(300);if(recorderSetup!=null){CaptureWindowVisual(recorderSetup,Path.Combine(directory,"recorder.png"));recorderSetup.Close();}
   if(project!=null){selectedEffect=project.ScreenMotions.FirstOrDefault() is {} exportMotion?new("motion",exportMotion.Id):null;await RenderPreview(Math.Min(12.8,project.Timeline.Duration));var export=new ExportWindow(project,PreviewImage.Source,ProjectTitle.Text,(_,_,_,_)=>throw new InvalidOperationException("截图模式不执行导出。")){Owner=this};export.Show();await Task.Delay(300);CaptureWindowVisual(export,Path.Combine(directory,"export.png"));export.Close();}
+ }
+ private double MapSourceRangeToOutput(double sourceStart,double sourceEnd)
+ {
+  if(project==null)return 0;
+  var elapsed=0d;
+  foreach(var segment in project.Timeline.Segments)
+  {
+   var overlapStart=Math.Max(sourceStart,segment.SourceStart);var overlapEnd=Math.Min(sourceEnd,segment.SourceEnd);
+   if(overlapEnd>overlapStart)
+   {
+    var sourceTime=(overlapStart+overlapEnd)/2;
+    return elapsed+(sourceTime-segment.SourceStart)/segment.PlaybackRate;
+   }
+   elapsed+=segment.OutputDuration;
+  }
+  return .26;
  }
  private static void CaptureWindowVisual(Window window,string path)
  {

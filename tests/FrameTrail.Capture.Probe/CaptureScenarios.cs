@@ -604,35 +604,163 @@ internal static class CaptureScenarios
             : new CaptureTarget(CaptureTargetKind.Display, display.Id);
         var video = new RecordingRequest(output, target,
             new VideoOptions(FrameRate: 60, Width: options.RegionPlayback ? bounds.Width : 1920, Height: options.RegionPlayback ? bounds.Height : 1080), new AudioOptions(), new InputTrackingOptions(false));
-        await capture.StartAsync(video);
-        var audio = await tracks.StartAudioTrackAsync(new AudioTrackRequest(audioPath, AudioDeviceKind.SystemLoopback, loopback.Id));
+        CaptureTrackHandle? audio = null;
+        Task<string>? stderrTask = null;
+        var ffplayStderrPath = Path.ChangeExtension(output, ".ffplay.stderr.txt");
+        var foregroundSampleCount = 0;
+        var foregroundObservedCount = 0;
+        var foregroundTransitionCount = 0;
+        double? firstForegroundElapsedSeconds = null;
+        uint? inputActivityBaselineTick = null;
+        uint? lastObservedInputActivityTick = null;
+        var inputActivitySampleCount = 0;
+        double? inputActivityChangeElapsedSeconds = null;
+        PlaybackSessionVolumeLease? playbackSessionLease = null;
+        PlaybackSessionVolumeResult? playbackSessionVolumeResult = null;
         using var player = new Process { StartInfo = new ProcessStartInfo(ffplay)
         {
             UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true,
             ArgumentList = { "-autoexit", "-alwaysontop", "-noborder", "-hide_banner", "-loglevel", "error" }
         }};
         if (options.LoopPlayback) foreach (var argument in new[] { "-loop", "0" }) player.StartInfo.ArgumentList.Add(argument);
+        if (options.RestoreOwnPlaybackSession) foreach (var argument in new[] { "-volume", "3" }) player.StartInfo.ArgumentList.Add(argument);
         if (options.RegionPlayback) foreach (var argument in new[] { "-x", bounds.Width.ToString(), "-y", bounds.Height.ToString(), "-left", bounds.X.ToString(), "-top", bounds.Y.ToString() }) player.StartInfo.ArgumentList.Add(argument);
         else player.StartInfo.ArgumentList.Add("-fs");
         player.StartInfo.ArgumentList.Add(fixture);
         try
         {
             if (!player.Start()) throw new InvalidOperationException("Could not start ffplay.");
+            stderrTask = player.StandardError.ReadToEndAsync();
             await Task.Delay(300);
-            var playerWindowBounds = GetProcessWindowBounds(player);
+            if (options.RestoreOwnPlaybackSession)
+            {
+                playbackSessionLease = PlaybackSessionVolumeLease.Apply(
+                    new NAudioPlaybackAudioSessionProvider(), (uint)player.Id, loopback.Id, temporaryVolume: 0.03f);
+                Console.WriteLine($"Temporarily unmuted only ffplay PID={player.Id} at 3% session volume on selected loopback endpoint; original mute/volume will be restored in cleanup.");
+            }
+            var targetPlayerBounds = options.RegionPlayback
+                ? new Rectangle(bounds.X, bounds.Y, bounds.Width, bounds.Height)
+                : new Rectangle(display.Bounds.X, display.Bounds.Y, display.Bounds.Width, display.Bounds.Height);
+            var playerWindow = PlaceProcessWindow(player, targetPlayerBounds);
             Console.WriteLine($"ffplay PID={player.Id}; fixture={fixture}; ffplay={ffplay}; display={display.Bounds.Width}x{display.Bounds.Height}; target={target.Kind}:{bounds}");
-            var stderrTask = player.StandardError.ReadToEndAsync();
+            Console.WriteLine($"ffplay HWND={playerWindow.Handle.ToInt64()}; outer={playerWindow.OuterBounds}; client={playerWindow.ClientBounds}; target={targetPlayerBounds}");
+            if (options.InteractivePlayback)
+            {
+                var baseline = ReadLastInputTick();
+                if (!SetForegroundWindow(playerWindow.Handle) || GetForegroundWindow() != playerWindow.Handle)
+                    throw new InvalidOperationException("Could not activate the controlled ffplay window once for interactive playback.");
+                var afterActivation = ReadLastInputTick();
+                if (afterActivation != baseline)
+                    throw new InvalidOperationException("System input activity changed during ffplay activation; refusing to start a contaminated sync sample.");
+                inputActivityBaselineTick = baseline;
+                lastObservedInputActivityTick = baseline;
+                Console.WriteLine($"Interactive playback activated own HWND once; GetLastInputInfo baseline tick={baseline}. Any subsequent system input activity will abort the run without reading key or text values.");
+            }
+            var nextRoiCheck = 5d;
+            bool? previousForeground = null;
+            void CheckPlayerFocus(double sampleElapsed)
+            {
+                var playerForeground = GetForegroundWindow() == playerWindow.Handle;
+                foregroundSampleCount++;
+                if (playerForeground)
+                {
+                    foregroundObservedCount++;
+                    firstForegroundElapsedSeconds ??= sampleElapsed;
+                }
+                if (previousForeground is bool previous && previous != playerForeground) foregroundTransitionCount++;
+                previousForeground = playerForeground;
+                if (options.InteractivePlayback)
+                {
+                    var inputTick = ReadLastInputTick();
+                    inputActivitySampleCount++;
+                    lastObservedInputActivityTick = inputTick;
+                    if (inputTick != inputActivityBaselineTick)
+                    {
+                        inputActivityChangeElapsedSeconds = sampleElapsed;
+                        throw new InvalidOperationException($"GetLastInputInfo detected system input activity at {sampleElapsed:F3}s (baseline={inputActivityBaselineTick}, observed={inputTick}); aborting without recording key or text data.");
+                    }
+                }
+                else if (playerForeground)
+                    throw new InvalidOperationException($"The controlled ffplay window became foreground at {sampleElapsed:F3}s. Capture aborted because ffplay accepts keyboard shortcuts such as m for mute; no keystrokes or user text are sampled.");
+            }
+            void CheckRoi(double sampleElapsed)
+            {
+                if (sampleElapsed < nextRoiCheck) return;
+                var observed = VerifyProcessWindow(player, playerWindow.Handle, targetPlayerBounds);
+                if (observed != playerWindow.ClientBounds)
+                    throw new InvalidOperationException($"The controlled ffplay client ROI changed during capture: expected {playerWindow.ClientBounds}, observed {observed}.");
+                Console.WriteLine($"Verified controlled ROI at {sampleElapsed:F1}s; foreground samples={foregroundSampleCount}, playerForeground={foregroundObservedCount}.");
+                nextRoiCheck += 5;
+            }
+            CheckPlayerFocus(0);
+            if (options.LoopPlayback && !options.InteractivePlayback) Console.WriteLine("ffplay remained out of foreground before capture; keyboard interference guard is active.");
+            Console.WriteLine("Starting screen capture.");
+            await capture.StartAsync(video);
+            Console.WriteLine("Screen capture started.");
+            audio = await tracks.StartAudioTrackAsync(new AudioTrackRequest(audioPath, AudioDeviceKind.SystemLoopback, loopback.Id));
+            Console.WriteLine("Loopback audio capture started.");
             if (options.LoopPlayback)
             {
-                await Task.Delay(TimeSpan.FromSeconds(options.DurationSeconds));
-                if (!player.HasExited) player.Kill(true);
+                var elapsed = Stopwatch.StartNew();
+                while (elapsed.Elapsed.TotalSeconds < options.DurationSeconds)
+                {
+                    var remainingSeconds = options.DurationSeconds - elapsed.Elapsed.TotalSeconds;
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(0.25, Math.Max(0.05, remainingSeconds))));
+                    if (player.HasExited) throw new InvalidOperationException("The controlled ffplay stimulus exited before capture completed.");
+                    var sampleElapsed = elapsed.Elapsed.TotalSeconds;
+                    CheckPlayerFocus(sampleElapsed);
+                    CheckRoi(sampleElapsed);
+                }
+            }
+            else
+            {
+                var elapsed = Stopwatch.StartNew();
+                var timeout = Math.Max(15, options.DurationSeconds + 5);
+                while (!player.HasExited && elapsed.Elapsed.TotalSeconds < timeout)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(250));
+                    CheckPlayerFocus(elapsed.Elapsed.TotalSeconds);
+                    CheckRoi(elapsed.Elapsed.TotalSeconds);
+                }
+                if (!player.HasExited) throw new TimeoutException("ffplay did not exit within the expected playback duration.");
                 await player.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
-            else await player.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(Math.Max(15, options.DurationSeconds + 5)));
-            var stderr = await stderrTask;
-            if (!options.LoopPlayback && player.ExitCode != 0) throw new InvalidOperationException($"ffplay exited {player.ExitCode}: {stderr}");
-            var screenResult = await capture.StopAsync();
-            var audioResult = await tracks.StopTrackAsync(audio.TrackId);
+            Console.WriteLine("Playback duration completed; stopping screen capture.");
+            var stderr = string.Empty;
+            if (!options.LoopPlayback)
+            {
+                stderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(5));
+                if (player.ExitCode != 0) throw new InvalidOperationException($"ffplay exited {player.ExitCode}: {stderr}");
+            }
+            var screenResult = await capture.StopAsync().WaitAsync(TimeSpan.FromSeconds(45));
+            Console.WriteLine("Screen capture stopped.");
+            var audioResult = await tracks.StopTrackAsync(audio.TrackId).WaitAsync(TimeSpan.FromSeconds(30));
+            Console.WriteLine("Loopback audio capture stopped.");
+            if (playbackSessionLease is not null)
+            {
+                playbackSessionVolumeResult = playbackSessionLease.Restore();
+                playbackSessionLease = null;
+            }
+            if (!player.HasExited)
+            {
+                player.Kill(true);
+                await player.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
+            }
+            if (playbackSessionVolumeResult is { RestorationErrors.Count: > 0 })
+                throw new InvalidOperationException("The owned ffplay session did not restore its original mute/volume state; see the failure report.");
+            if (options.LoopPlayback) stderr = await stderrTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await File.WriteAllTextAsync(ffplayStderrPath, stderr);
+            Console.WriteLine("Controlled player stopped; building result summary.");
+            var diagnosticsPath = audioResult.Handle.MediaPath + ".diagnostics.json";
+            JsonElement? audioPacketDiagnostics = null;
+            if (File.Exists(diagnosticsPath))
+            {
+                using var diagnosticsDocument = JsonDocument.Parse(await File.ReadAllTextAsync(diagnosticsPath));
+                audioPacketDiagnostics = diagnosticsDocument.RootElement.Clone();
+                var diagnosticSummary = diagnosticsDocument.RootElement;
+                Console.WriteLine($"Loopback packet diagnostics: packets={diagnosticSummary.GetProperty("PacketCount").GetInt64()}, silentFlagFrames={diagnosticSummary.GetProperty("SilentFlagFrames").GetInt64()}, pumpGeneratedSilenceFrames={diagnosticSummary.GetProperty("PumpGeneratedSilenceFrames").GetInt64()}, lastPacketElapsedMs={diagnosticSummary.GetProperty("LastPacketElapsedMs").ToString()}.");
+            }
+            else Console.WriteLine($"Loopback packet diagnostics sidecar missing: {diagnosticsPath}");
             var summary = new
             {
                 screenResult.OutputPath, AudioPath = audioResult.Handle.MediaPath, Fixture = fixture,
@@ -640,20 +768,90 @@ internal static class CaptureScenarios
                 screenResult.FirstFrameObservedStopwatchTicks, AudioStartStopwatchTicks = audioResult.Handle.StartStopwatchTicks,
                 AudioStopStopwatchTicks = audioResult.StopStopwatchTicks, AudioStopwatchFrequency = audioResult.Handle.StopwatchFrequency,
                 screenResult.Width, screenResult.Height, screenResult.FrameRate, screenResult.EncoderName,
-                CaptureBounds = options.RegionPlayback ? bounds : display.Bounds, DisplayBounds = display.Bounds, PlayerWindowBounds = playerWindowBounds,
+                CaptureBounds = options.RegionPlayback ? bounds : display.Bounds, DisplayBounds = display.Bounds,
+                PlayerWindowHandle = playerWindow.Handle.ToInt64(), PlayerWindowBounds = playerWindow.OuterBounds, PlayerWindowClientBounds = playerWindow.ClientBounds,
                 DdagrabOffset = options.RegionPlayback ? new Point(bounds.X - display.Bounds.X, bounds.Y - display.Bounds.Y) : Point.Empty,
-                screenResult.Warnings
+                AudioWarnings = audioResult.Warnings, screenResult.Warnings, FfplayStderrPath = ffplayStderrPath,
+                AudioPacketDiagnosticsPath = diagnosticsPath, AudioPacketDiagnostics = audioPacketDiagnostics,
+                PlaybackSessionOverrideRequested = options.RestoreOwnPlaybackSession,
+                PlaybackSessionOverride = playbackSessionVolumeResult,
+                FfplayExitCode = player.HasExited ? player.ExitCode : (int?)null,
+                PlayerForegroundSamples = foregroundSampleCount, PlayerForegroundObservedSamples = foregroundObservedCount,
+                PlayerForegroundTransitions = foregroundTransitionCount, FirstForegroundElapsedSeconds = firstForegroundElapsedSeconds,
+                PlaybackMode = options.InteractivePlayback ? "interactive-getlastinputinfo" : "nonactivating-foreground-guard",
+                InputActivityBaselineTick = inputActivityBaselineTick, LastObservedInputActivityTick = lastObservedInputActivityTick,
+                InputActivitySampleCount = inputActivitySampleCount, InputActivityChangeElapsedSeconds = inputActivityChangeElapsedSeconds,
+                KeyboardInterferenceGuard = options.InteractivePlayback
+                    ? "The probe activates its own ffplay HWND once, then aborts on any GetLastInputInfo timestamp change; no key, mouse value, or user text is read."
+                    : "The probe never activates the ffplay window and aborts if its HWND becomes foreground; it does not read keystrokes or user text."
             };
             var json = JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true });
             await File.WriteAllTextAsync(Path.ChangeExtension(output, ".sync-playback.json"), json);
             Console.WriteLine(json);
         }
-        catch
+        catch (Exception ex)
         {
-            try { if (!player.HasExited) player.Kill(true); } catch { }
-            try { await capture.StopAsync(); } catch { }
-            try { await tracks.StopTrackAsync(audio.TrackId); } catch { }
+            if (ex is PlaybackSessionVolumeApplyException applyException)
+                playbackSessionVolumeResult = applyException.RollbackResult;
+            Console.Error.WriteLine($"Sync playback probe failed: {ex}");
+            try
+            {
+                if (playbackSessionLease is not null)
+                {
+                    playbackSessionVolumeResult ??= playbackSessionLease.Restore();
+                    playbackSessionLease = null;
+                }
+            }
+            catch (Exception restoreException) { Console.Error.WriteLine($"Could not restore owned ffplay session before process cleanup: {restoreException}"); }
+            try { Console.Error.WriteLine("Stopping screen capture after probe failure."); await capture.StopAsync().WaitAsync(TimeSpan.FromSeconds(45)); Console.Error.WriteLine("Screen capture stopped after probe failure."); } catch (Exception stopException) { Console.Error.WriteLine($"Screen capture stop failed: {stopException}"); }
+            if (audio is not null) try { Console.Error.WriteLine("Stopping loopback capture after probe failure."); await tracks.StopTrackAsync(audio.TrackId).WaitAsync(TimeSpan.FromSeconds(30)); Console.Error.WriteLine("Loopback capture stopped after probe failure."); } catch (Exception stopException) { Console.Error.WriteLine($"Loopback capture stop failed: {stopException}"); }
+            try { if (!player.HasExited) { Console.Error.WriteLine("Stopping controlled player after probe failure."); player.Kill(true); await player.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } } catch (Exception playerException) { Console.Error.WriteLine($"Controlled player stop failed: {playerException}"); }
+            try
+            {
+                if (playbackSessionLease is not null)
+                {
+                    playbackSessionVolumeResult ??= playbackSessionLease.Restore();
+                    playbackSessionLease = null;
+                }
+            }
+            catch (Exception restoreException) { Console.Error.WriteLine($"Could not restore owned ffplay session after process cleanup: {restoreException}"); }
+            try
+            {
+                var stderr = stderrTask is null ? string.Empty : await stderrTask.WaitAsync(TimeSpan.FromSeconds(5));
+                await File.WriteAllTextAsync(ffplayStderrPath, stderr);
+                Console.Error.WriteLine($"ffplay stderr saved: {ffplayStderrPath}; exitCode={(player.HasExited ? player.ExitCode.ToString() : "unknown")}");
+            }
+            catch (Exception logException) { Console.Error.WriteLine($"Could not save ffplay stderr: {logException.Message}"); }
+            try
+            {
+                var failureReport = new
+                {
+                    Status = "aborted-or-failed", Error = ex.ToString(), FfplayStderrPath = ffplayStderrPath,
+                    PlaybackSessionOverrideRequested = options.RestoreOwnPlaybackSession,
+                    PlaybackSessionOverride = playbackSessionVolumeResult,
+                    PlayerForegroundSamples = foregroundSampleCount, PlayerForegroundObservedSamples = foregroundObservedCount,
+                    PlayerForegroundTransitions = foregroundTransitionCount, FirstForegroundElapsedSeconds = firstForegroundElapsedSeconds,
+                    PlaybackMode = options.InteractivePlayback ? "interactive-getlastinputinfo" : "nonactivating-foreground-guard",
+                    InputActivityBaselineTick = inputActivityBaselineTick, LastObservedInputActivityTick = lastObservedInputActivityTick,
+                    InputActivitySampleCount = inputActivitySampleCount, InputActivityChangeElapsedSeconds = inputActivityChangeElapsedSeconds,
+                    KeyboardInterferenceGuard = options.InteractivePlayback
+                        ? "Any GetLastInputInfo timestamp change aborts the run; no key, mouse value, or user text is read."
+                        : "No keystrokes or user text are sampled; any observed ffplay foreground state aborts the controlled run."
+                };
+                await File.WriteAllTextAsync(Path.ChangeExtension(output, ".sync-playback.failure.json"), JsonSerializer.Serialize(failureReport, new JsonSerializerOptions { WriteIndented = true }));
+            }
+            catch { }
             throw;
+        }
+        finally
+        {
+            // Safety net for unexpected exceptions in either the success or failure report path.
+            if (playbackSessionLease is not null)
+            {
+                try { playbackSessionVolumeResult ??= playbackSessionLease.Restore(); }
+                catch (Exception restoreException) { Console.Error.WriteLine($"Final owned ffplay session restore failed: {restoreException}"); }
+                playbackSessionLease = null;
+            }
         }
     }
 
@@ -694,8 +892,144 @@ internal static class CaptureScenarios
         finally { if (previousDpiContext != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpiContext); }
     }
 
+    private static (IntPtr Handle, Rectangle OuterBounds, Rectangle ClientBounds) PlaceProcessWindow(Process process, Rectangle target)
+    {
+        var previousDpiContext = IntPtr.Zero;
+        try
+        {
+            previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+            var hwnd = IntPtr.Zero;
+            for (var attempt = 0; attempt < 80 && hwnd == IntPtr.Zero; attempt++)
+            {
+                process.Refresh();
+                hwnd = process.MainWindowHandle;
+                if (hwnd == IntPtr.Zero) Thread.Sleep(50);
+            }
+            if (hwnd == IntPtr.Zero) throw new InvalidOperationException("ffplay did not create a visible window handle.");
+            GetWindowThreadProcessId(hwnd, out var ownerPid);
+            if (ownerPid != process.Id || !IsWindowVisible(hwnd))
+                throw new InvalidOperationException("The selected ffplay HWND is not a visible window owned by the fixture player process.");
+            const uint flags = 0x0010 | 0x0040; // SWP_NOACTIVATE | SWP_SHOWWINDOW
+            if (!SetWindowPos(hwnd, new IntPtr(-1), target.X, target.Y, target.Width, target.Height, flags))
+                throw new InvalidOperationException($"Could not place the controlled ffplay window at the capture ROI (Win32 {Marshal.GetLastWin32Error()}).");
+            Thread.Sleep(100);
+            var outer = GetWindowBounds(hwnd);
+            var client = GetClientScreenBounds(hwnd);
+            if (client != target)
+            {
+                var x = outer.X + target.X - client.X;
+                var y = outer.Y + target.Y - client.Y;
+                var width = outer.Width + target.Width - client.Width;
+                var height = outer.Height + target.Height - client.Height;
+                if (!SetWindowPos(hwnd, new IntPtr(-1), x, y, width, height, flags))
+                    throw new InvalidOperationException($"Could not align the ffplay client area with the capture ROI (Win32 {Marshal.GetLastWin32Error()}).");
+                Thread.Sleep(100);
+                outer = GetWindowBounds(hwnd);
+                client = GetClientScreenBounds(hwnd);
+            }
+            if (client != target)
+                throw new InvalidOperationException($"ffplay physical client bounds {client} do not match the requested capture ROI {target}; outer={outer}.");
+            RaiseControlledWindow(hwnd, outer);
+            Thread.Sleep(150);
+            outer = GetWindowBounds(hwnd);
+            client = GetClientScreenBounds(hwnd);
+            if (client != target)
+                throw new InvalidOperationException($"Raising ffplay changed its client bounds: expected {target}, observed {client}; outer={outer}.");
+            VerifyRoiHitTests(hwnd, target);
+            return (hwnd, outer, client);
+        }
+        finally { if (previousDpiContext != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpiContext); }
+    }
+
+    private static Rectangle VerifyProcessWindow(Process process, IntPtr hwnd, Rectangle expectedClientBounds)
+    {
+        var previousDpiContext = IntPtr.Zero;
+        try
+        {
+            previousDpiContext = SetThreadDpiAwarenessContext(new IntPtr(-4));
+            if (process.HasExited) throw new InvalidOperationException("The controlled ffplay process has exited.");
+            GetWindowThreadProcessId(hwnd, out var ownerPid);
+            if (ownerPid != process.Id || !IsWindowVisible(hwnd))
+                throw new InvalidOperationException("The controlled ffplay HWND lost ownership or visibility.");
+            var client = GetClientScreenBounds(hwnd);
+            if (client != expectedClientBounds)
+                throw new InvalidOperationException($"The controlled ffplay client ROI moved or resized: expected {expectedClientBounds}, observed {client}.");
+            VerifyRoiHitTests(hwnd, expectedClientBounds);
+            return client;
+        }
+        finally { if (previousDpiContext != IntPtr.Zero) SetThreadDpiAwarenessContext(previousDpiContext); }
+    }
+
+    private static Rectangle GetWindowBounds(IntPtr hwnd)
+    {
+        if (!GetWindowRect(hwnd, out var rect))
+            throw new InvalidOperationException($"Could not read a Win32 window rectangle (Win32 {Marshal.GetLastWin32Error()}).");
+        return Rectangle.FromLTRB(rect.Left, rect.Top, rect.Right, rect.Bottom);
+    }
+
+    private static Rectangle GetClientScreenBounds(IntPtr hwnd)
+    {
+        if (!GetClientRect(hwnd, out var rect))
+            throw new InvalidOperationException($"Could not read a Win32 client rectangle (Win32 {Marshal.GetLastWin32Error()}).");
+        var origin = new NativePoint { X = rect.Left, Y = rect.Top };
+        if (!ClientToScreen(hwnd, ref origin))
+            throw new InvalidOperationException($"Could not map the ffplay client origin to screen coordinates (Win32 {Marshal.GetLastWin32Error()}).");
+        return new Rectangle(origin.X, origin.Y, rect.Right - rect.Left, rect.Bottom - rect.Top);
+    }
+
+    private static void VerifyRoiHitTests(IntPtr expectedWindow, Rectangle roi)
+    {
+        var points = new[]
+        {
+            new Point(roi.Left + 2, roi.Top + 2), new Point(roi.Right - 3, roi.Top + 2),
+            new Point(roi.Left + 2, roi.Bottom - 3), new Point(roi.Right - 3, roi.Bottom - 3),
+            new Point(roi.Left + roi.Width / 2, roi.Top + roi.Height / 2)
+        };
+        foreach (var point in points)
+        {
+            var hit = WindowFromPoint(point);
+            var root = hit == IntPtr.Zero ? IntPtr.Zero : GetAncestor(hit, 2); // GA_ROOT
+            if (root != expectedWindow)
+                throw new InvalidOperationException($"The controlled ffplay window does not cover the capture ROI sample point ({point.X},{point.Y}); hit HWND={hit.ToInt64()}, root={root.ToInt64()}, expected={expectedWindow.ToInt64()}.");
+        }
+    }
+
+    private static void RaiseControlledWindow(IntPtr hwnd, Rectangle outer)
+    {
+        const uint flags = 0x0010 | 0x0040; // SWP_NOACTIVATE | SWP_SHOWWINDOW
+        if (!SetWindowPos(hwnd, new IntPtr(-1), outer.X, outer.Y, outer.Width, outer.Height, flags))
+            throw new InvalidOperationException($"Could not raise the controlled ffplay window above other windows without activation (Win32 {Marshal.GetLastWin32Error()}).");
+    }
+
+    private static uint ReadLastInputTick()
+    {
+        var info = new LastInputInfo { Size = (uint)Marshal.SizeOf<LastInputInfo>() };
+        if (!GetLastInputInfo(ref info)) throw new InvalidOperationException($"GetLastInputInfo failed (Win32 {Marshal.GetLastWin32Error()}).");
+        return info.Time;
+    }
+
     [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr hwnd, out NativeRect rect);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetForegroundWindow(IntPtr hwnd);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetLastInputInfo(ref LastInputInfo info);
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct LastInputInfo { internal uint Size; internal uint Time; }
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool GetClientRect(IntPtr hwnd, out NativeRect rect);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern bool ClientToScreen(IntPtr hwnd, ref NativePoint point);
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongW", SetLastError = true)]
+    private static extern int GetWindowLong(IntPtr hwnd, int index);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr WindowFromPoint(Point point);
+    [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     private delegate bool EnumWindowsCallback(IntPtr hwnd, IntPtr lparam);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsCallback callback, IntPtr lparam);
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
@@ -703,6 +1037,8 @@ internal static class CaptureScenarios
     [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
     [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
     private struct NativeRect { internal int Left, Top, Right, Bottom; }
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint { internal int X, Y; }
 
     private static string RequireOutput(ProbeOptions options) => options.OutputPath
         ?? throw new ArgumentException("This scenario requires --output <path>.");
