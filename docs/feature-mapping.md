@@ -2,7 +2,7 @@
 
 固定基线 `e207d11b111c5e58152238fb64115b2009850547`。此表关联原实现、Windows模块、复用语义、依赖和验收方法；逐项验收状态以 [parity-checklist.md](parity-checklist.md) 为准，性能与硬件边界以 [capture-validation.md](capture-validation.md)、[media-effects-validation.md](media-effects-validation.md) 为准。
 
-当前迭代为0.2.0。已实现表示可执行代码路径存在；设备待测、兼容近似和未实现功能分别记录，不用按钮数量计算迁移比例。
+当前文档记录0.2.1开发预览增量；0.2.0历史验收见 `release-notes.md`。已实现表示可执行代码路径存在；设备待测、兼容近似和未实现功能分别记录，不用按钮数量计算迁移比例。
 
 | 原实现 | Windows实现 | 复用内容 | 依赖 | 阶段/状态 | 验收方法 |
 |---|---|---|---|---|---|
@@ -14,16 +14,16 @@
 | ProjectStore、ProjectRecoveryJournal | Persistence、MainWindow.Recovery | 临时文件原子替换、备份、相对素材路径 | System.Text.Json、文件系统 | 0.2：已实现 | 异常项目/备份恢复、越界拒绝、媒体重定位 |
 | ProjectTimeline、ProjectTimelineEditing/Retime | Core.Models、MainWindow.Timeline | 非破坏编辑、源时间与输出时间映射 | Core、FFmpeg | 0.2：已实现 | split/trim/rate/reorder/undo，导出抽帧及音频频率 |
 | EditorTimelineFilmstrip/WaveformCache/MagneticSnap | TimelineAssets、EditorTimelineControl | 异步缓存、视口、吸附和多轨编辑 | FFmpeg、WPF | 0.2：已实现 | UIA拖动/多选、波形/缩略图、范围MP4探测 |
-| EditorEffectTransfer | MainWindow.Timeline | 完整效果复制和保时长/位置属性粘贴 | JSON快照、项目资产复制 | 0.2：已实现 | 相同/不同效果类型、跨项目贴图、撤销与重载 |
-| AutoZoomPlanner、ZoomAnimation | Core.Evaluation | 点击分组、目标构图、缓动及相邻片段 | 独立Core | 0.2：已实现，算法差异有记录 | 原语义对照用例、边界连续性、暂停目标预览 |
+| EditorEffectTransfer | MainWindow.Timeline | 完整效果复制和保时长/位置属性粘贴；摄像头完整粘贴替换唯一轨道，属性粘贴保留目标媒体/时钟映射 | JSON快照、项目资产复制 | 0.2.1：代码已接；摄像头替换和撤销回归待统一运行 | 相同/不同效果类型、跨项目贴图、摄像头替换与撤销 |
+| AutoZoomPlanner、ZoomAnimation | Core.Evaluation | 点击分组、目标构图、缓动、相邻片段及进入/退出进度锚点 | 独立Core | 0.2.1：锚点默认0兼容旧数据；边界编辑逻辑已接，新增回归待运行 | 原语义对照用例、非零锚点、边界连续性、暂停目标预览 |
 | PointerTrack、PointerTimelineAlignment | PreparedPointerTrack、MouseClockCalibration | 指针采样、独立偏移、不移动主媒体 | Core | 0.2：已实现 | 指针偏移/平滑不耦合、裁切/变速重排映射 |
 | CursorStyle、SharedFrameCursorRenderer | CursorSettings、Scene.hlsl | 独立光标、点击和隐藏策略 | D3D11 | 0.2：核心行为已实现，主题为Windows子集 | 合成轨迹和点击像素、静止/始终隐藏 |
 | FrameScene、CompositionScene | Core.FrameScene、PreparedFrameSceneEvaluator | UI外的统一场景描述 | Core | 0.2：已实现 | 预览/导出共享场景、逐帧Probe |
 | SharedFrameRenderer、ScreenProjection | GpuFrameRenderer、Scene.hlsl | 全场景GPU合成、XYZ透视与图层 | Vortice D3D11、HLSL | 0.2：已实现 | 投影、遮罩、半透明/圆角、像素断言及成片 |
-| ScreenMotion、CameraMotion、FocusEffect | Core.Effects、EffectsInspector | 屏幕/相机运动和径向/线性聚焦 | Core、D3D11 | 0.2：已实现 | 目标姿态、曲线、聚焦随鼠标、实际MP4 |
+| ScreenMotion、CameraMotion、FocusEffect | Core.Effects、EffectsInspector | 屏幕/相机运动和径向/线性聚焦；摄像头布局/透明度连续过渡、缩放联动和阴影强度 | Core、D3D11 | 0.2.1：功能代码已接；完整测试/包验证未结束 | 目标姿态、曲线、缩放联动、阴影、聚焦随鼠标、实际MP4 |
 | CanvasStyle、NormalizedCrop、ScreenFrameStyle | CanvasSettings、Inspector、GPU renderer | 比例、裁切、位置、圆角/描边/阴影/样机 | WPF、D3D11、授权字体 | 0.2：已实现 | 数值边界、拖动、透视标题与多分辨率 |
 | BackgroundSource/Pattern/Dynamic | BackgroundSettings、SceneAssetLoader | 纯色/渐变/网格/动态/图片/视频背景 | FFmpeg持续解码、D3D11 | 0.2：已实现，系统壁纸不内置 | 视频循环/跳转、预览导出、资源复制 |
-| StickerTransition、Mosaic | OverlayClip、BlurClip、GPU | 贴图层级、进出场、柔化/马赛克 | Core、D3D11 | 0.2：已实现 | 真实图像素材、源时段映射、8层/4区域边界 |
+| StickerTransition、Mosaic | OverlayClip、BlurClip、GPU | 贴图层级、进出场、柔化/马赛克；背景柔化可选择包含摄像头，并可在贴图时段隐藏屏幕/摄像头 | Core、D3D11 | 0.2.1：独立 backdrop 像素探针通过；完整测试/发行包验证未结束 | 真实图像素材、源时段映射、图层交接、隐藏/柔化像素、8层/4区域边界 |
 | OpeningSequence | OpeningSettings、FrameOpeningState | 元素启用、顺序、错开、预设和曲线 | 共享场景求值与renderer | 0.2：已实现 | 三组开场时序、旧工程默认、逐帧输出 |
 | EditorScenePresets/StylePresetStore | MainWindow.Menus | 内建/自建样式和安全资产复制 | 本地文件系统、WPF | 0.2：已实现，新建/改名/覆盖/跨项目UIA通过 | 保存、改名、覆盖、撤销、跨项目应用 |
 | ProjectStore schema升级 | DogScProjectImporter | schema23–27、主要轨道与效果字段转换 | Core、只读原素材/复制资产 | 0.2：fixture通过，真实Mac样本待验证 | 原工程hash不变、字段断言、丢失/近似报告 |

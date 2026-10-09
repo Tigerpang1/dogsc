@@ -73,42 +73,75 @@ public static class MediaTools
         filters.Add(string.Concat(Enumerable.Range(0,n).Select(i => $"[v{i}]")) + (n > 1 ? $"concat=n={n}:v=1:a=0," : "") + $"fps={fps},scale={width}:{height}:flags=bilinear,format=bgra[out]");
         return string.Join(';', filters);
     }
-    public static string AudioFilter(ProjectTimeline timeline, double volume = 1)
+    public static string AudioFilter(ProjectTimeline timeline, double volume = 1, bool muted = false)
     {
         timeline.Validate(); if (!double.IsFinite(volume) || volume is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(volume));
         var filters = new List<string>(); var n = timeline.Segments.Count;
         if (n > 1) filters.Add($"[0:a]asplit={n}" + string.Concat(Enumerable.Range(0,n).Select(i => $"[s{i}]")));
         for (var i=0;i<n;i++)
         {
-            var s = timeline.Segments[i]; var rate = s.PlaybackRate; var tempo = new List<string>();
+            var s = timeline.Segments[i]; var gain = s.AudioOverrides?.SystemVolume ?? volume; var isMuted = s.AudioOverrides?.SystemMuted ?? muted; var rate = s.PlaybackRate; var tempo = new List<string>();
             while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
             while (rate < .5) { tempo.Add("atempo=0.5"); rate *= 2; }
             tempo.Add("atempo=" + Number(rate));
-            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{string.Join(',',tempo)},volume={Number(volume)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
+            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{string.Join(',',tempo)},volume={Number(isMuted ? 0 : gain)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
         }
         filters.Add(string.Concat(Enumerable.Range(0,n).Select(i => $"[a{i}]")) + (n > 1 ? $"concat=n={n}:v=0:a=1" : "anull") + "[out]");
         return string.Join(';', filters);
     }
-    public static string AudioTrackFilter(ProjectTimeline timeline, IReadOnlyList<AudioTrack> tracks)
+    public static bool HasAudibleAudioTracks(ProjectTimeline timeline, IReadOnlyList<AudioTrack> tracks, double systemVolume = 1, bool systemMuted = false)
     {
-        timeline.Validate(); tracks = tracks.Where(x => !x.Muted && x.Volume > 0).ToArray();
+        timeline.Validate();
+        return tracks.Any(track => HasAudibleAudioTrack(timeline, track, systemVolume, systemMuted));
+    }
+
+    public static bool HasAudibleMainAudio(ProjectTimeline timeline, double volume = 1, bool muted = false)
+    {
+        timeline.Validate();
+        return timeline.Segments.Any(segment => !(segment.AudioOverrides?.SystemMuted ?? muted)
+            && (segment.AudioOverrides?.SystemVolume ?? volume) > 0);
+    }
+
+    public static bool HasAudibleAudioTrack(ProjectTimeline timeline, AudioTrack track, double systemVolume = 1, bool systemMuted = false)
+    {
+        timeline.Validate();
+        var mappings = track.SyncSegments is { Count: > 0 } syncSegments
+            ? syncSegments
+            : [new CameraSyncSegment(track.SourceStart, track.OffsetSeconds, track.Duration, track.SourceRate)];
+        return timeline.Segments.Any(segment => EffectiveTrackGain(segment, track, systemVolume, systemMuted) > 0
+            && mappings.Any(mapping => mapping.SourceRate > 0
+                && Math.Min(segment.SourceEnd, mapping.TimelineStart + mapping.Duration) > Math.Max(segment.SourceStart, mapping.TimelineStart)));
+    }
+
+    public static string AudioTrackFilter(ProjectTimeline timeline, IReadOnlyList<AudioTrack> tracks, double systemVolume = 1, bool systemMuted = false)
+    {
+        timeline.Validate();
         var filters = new List<string>(); var outputStarts = new double[timeline.Segments.Count]; var elapsed = 0d;
         for (var i = 0; i < timeline.Segments.Count; i++) { outputStarts[i] = elapsed; elapsed += timeline.Segments[i].OutputDuration; }
         var outputLabels = new List<string>(); var labelNumber = 0;
         for (var trackIndex = 0; trackIndex < tracks.Count; trackIndex++)
         {
             var track = tracks[trackIndex];
-            var samples = new List<(int Segment, double AssetStart, double AssetEnd, double OutputStart, double Rate)>();
+            var mappings = track.SyncSegments is { Count: > 0 } syncSegments
+                ? syncSegments
+                : [new CameraSyncSegment(track.SourceStart, track.OffsetSeconds, track.Duration, track.SourceRate)];
+            var samples = new List<(double AssetStart, double AssetEnd, double OutputStart, double Tempo, double Gain)>();
             for (var segmentIndex = 0; segmentIndex < timeline.Segments.Count; segmentIndex++)
             {
                 var segment = timeline.Segments[segmentIndex];
-                var sourceStart = Math.Max(segment.SourceStart, track.OffsetSeconds);
-                var sourceEnd = Math.Min(segment.SourceEnd, track.OffsetSeconds + track.Duration);
-                if (sourceEnd <= sourceStart) continue;
-                var assetStart = track.SourceStart + sourceStart - track.OffsetSeconds;
-                var assetEnd = track.SourceStart + sourceEnd - track.OffsetSeconds;
-                var outputStart = outputStarts[segmentIndex] + (sourceStart - segment.SourceStart) / segment.PlaybackRate;
-                samples.Add((segmentIndex, assetStart, assetEnd, outputStart, segment.PlaybackRate));
+                var gain = EffectiveTrackGain(segment, track, systemVolume, systemMuted);
+                if (gain <= 0) continue;
+                foreach (var mapping in mappings)
+                {
+                    var sourceStart = Math.Max(segment.SourceStart, mapping.TimelineStart);
+                    var sourceEnd = Math.Min(segment.SourceEnd, mapping.TimelineStart + mapping.Duration);
+                    if (sourceEnd <= sourceStart || mapping.SourceRate <= 0) continue;
+                    var assetStart = mapping.SourceStart + (sourceStart - mapping.TimelineStart) * mapping.SourceRate;
+                    var assetEnd = mapping.SourceStart + (sourceEnd - mapping.TimelineStart) * mapping.SourceRate;
+                    var outputStart = outputStarts[segmentIndex] + (sourceStart - segment.SourceStart) / segment.PlaybackRate;
+                    var tempo = segment.PlaybackRate * mapping.SourceRate;
+                    samples.Add((assetStart, assetEnd, outputStart, tempo, gain));
+                }
             }
             if (samples.Count == 0) continue;
             var input = trackIndex;
@@ -121,22 +154,33 @@ public static class MediaTools
             for (var sampleIndex = 0; sampleIndex < samples.Count; sampleIndex++)
             {
                 var sample = samples[sampleIndex];
-                var duration = (sample.AssetEnd - sample.AssetStart) / sample.Rate;
                 var delayMs = Math.Max(0, (int)Math.Round(sample.OutputStart * 1000));
-                var rate = sample.Rate; var tempo = new List<string>();
+                var rate = sample.Tempo; var tempo = new List<string>();
                 while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
                 while (rate < .5) { tempo.Add("atempo=0.5"); rate /= .5; }
                 tempo.Add("atempo=" + Number(rate));
                 var source = samples.Count == 1 ? $"{input}:a" : prefixes[sampleIndex];
                 var label = $"track{labelNumber++}";
-                filters.Add($"[{source}]atrim=start={Number(sample.AssetStart)}:end={Number(sample.AssetEnd)},asetpts=PTS-STARTPTS,{string.Join(',', tempo)},volume={Number(track.Volume)},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,adelay={delayMs}:all=1,apad=pad_dur={Number(elapsed)},atrim=duration={Number(elapsed)},asetpts=N/SR/TB[{label}]");
+                filters.Add($"[{source}]atrim=start={Number(sample.AssetStart)}:end={Number(sample.AssetEnd)},asetpts=PTS-STARTPTS,{string.Join(',', tempo)},volume={Number(sample.Gain)},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,adelay={delayMs}:all=1[{label}]");
                 outputLabels.Add(label);
             }
         }
         if (outputLabels.Count == 0) throw new InvalidOperationException("没有可用的独立音轨片段。");
-        var inputs = string.Concat(outputLabels.Select(x => $"[{x}]"));
-        filters.Add(inputs + (outputLabels.Count == 1 ? "anull" : $"amix=inputs={outputLabels.Count}:duration=longest:normalize=0") + $",apad=pad_dur={Number(elapsed)},atrim=duration={Number(elapsed)},asetpts=N/SR/TB[out]");
+        filters.Add($"anullsrc=r=48000:cl=stereo,atrim=duration={Number(elapsed)}[base]");
+        var inputs = "[base]" + string.Concat(outputLabels.Select(x => $"[{x}]"));
+        filters.Add(inputs + $"amix=inputs={outputLabels.Count + 1}:duration=first:normalize=0,atrim=duration={Number(elapsed)},asetpts=N/SR/TB[out]");
         return string.Join(';', filters);
+    }
+
+    private static double EffectiveTrackGain(TimelineSegment segment, AudioTrack track, double systemVolume, bool systemMuted)
+    {
+        var overrides = segment.AudioOverrides;
+        return track.Source switch
+        {
+            AudioTrackSource.System => (overrides?.SystemMuted ?? (systemMuted || track.Muted)) ? 0 : (overrides?.SystemVolume ?? systemVolume),
+            AudioTrackSource.Microphone => (overrides?.MicrophoneMuted ?? track.Muted) ? 0 : (overrides?.MicrophoneVolume ?? track.Volume),
+            _ => track.Muted ? 0 : track.Volume
+        };
     }
     public static async Task<byte[]> DecodeFrameAsync(string path, double sourceTime, int width, int height, CancellationToken cancellation)
     {

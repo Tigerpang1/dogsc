@@ -10,7 +10,7 @@ public partial class MainWindow
 {
     private void BuildOpeningInspector()
     {
-        var opening = project!.Settings.Opening ?? new OpeningSettings();
+        var opening = project!.Settings.Opening ?? NewOpeningSettings();
         Section("全局开场");
         Note("让所有元素有序进入画面。");
         var enabled = new CheckBox
@@ -23,7 +23,7 @@ public partial class MainWindow
         AutomationProperties.SetName(enabled, "启用全局开场");
         RoutedEventHandler enabledChanged = (_, _) =>
         {
-            if (!buildingInspector) ApplyEdit(p => (p.Settings.Opening ??= new()).Enabled = enabled.IsChecked == true);
+                if (!buildingInspector) ApplyEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).Enabled = enabled.IsChecked == true);
         };
         enabled.Checked += enabledChanged;
         enabled.Unchecked += enabledChanged;
@@ -33,31 +33,35 @@ public partial class MainWindow
 
         var presets = new[]
         {
-            (OpeningPreset.Custom, "自定", "sparkles"),
-            (OpeningPreset.ZoomUp, "放大入场", "zoom"),
-            (OpeningPreset.Fade, "淡入", "eye"),
-            (OpeningPreset.SlideUp, "上升", "arrow-up"),
-            (OpeningPreset.RotateIn, "旋转入场", "rotate"),
-            (OpeningPreset.Converge, "汇聚", "merge"),
-            (OpeningPreset.SideSlide, "侧向滑入", "arrow-right"),
+            (OpeningPreset.Converge, "聚拢", "merge"),
+            (OpeningPreset.SideSlide, "侧滑", "arrow-right"),
             (OpeningPreset.Light3D, "轻 3D", "cube")
         };
         ChoiceCards("开场方式", opening.Preset, presets,
-            value => ApplyEdit(p => (p.Settings.Opening ??= new()).Preset = value),
+            value => ApplyEdit(p =>
+            {
+                var settings = p.Settings.Opening ??= NewOpeningSettings();
+                settings.Preset = value;
+                settings.ElementCurve ??= ElementMotionCurve.Swift;
+            }),
             columns: 3, preview: BuildOpeningPresetPreview);
 
-        Section("节奏");
-        Number("总时长", opening.Duration, .1, 5,
+        ChoiceCards("动效节奏", opening.ElementCurve ?? (ElementMotionCurve)(-1),
+            new[] { (ElementMotionCurve.Smooth, "顺滑", "wave"), (ElementMotionCurve.Swift, "利落", "sparkles"), (ElementMotionCurve.Gentle, "柔和", "motion") },
+            value => ApplyEdit(p => (p.Settings.Opening ??= NewOpeningSettings()).ElementCurve = value));
+        Note(opening.ElementCurve switch
+        {
+            ElementMotionCurve.Smooth => "均衡加减速，适合大多数元素。",
+            ElementMotionCurve.Swift => "快速进入并干净收尾，节奏更明确。",
+            ElementMotionCurve.Gentle => "起落更慢，适合较大的画面和样机。",
+            _ => "此工程沿用自定开场曲线；选择节奏后使用该节奏。"
+        });
+        Number("总时长", opening.Duration, .4, 8,
             value => ApplyEdit(p => (p.Settings.Opening ??= new()).Duration = value), " s");
-        ChoiceCards("动效曲线", opening.Easing,
-            Easings().Select(x => (x.Item1, x.Item2, x.Item1 switch
-            {
-                ZoomEasing.Linear => "sliders",
-                ZoomEasing.Cubic => "zoom",
-                ZoomEasing.Quintic => "preset",
-                _ => "wave"
-            })),
-            value => ApplyEdit(p => (p.Settings.Opening ??= new()).Easing = value), columns: 3);
+        if (opening.IncludedElements.Count > 1)
+            Number("元素间隔", opening.Stagger, 0, Math.Min(1.2, Math.Max(0, opening.Duration - .18) / (opening.IncludedElements.Count - 1)),
+                value => ApplyEdit(p => (p.Settings.Opening ??= new()).Stagger = value), " s");
+        else Note("只有一个元素参与时无需设置间隔。");
 
         InspectorDisclosure("参与元素与顺序", () =>
         {
@@ -85,31 +89,41 @@ public partial class MainWindow
                 Grid.SetColumn(down, 2); row.Children.Add(down);
                 InspectorHost.Children.Add(row);
             }
-            Number("元素间隔", opening.Stagger, 0, 1,
-                value => ApplyEdit(p => (p.Settings.Opening ??= new()).Stagger = value), " s");
         });
 
         var start = opening.ResolvePreset();
-        InspectorDisclosure("高级起始姿态", () =>
+        InspectorDisclosure("自定开场与起始姿态", () =>
         {
+            ChoiceCards("其他开场", opening.Preset,
+                new[] { (OpeningPreset.Custom, "自定", "sparkles"), (OpeningPreset.ZoomUp, "放大入场", "zoom"), (OpeningPreset.Fade, "淡入", "eye"), (OpeningPreset.SlideUp, "上升", "arrow-up"), (OpeningPreset.RotateIn, "旋转入场", "rotate") },
+                value => ApplyEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Preset = value; settings.ElementCurve = null; }), 3, BuildOpeningPresetPreview);
+            Choices("自定曲线", opening.Easing, Easings(), value => ApplyEdit(p => { var settings = p.Settings.Opening ??= new(); settings.Easing = value; settings.ElementCurve = null; }));
+            MotionCurveControls(opening.Easing, opening.CustomCurve, value => ApplyEdit(p => (p.Settings.Opening ??= new()).CustomCurve = value));
             Number("初始大小", start.ScaleFrom, .1, 2, value => EditOpeningCustom(x => x.ScaleFrom = value), "×");
             Number("水平位移", start.OffsetX, -1, 1, value => EditOpeningCustom(x => x.OffsetX = value));
             Number("垂直位移", start.OffsetY, -1, 1, value => EditOpeningCustom(x => x.OffsetY = value));
             Number("初始旋转", start.RotationFrom, -180, 180, value => EditOpeningCustom(x => x.RotationFrom = value), "°");
             Number("初始不透明度", start.OpacityFrom, 0, 1, value => EditOpeningCustom(x => x.OpacityFrom = value));
-        });
+        }, expanded: opening.Preset is not (OpeningPreset.Converge or OpeningPreset.SideSlide or OpeningPreset.Light3D));
 
         var previewButton = new Button
         {
             Content = "从片头预览",
             HorizontalContentAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 8, 0, 4),
-            Style = (Style)FindResource("PrimaryButton")
+            Style = (Style)FindResource("PlainButton")
         };
         AutomationProperties.SetName(previewButton, "从片头预览");
         previewButton.Click += (_, _) => { Playhead.Value = 0; PlayClick(this, new()); };
         InspectorHost.Children.Add(previewButton);
+        Note("柔化和突出从首帧保持生效；从 0 秒开始的贴图自身入场由全局开场接管。");
     }
+
+    private static OpeningSettings NewOpeningSettings() => new()
+    {
+        Preset = OpeningPreset.Light3D, ElementCurve = ElementMotionCurve.Swift, Duration = 2.2,
+        IncludedElements = [OpeningElement.Screen, OpeningElement.Camera, OpeningElement.Overlays]
+    };
 
     private static string OpeningElementLabel(OpeningElement element) => element switch
     {
@@ -188,7 +202,7 @@ public partial class MainWindow
 
     private void EditOpeningCustom(Action<OpeningSettings> edit) => ApplyEdit(p =>
     {
-        var value = (p.Settings.Opening ?? new()).ResolvePreset() with { Preset = OpeningPreset.Custom };
+        var value = (p.Settings.Opening ?? new()).ResolvePreset() with { Preset = OpeningPreset.Custom, ElementCurve = null };
         edit(value);
         p.Settings.Opening = value;
     });

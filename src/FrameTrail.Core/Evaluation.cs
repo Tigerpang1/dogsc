@@ -141,6 +141,12 @@ public sealed class PreparedPointerTrack
         var index = UpperBound(events, sourceTime) - 1;
         return index < 0 ? double.PositiveInfinity : Math.Max(0, sourceTime - events[index].Time);
     }
+    public string? CursorAssetAt(double sourceTime)
+    {
+        if (!double.IsFinite(sourceTime) || sourceTime < 0 || events.Length == 0) return null;
+        var index = UpperBound(events, sourceTime) - 1;
+        return index < 0 ? null : events[index].CursorAsset;
+    }
     private static int UpperBound(PointerEvent[] values, double time)
     { var low = 0; var high = values.Length; while (low < high) { var mid = low + (high - low) / 2; if (values[mid].Time <= time) low = mid + 1; else high = mid; } return low; }
     private static double Tangent(double t0, double v0, double t1, double v1, double t2, double v2)
@@ -313,6 +319,7 @@ public static class FrameSceneEvaluator
 /// <summary>Build once per export or preview session; per-frame work maps segments and samples tracks with binary search.</summary>
 public sealed class PreparedFrameSceneEvaluator
 {
+    private readonly PreparedOverlayTrack overlayTrack;
     private readonly FrameTrailProject project;
     private readonly TimelineSegment[] segments;
     private readonly double[] outputEnds;
@@ -320,6 +327,8 @@ public sealed class PreparedFrameSceneEvaluator
     private readonly double[] clipStarts;
     private readonly double[] clipPrefixEnd;
     private readonly PreparedPointerTrack pointerTrack;
+    private readonly PreparedPointerDynamics pointerDynamics;
+    private readonly PreparedAutoFollowTrack?[] autoFollowTracks;
     private readonly ScreenMotionClip[] motionClips;
     private readonly double[] motionStarts;
     private readonly ScreenMotionState[] motionFromStates;
@@ -329,19 +338,30 @@ public sealed class PreparedFrameSceneEvaluator
     private readonly CameraSyncSegment[] cameraSyncSegments;
     private readonly double[] cameraMotionStarts;
     private readonly NormalizedRect canvasCrop;
-    private readonly (NormalizedPoint Position, double Size)[] cameraMotionFromStates;
+    private readonly CameraMotionPose? cameraBasePose;
+    private readonly CameraMotionPose?[] cameraMotionFromStates;
+    private readonly CameraMotionPose?[] cameraMotionTargets;
+    private readonly double cameraCanvasAspect;
     public double Duration => outputEnds[^1];
 
-    public PreparedFrameSceneEvaluator(FrameTrailProject project)
+    public PreparedFrameSceneEvaluator(FrameTrailProject project, double? cameraAssetAspectRatioOverride = null)
     {
         ArgumentNullException.ThrowIfNull(project); project.Timeline.Validate();
+        if (cameraAssetAspectRatioOverride is { } measuredAspect && (!double.IsFinite(measuredAspect) || measuredAspect <= 0 || measuredAspect > 100))
+            throw new ArgumentOutOfRangeException(nameof(cameraAssetAspectRatioOverride));
         if (!double.IsFinite(project.MouseClock.OffsetSeconds) || !double.IsFinite(project.MouseClock.Rate) || project.MouseClock.Rate <= 0) throw new InvalidDataException("鼠标时间校准参数无效。");
+        var spring = project.Settings.Spring;
+        if (spring is null || !double.IsFinite(spring.Mass) || spring.Mass is < .01 or > 100
+            || !double.IsFinite(spring.Stiffness) || spring.Stiffness is < .01 or > 10000
+            || !double.IsFinite(spring.Damping) || spring.Damping is < .01 or > 1000)
+            throw new InvalidDataException("动画弹簧参数无效。");
         this.project = project;
         canvasCrop = (project.Settings.Canvas?.Crop ?? NormalizedRect.Full).Clamp();
         segments = project.Timeline.Segments.ToArray(); outputEnds = new double[segments.Length];
         var output = 0d;
         for (var i = 0; i < segments.Length; i++) outputEnds[i] = output += segments[i].OutputDuration;
         pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing);
+        pointerDynamics = new PreparedPointerDynamics(pointerTrack, project.PointerEvents);
         motionClips = project.ScreenMotions.OrderBy(x => x.Start).ToArray();
         motionStarts = motionClips.Select(x => x.Start).ToArray();
         motionFromStates = new ScreenMotionState[motionClips.Length];
@@ -355,23 +375,43 @@ public sealed class PreparedFrameSceneEvaluator
             }
         }
         overlays = project.Overlays.OrderBy(x => x.Layer).ThenBy(x => x.Start).ToArray();
+        overlayTrack = new(overlays);
         blurClips = project.BlurClips.OrderBy(x => x.Start).ToArray();
         cameraMotions = project.CameraMotions.OrderBy(x => x.Start).ToArray();
         cameraSyncSegments = project.Camera?.SyncSegments?.OrderBy(x => x.TimelineStart).ToArray() ?? [];
         cameraMotionStarts = cameraMotions.Select(x => x.Start).ToArray();
-        cameraMotionFromStates = new (NormalizedPoint, double)[cameraMotions.Length];
-        var cameraBasePosition = project.Camera?.Position ?? new NormalizedPoint(.8, .8);
-        var cameraBaseSize = project.Camera?.Size ?? .28;
+        var canvasSettings = project.Settings.Canvas;
+        cameraCanvasAspect = (canvasSettings?.AspectWidth ?? project.Settings.CanvasWidth)
+            / (double)Math.Max(2, canvasSettings?.AspectHeight ?? project.Settings.CanvasHeight);
+        var cameraCrop = project.Camera?.Crop ?? NormalizedRect.Full;
+        var baseAssetAspect = cameraAssetAspectRatioOverride ?? project.Camera?.AssetAspectRatio ?? 1;
+        var cameraAspect = baseAssetAspect * Math.Max(cameraCrop.Width, .001) / Math.Max(cameraCrop.Height, .001);
+        cameraBasePose = CameraMotionEvaluator.Base(project.Camera, project.Camera?.Layout, cameraAspect, cameraCanvasAspect);
+        cameraMotionFromStates = new CameraMotionPose?[cameraMotions.Length];
+        cameraMotionTargets = new CameraMotionPose?[cameraMotions.Length];
+        var baseRoundness = project.Camera is { } baseCamera
+            ? baseCamera.Layout is not null
+                ? Math.Clamp(baseCamera.CornerRadius, 0, 1)
+                : baseCamera.Size > 1e-9 ? Math.Clamp(2 * baseCamera.CornerRadius / baseCamera.Size, 0, 1) : 0
+            : 0;
         for (var i = 0; i < cameraMotions.Length; i++)
         {
-            if (i == 0) cameraMotionFromStates[i] = (cameraBasePosition, cameraBaseSize);
+            var motion = cameraMotions[i];
+            var targetLayout = motion.TargetLayout ?? (motion.TargetRoundness is not null
+                ? CameraMotionLayoutKind.RoundedRectangle : project.Camera?.Layout);
+            cameraMotionTargets[i] = CameraMotionEvaluator.Target(project.Camera, motion.TargetPosition, motion.TargetSize,
+                targetLayout, motion.TargetRoundness ?? baseRoundness, motion.TargetOpacity ?? project.Camera?.Opacity ?? 1,
+                cameraAspect, cameraCanvasAspect);
+        }
+        for (var i = 0; i < cameraMotions.Length; i++)
+        {
+            if (i == 0) cameraMotionFromStates[i] = cameraBasePose;
             else
             {
                 var previous = cameraMotions[i - 1];
                 var destination = cameraMotions[i].Start <= previous.End + previous.ReturnDuration
-                    ? (cameraMotions[i].TargetPosition, cameraMotions[i].TargetSize)
-                    : (cameraBasePosition, cameraBaseSize);
-                cameraMotionFromStates[i] = EvaluateCameraMotionClip(previous, cameraMotions[i].Start, cameraMotionFromStates[i - 1], destination);
+                    ? cameraMotionTargets[i] : cameraBasePose;
+                cameraMotionFromStates[i] = EvaluateCameraMotionClip(i - 1, cameraMotions[i].Start, cameraMotionFromStates[i - 1], destination);
             }
         }
         var sourceClips = project.ZoomClips.Count > 0
@@ -383,6 +423,18 @@ public sealed class PreparedFrameSceneEvaluator
         // is otherwise canvas-crop-local, so normalize automatic focuses once for evaluation.
         clips = sourceClips.Select(x => x.Automatic ? x with { Focus = ToCanvasCropLocal(x.Focus) } : x)
             .OrderBy(x => x.Start).ToArray(); clipStarts = clips.Select(x => x.Start).ToArray(); clipPrefixEnd = new double[clips.Length];
+        var calibratedPointerEvents = project.PointerEvents
+            .Where(e => double.IsFinite(e.Time) && e.Time >= 0 && e.Location.IsFinite)
+            .Select(e => e with { Time = project.MouseClock.ToSourceTime(e.Time) })
+            .OrderBy(e => e.Time).ToArray();
+        autoFollowTracks = new PreparedAutoFollowTrack?[clips.Length];
+        var remainingFollowSamples = PreparedAutoFollowTrack.MaximumTotalSamples;
+        for (var i = 0; i < clips.Length; i++)
+            if (clips[i].Automatic)
+            {
+                autoFollowTracks[i] = PreparedAutoFollowTrack.Build(clips[i], calibratedPointerEvents, project.Settings.Spring, canvasCrop, remainingFollowSamples);
+                remainingFollowSamples -= autoFollowTracks[i]!.SampleCount;
+            }
         var maxEnd = double.NegativeInfinity;
         for (var i = 0; i < clips.Length; i++) clipPrefixEnd[i] = maxEnd = Math.Max(maxEnd, clips[i].End + clips[i].ExitDuration);
     }
@@ -391,7 +443,8 @@ public sealed class PreparedFrameSceneEvaluator
     {
         if (!double.IsFinite(outputTime) || outputTime < 0 || outputTime > Duration) throw new ArgumentOutOfRangeException(nameof(outputTime));
         var sourceTime = MapOutputToSource(outputTime);
-        var zoom = 1d; var focus = new NormalizedPoint(.5, .5); var followsPointer = false;
+        var zoom = 1d; var focus = new NormalizedPoint(.5, .5);
+        ZoomClip? activeZoomClip = null;
         var upperClip = UpperBound(clipStarts, sourceTime);
         for (var i = upperClip - 1; i >= 0 && clipPrefixEnd[i] >= sourceTime; i--)
         {
@@ -400,35 +453,45 @@ public sealed class PreparedFrameSceneEvaluator
                 ? clips[i - 1] : null;
             var requestedEnterDuration = adjacentPrevious is not null && clip.EnterDuration <= .001 ? .7 : clip.EnterDuration;
             var effectiveEnterDuration = Math.Min(requestedEnterDuration, Math.Max(clip.End - clip.Start, 0));
-            var enter = effectiveEnterDuration <= 0 ? 1 : Ease(Math.Clamp((sourceTime - clip.Start) / effectiveEnterDuration, 0, 1), clip.Easing);
-            var exit = clip.ExitDuration <= 0 ? 1 : 1 - Ease(Math.Clamp((sourceTime - clip.End) / clip.ExitDuration, 0, 1), clip.Easing);
+            var enterLocal = effectiveEnterDuration <= 0 ? 1 : Math.Clamp((sourceTime - clip.Start) / effectiveEnterDuration, 0, 1);
+            var enterOffset = Math.Clamp(clip.EnterProgressOffset, 0, 1);
+            var enter = effectiveEnterDuration <= 0 ? 1 : Ease(enterOffset + (1 - enterOffset) * enterLocal, clip.Easing, clip.CustomCurve, project.Settings.Spring);
+            var exitLocal = clip.ExitDuration <= 0 ? 1 : Math.Clamp((sourceTime - clip.End) / clip.ExitDuration, 0, 1);
+            var exitOffset = Math.Clamp(clip.ExitProgressOffset, 0, 1);
+            var exit = sourceTime <= clip.End || clip.ExitDuration <= 0 ? 1 : 1 - Ease(exitOffset + (1 - exitOffset) * exitLocal, clip.Easing, clip.CustomCurve, project.Settings.Spring);
             var progress = Math.Min(enter, exit);
-            var fromScale = adjacentPrevious?.Scale ?? 1;
-            var fromFocus = adjacentPrevious?.Focus ?? new NormalizedPoint(.5, .5);
-            zoom = fromScale + (clip.Scale - fromScale) * progress;
-            focus = new(fromFocus.X + (clip.Focus.X - fromFocus.X) * progress, fromFocus.Y + (clip.Focus.Y - fromFocus.Y) * progress);
-            followsPointer = clip.Automatic && progress > 0;
+            var targetFocus = autoFollowTracks[i]?.Sample(sourceTime) ?? clip.Focus;
+            if (adjacentPrevious is not null && sourceTime <= clip.End)
+            {
+                // Swift inherits the previous viewport only during the incoming
+                // clip's entry and hold. Its return phase always interpolates to
+                // the base canvas zoom instead of returning to the prior clip.
+                var fromScale = adjacentPrevious.Scale;
+                var fromFocus = autoFollowTracks[i - 1]?.Sample(adjacentPrevious.End) ?? adjacentPrevious.Focus;
+                zoom = fromScale + (clip.Scale - fromScale) * progress;
+                focus = new(fromFocus.X + (targetFocus.X - fromFocus.X) * progress,
+                    fromFocus.Y + (targetFocus.Y - fromFocus.Y) * progress);
+            }
+            else
+            {
+                zoom = 1 + (clip.Scale - 1) * progress;
+                focus = targetFocus;
+            }
+            activeZoomClip = clip;
             break;
         }
         var pointerTime = (sourceTime - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
         var pointer = pointerTrack.Sample(pointerTime);
-        if (followsPointer && pointer.Position is { } position)
-        {
-            // Keep the pointer in a central safety area. The camera starts following only when it leaves that area,
-            // which yields continuous framing through long pointer activity without a per-click camera reset.
-            var safeExtent = .35 / zoom;
-            var cropLocalPointer = ToCanvasCropLocal(position);
-            var dx = cropLocalPointer.X - focus.X; var dy = cropLocalPointer.Y - focus.Y;
-            if (Math.Abs(dx) > safeExtent) focus = focus with { X = focus.X + Math.Sign(dx) * (Math.Abs(dx) - safeExtent) };
-            if (Math.Abs(dy) > safeExtent) focus = focus with { Y = focus.Y + Math.Sign(dy) * (Math.Abs(dy) - safeExtent) };
-        }
         var cropSize = 1 / Math.Max(zoom, 1);
         var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
         var cursorSettings = project.Settings.Cursor ?? new CursorSettings { Visible = project.Settings.CursorVisible };
         var cursorVisible = project.Settings.CursorVisible && cursorSettings.Visible;
         if (cursorSettings.HideWhenIdle && pointerTrack.SecondsSinceLastEvent(pointerTime) > cursorSettings.IdleSeconds) cursorVisible = false;
         var cursor = cursorVisible ? pointer.Position : null;
-        var strength = cursorVisible && cursorSettings.ClickEffectsEnabled ? pointer.ClickStrength : 0;
+        var dynamics = pointerDynamics.Sample(pointerTime, project.Settings.PointerSmoothing,
+            cursorSettings.MotionTiltEnabled ? cursorSettings.MotionTiltStrength : 0, cursorSettings.ClickDuration);
+        var clickProgress = cursorVisible && cursorSettings.ClickEffectsEnabled ? dynamics.ClickProgress : null;
+        var strength = clickProgress is { } click ? Math.Sin(click * Math.PI) : 0;
         var s = project.Settings;
         var canvas = s.Canvas ?? new CanvasSettings { AspectWidth = s.CanvasWidth, AspectHeight = s.CanvasHeight };
         var background = s.BackgroundStyle ?? new BackgroundSettings { Color = s.Background, EndColor = s.Background };
@@ -437,17 +500,25 @@ public sealed class PreparedFrameSceneEvaluator
         var screenOpening = EvaluateOpening(outputTime, initialSourceTime, OpeningElement.Screen);
         var cameraOpening = EvaluateOpening(outputTime, initialSourceTime, OpeningElement.Camera);
         var overlayOpening = EvaluateOpening(outputTime, initialSourceTime, OpeningElement.Overlays);
-        var camera = EvaluateCamera(sourceTime, cameraOpening);
-        var activeOverlays = EvaluateOverlays(sourceTime, overlayOpening, initialSourceTime);
+        var camera = EvaluateCamera(sourceTime, cameraOpening, zoom);
+        var activeOverlays = EvaluateOverlays(sourceTime, overlayOpening, initialSourceTime, out var overlayBackdrop);
         var blurRegions = EvaluateBlurRegions(sourceTime);
-        var (resolvedFocus, focusProgress) = EvaluateFocus(sourceTime);
-        if (resolvedFocus is { Target: FocusEffectTarget.Pointer } pointerFocus && pointer.Position is { } pointerLocation)
-            resolvedFocus = pointerFocus with { Center = pointerLocation };
-        else if (resolvedFocus is { Target: FocusEffectTarget.Animation } && activeMotion is { } motionState)
-            resolvedFocus = resolvedFocus with { Center = motionState.Position };
+        var (resolvedFocus, focusProgress, focusAnchor, _) = EvaluateFocus(sourceTime, activeZoomClip, focus);
+        if (resolvedFocus is { } focusEffect)
+        {
+            var center = focusEffect.Target switch
+            {
+                FocusEffectTarget.Pointer => pointer.Position ?? focusAnchor,
+                FocusEffectTarget.Animation => focusAnchor,
+                _ => focusEffect.Center
+            };
+            resolvedFocus = focusEffect with { Center = center };
+        }
         return new FrameScene(outputTime, sourceTime, origin, new(cropSize, cropSize), zoom, cursor, strength, s.Background, s.Padding, s.CornerRadius, s.CanvasWidth, s.CanvasHeight, s.Shadow,
             canvas, background, cursorSettings, activeMotion, resolvedFocus, focusProgress, camera, activeOverlays, blurRegions, cameraMotions,
-            (int)Math.Max(0, Math.Round(project.Media.Width)), (int)Math.Max(0, Math.Round(project.Media.Height)), screenOpening, cameraOpening, overlayOpening);
+            (int)Math.Max(0, Math.Round(project.Media.Width)), (int)Math.Max(0, Math.Round(project.Media.Height)), screenOpening, cameraOpening, overlayOpening,
+            cursorVisible ? dynamics.RotationRadians : 0, clickProgress, clickProgress.HasValue ? dynamics.ActiveClickKind : null,
+            pointerTrack.CursorAssetAt(pointerTime), overlayBackdrop);
     }
 
     /// <summary>Returns the scene at outputTime with a selected zoom clip's target crop applied immediately.</summary>
@@ -459,7 +530,23 @@ public sealed class PreparedFrameSceneEvaluator
         var cropSize = 1 / scale;
         var focus = clip.Focus;
         var origin = new NormalizedPoint(Math.Clamp(focus.X - cropSize / 2, 0, 1 - cropSize), Math.Clamp(focus.Y - cropSize / 2, 0, 1 - cropSize));
-        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale };
+        var (screenEffect, screenProgress, screenAnchor, screenSelected) = EvaluateFocus(scene.SourceTime, null, focus);
+        var focusEffect = screenSelected ? screenEffect : clip.FocusEffect;
+        var focusProgress = screenSelected ? screenProgress : focusEffect is not null ? 1 : 0;
+        var focusAnchor = screenSelected ? screenAnchor : new NormalizedPoint(canvasCrop.X + focus.X * canvasCrop.Width,
+            canvasCrop.Y + focus.Y * canvasCrop.Height);
+        if (focusEffect is { } effect)
+        {
+            var pointerTime = (scene.SourceTime - project.MouseClock.OffsetSeconds) / project.MouseClock.Rate;
+            var center = effect.Target switch
+            {
+                FocusEffectTarget.Pointer => pointerTrack.Sample(pointerTime).Position ?? focusAnchor,
+                FocusEffectTarget.Animation => focusAnchor,
+                _ => effect.Center
+            };
+            focusEffect = effect with { Center = center };
+        }
+        return scene with { CropOrigin = origin, CropSize = new(cropSize, cropSize), Zoom = scale, Focus = focusEffect, FocusProgress = focusProgress };
     }
 
     private NormalizedPoint ToCanvasCropLocal(NormalizedPoint fullSource) => new(
@@ -483,11 +570,16 @@ public sealed class PreparedFrameSceneEvaluator
         var stagger = gaps == 0 ? opening.Stagger : Math.Min(opening.Stagger, Math.Max(opening.Duration - .18, 0) / gaps);
         var itemDuration = Math.Max(opening.Duration - stagger * gaps, .18);
         var linear = Math.Clamp((outputTime - stagger * index) / itemDuration, 0, 1);
-        var progress = Ease(linear, opening.Easing);
+        if (opening.ElementCurve is { } elementCurve && opening.Preset is OpeningPreset.Converge or OpeningPreset.SideSlide or OpeningPreset.Light3D)
+            return OpeningMotionEvaluator.Sample(opening.Preset, element, linear, elementCurve);
+        double Progress(double value) => opening.ElementCurve is { } curve
+            ? OpeningMotionEvaluator.Progress(value, curve)
+            : Ease(value, opening.Easing, opening.CustomCurve, project.Settings.Spring);
+        var progress = Progress(linear);
         var start = OpeningStart(opening, element);
         var opacity = element == OpeningElement.Screen && opening.Preset is not (OpeningPreset.Converge or OpeningPreset.SideSlide or OpeningPreset.Light3D)
             ? opening.OpacityFrom + (1 - opening.OpacityFrom) * progress
-            : Ease(Math.Clamp(linear * 1.65, 0, 1), opening.Easing);
+            : Progress(Math.Clamp(linear * 1.65, 0, 1));
         return new FrameOpeningState(
             start.Scale + (1 - start.Scale) * progress,
             start.OffsetX * (1 - progress), start.OffsetY * (1 - progress),
@@ -537,13 +629,13 @@ public sealed class PreparedFrameSceneEvaluator
         return EvaluateMotionClip(clip, time, motionFromStates[index], destination);
     }
 
-    private static ScreenMotionState EvaluateMotionClip(ScreenMotionClip clip, double time, ScreenMotionState from, ScreenMotionState destination)
+    private ScreenMotionState EvaluateMotionClip(ScreenMotionClip clip, double time, ScreenMotionState from, ScreenMotionState destination)
     {
         if (clip.EnterDuration > 0 && time < clip.Start + clip.EnterDuration)
-            return Interpolate(from, clip.Target, Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing));
+            return Interpolate(from, clip.Target, Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
         if (time <= clip.End) return clip.Target;
         if (clip.ReturnDuration <= 0) return destination;
-        return Interpolate(clip.Target, destination, Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing));
+        return Interpolate(clip.Target, destination, Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
     }
 
     private static ScreenMotionState Interpolate(ScreenMotionState a, ScreenMotionState b, double t) => new()
@@ -556,22 +648,28 @@ public sealed class PreparedFrameSceneEvaluator
         Perspective = a.Perspective + (b.Perspective - a.Perspective) * t
     };
 
-    private FrameCameraScene? EvaluateCamera(double time, FrameOpeningState? opening)
+    private FrameCameraScene? EvaluateCamera(double time, FrameOpeningState? opening, double screenZoomScale)
     {
         var camera = project.Camera;
         if (camera is null || !TryCameraSourceTime(camera, time, out var local)) return null;
-        var (position, size) = EvaluateCameraMotion(time, camera.Position, camera.Size);
-        var canvasAspect = project.Settings.CanvasWidth / (double)project.Settings.CanvasHeight;
-        var normalizedWidth = size / canvasAspect;
-        var baseRect = new NormalizedRect(position.X - normalizedWidth / 2, position.Y - size / 2, normalizedWidth, size);
+        var pose = EvaluateCameraMotion(time) ?? cameraBasePose;
+        if (pose is null) return null;
+        var zoomProgress = Math.Clamp((screenZoomScale - 1) / .565, 0, 1);
+        var linkedZoomScale = 1 + (Math.Clamp(camera.ScaleDuringZoom, .1, 2) - 1) * zoomProgress;
+        var resolvedPose = pose.Value with { Size = pose.Value.Size * linkedZoomScale };
+        var rect = resolvedPose.ToNormalizedRect(cameraCanvasAspect);
         if (opening is { } open)
         {
-            var width = baseRect.Width * open.Scale; var height = baseRect.Height * open.Scale;
-            baseRect = new(baseRect.X + baseRect.Width / 2 - width / 2 + open.OffsetX,
-                baseRect.Y + baseRect.Height / 2 - height / 2 + open.OffsetY, width, height);
+            var width = rect.Width * open.Scale; var height = rect.Height * open.Scale;
+            rect = new(rect.X + rect.Width / 2 - width / 2 + open.OffsetX,
+                rect.Y + rect.Height / 2 - height / 2 + open.OffsetY, width, height);
         }
-        return new FrameCameraScene(camera.MediaPath, local, baseRect,
-            camera.CornerRadius * (opening?.Scale ?? 1), camera.BorderWidth * (opening?.Scale ?? 1), camera.Opacity * (opening?.Opacity ?? 1), camera.Mirrored, camera.Volume, camera.Muted, camera.Shape, camera.Crop, camera.BorderColor, opening?.Rotation ?? 0);
+        var cornerRadius = resolvedPose.ToNormalizedCornerRadius(cameraCanvasAspect) * (opening?.Scale ?? 1);
+        var retainsLegacyShape = camera.Layout is null && cameraMotions.All(x => x.TargetLayout is null && x.TargetRoundness is null);
+        var frameShape = retainsLegacyShape ? camera.Shape : CameraShape.RoundedRectangle;
+        return new FrameCameraScene(camera.MediaPath, local, rect,
+            cornerRadius, camera.BorderWidth * (opening?.Scale ?? 1), pose.Value.Opacity * (opening?.Opacity ?? 1), camera.Mirrored, camera.Volume, camera.Muted,
+            frameShape, camera.Crop, camera.BorderColor, opening?.Rotation ?? 0, camera.ShadowStrength);
     }
 
     private bool TryCameraSourceTime(CameraTrack camera, double screenSourceTime, out double cameraSourceTime)
@@ -593,53 +691,59 @@ public sealed class PreparedFrameSceneEvaluator
         {
             var segment = cameraSyncSegments[index];
             var offset = screenSourceTime - segment.TimelineStart;
-            if (offset >= 0 && offset < segment.Duration) { cameraSourceTime = segment.SourceStart + offset; return true; }
+            if (offset >= 0 && offset < segment.Duration) { cameraSourceTime = segment.SourceStart + offset * segment.SourceRate; return true; }
         }
         cameraSourceTime = 0; return false;
     }
 
-    private (NormalizedPoint Position, double Size) EvaluateCameraMotion(double time, NormalizedPoint basePosition, double baseSize)
+    private CameraMotionPose? EvaluateCameraMotion(double time)
     {
+        if (cameraMotions.Length == 0) return cameraBasePose;
         var index = UpperBound(cameraMotionStarts, time) - 1;
-        if (index < 0) return (basePosition, baseSize);
+        if (index < 0) return cameraBasePose;
         var clip = cameraMotions[index];
-        if (time > clip.End + clip.ReturnDuration) return (basePosition, baseSize);
+        if (time > clip.End + clip.ReturnDuration) return cameraBasePose;
         var destination = index + 1 < cameraMotions.Length && cameraMotions[index + 1].Start <= clip.End + clip.ReturnDuration
-            ? (cameraMotions[index + 1].TargetPosition, cameraMotions[index + 1].TargetSize)
-            : (basePosition, baseSize);
-        return EvaluateCameraMotionClip(clip, time, cameraMotionFromStates[index], destination);
+            ? cameraMotionTargets[index + 1] : cameraBasePose;
+        return EvaluateCameraMotionClip(index, time, cameraMotionFromStates[index], destination);
     }
 
-    private static (NormalizedPoint Position, double Size) EvaluateCameraMotionClip(CameraMotionClip clip, double time,
-        (NormalizedPoint Position, double Size) from, (NormalizedPoint Position, double Size) destination)
+    private CameraMotionPose? EvaluateCameraMotionClip(int index, double time, CameraMotionPose? from, CameraMotionPose? destination)
     {
+        var clip = cameraMotions[index];
+        var target = cameraMotionTargets[index];
         if (clip.EnterDuration > 0 && time < clip.Start + clip.EnterDuration)
-            return InterpolateCamera(from, (clip.TargetPosition, clip.TargetSize), Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing));
-        if (time <= clip.End) return (clip.TargetPosition, clip.TargetSize);
-        if (clip.ReturnDuration <= 0) return destination;
-        var progress = Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing);
-        return InterpolateCamera((clip.TargetPosition, clip.TargetSize), destination, progress);
+            return CameraMotionEvaluator.Interpolate(from, target, Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring));
+        if (time <= clip.End) return target;
+        if (clip.ReturnDuration <= 0) return destination ?? target;
+        var progress = Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing, clip.CustomCurve, project.Settings.Spring);
+        return CameraMotionEvaluator.Interpolate(target, destination, progress);
     }
 
-    private static (NormalizedPoint Position, double Size) InterpolateCamera(
-        (NormalizedPoint Position, double Size) from, (NormalizedPoint Position, double Size) to, double t) =>
-        (new(from.Position.X + (to.Position.X - from.Position.X) * t, from.Position.Y + (to.Position.Y - from.Position.Y) * t),
-            from.Size + (to.Size - from.Size) * t);
-
-    private IReadOnlyList<FrameOverlayScene> EvaluateOverlays(double time, FrameOpeningState? opening, double initialSourceTime)
+    private IReadOnlyList<FrameOverlayScene> EvaluateOverlays(double time, FrameOpeningState? opening, double initialSourceTime, out FrameOverlayBackdrop backdrop)
     {
         var result = new List<FrameOverlayScene>();
         var suppressInitialEntry = project.Settings.Opening is { Enabled: true } openingSettings
             && openingSettings.IncludedElements.Contains(OpeningElement.Overlays);
-        foreach (var item in overlays)
+        var trackSample = overlayTrack.Evaluate(time, suppressInitialEntry, initialSourceTime);
+        backdrop = trackSample.Backdrop;
+        foreach (var sample in trackSample.Overlays)
         {
-            if (time < item.Start || time >= item.End) continue;
+            var item = sample.Clip;
             var enter = item.EnterDuration <= 0 ? 1 : Math.Clamp((time - item.Start) / item.EnterDuration, 0, 1);
             var exit = item.ExitDuration <= 0 ? 1 : Math.Clamp((item.End - time) / item.ExitDuration, 0, 1);
             if (suppressInitialEntry && item.Start <= initialSourceTime + .0001) enter = 1;
             var rect = item.Rect; var opacity = item.Opacity;
-            ApplyOverlayMotion(item.EnterMotion, 1 - enter, ref rect, ref opacity);
-            ApplyOverlayMotion(item.ExitMotion, 1 - exit, ref rect, ref opacity);
+            if (item.AnimationCurve is not null)
+            {
+                rect = OverlayMotionEvaluator.Transform(item.Rect, sample.Motion, sample.Progress);
+                opacity = item.Opacity * sample.Visibility;
+            }
+            else
+            {
+                ApplyOverlayMotion(item.EnterMotion, 1 - enter, ref rect, ref opacity);
+                ApplyOverlayMotion(item.ExitMotion, 1 - exit, ref rect, ref opacity);
+            }
             var rotation = item.Rotation;
             if (opening is { } open)
             {
@@ -648,7 +752,9 @@ public sealed class PreparedFrameSceneEvaluator
                     rect.Y + rect.Height / 2 - height / 2 + open.OffsetY, width, height);
                 opacity *= open.Opacity; rotation += open.Rotation;
             }
-            result.Add(new FrameOverlayScene(item.Id, item.MediaPath, rect, rotation, Math.Clamp(opacity, 0, 1), item.Layer, item.CornerRadius, item.Blur));
+            var scale = opening?.Scale ?? 1;
+            result.Add(new FrameOverlayScene(item.Id, item.MediaPath, rect, rotation, Math.Clamp(opacity, 0, 1), item.Layer, item.CornerRadius * scale, item.Blur,
+                item.BorderWidth * scale, item.BorderColor, item.ShadowOpacity, item.ShadowRadius * scale, item.ShadowOffsetX * scale, item.ShadowOffsetY * scale));
         }
         return result;
     }
@@ -666,20 +772,51 @@ public sealed class PreparedFrameSceneEvaluator
             case OverlayMotion.SlideDown: rect = rect with { Y = rect.Y - rect.Height * amount }; break;
             case OverlayMotion.SlideLeft: rect = rect with { X = rect.X + rect.Width * amount }; break;
             case OverlayMotion.SlideRight: rect = rect with { X = rect.X - rect.Width * amount }; break;
+            case OverlayMotion.SlideTopLeft: rect = rect with { X = rect.X + rect.Width * amount, Y = rect.Y + rect.Height * amount }; break;
+            case OverlayMotion.SlideTopRight: rect = rect with { X = rect.X - rect.Width * amount, Y = rect.Y + rect.Height * amount }; break;
+            case OverlayMotion.SlideBottomLeft: rect = rect with { X = rect.X + rect.Width * amount, Y = rect.Y - rect.Height * amount }; break;
+            case OverlayMotion.SlideBottomRight: rect = rect with { X = rect.X - rect.Width * amount, Y = rect.Y - rect.Height * amount }; break;
         }
     }
 
-    private (FocusEffect? Effect, double Progress) EvaluateFocus(double time)
+    private (FocusEffect? Effect, double Progress, NormalizedPoint Anchor, bool ScreenSelected) EvaluateFocus(double time, ZoomClip? zoomClip, NormalizedPoint zoomFocus)
     {
         var index = UpperBound(motionStarts, time) - 1;
-        if (index < 0) return (null, 0);
-        var clip = motionClips[index];
-        if (clip.Focus is null || time < clip.Start || time > clip.End + clip.ReturnDuration) return (null, 0);
-        var progress = clip.EnterDuration > 0 && time < clip.Start + clip.EnterDuration
-            ? Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), clip.Easing)
-            : time <= clip.End ? 1
-            : clip.ReturnDuration <= 0 ? 0 : 1 - Ease(Math.Clamp((time - clip.End) / clip.ReturnDuration, 0, 1), clip.Easing);
-        return (clip.Focus, progress);
+        if (index >= 0)
+        {
+            var screenClip = motionClips[index];
+            if (screenClip.Focus is { } screenEffect && time >= screenClip.Start && time <= screenClip.End + screenClip.ReturnDuration)
+            {
+                var progress = TransitionProgress(time, screenClip.Start, screenClip.End, screenClip.EnterDuration,
+                    screenClip.ReturnDuration, screenClip.Easing, screenClip.CustomCurve, holdsAtEnd: screenClip.ReturnDuration == 0);
+                if (progress > 0)
+                    return (screenEffect, progress, new(canvasCrop.X + screenClip.Target.Position.X * canvasCrop.Width,
+                        canvasCrop.Y + screenClip.Target.Position.Y * canvasCrop.Height), true);
+                // The original evaluator gives an overlapping screen focus priority
+                // even while its own transition has zero opacity.
+                return (null, 0, default, true);
+            }
+        }
+
+        if (zoomClip?.FocusEffect is not { } zoomEffect) return (null, 0, default, false);
+        var zoomProgress = TransitionProgress(time, zoomClip.Start, zoomClip.End, zoomClip.EnterDuration,
+            zoomClip.ExitDuration, zoomClip.Easing, zoomClip.CustomCurve, holdsAtEnd: false);
+        if (zoomProgress <= 0) return (null, 0, default, false);
+        return (zoomEffect, zoomProgress, new(canvasCrop.X + zoomFocus.X * canvasCrop.Width,
+            canvasCrop.Y + zoomFocus.Y * canvasCrop.Height), false);
+    }
+
+    private double TransitionProgress(double time, double start, double end, double enterDuration, double returnDuration,
+        ZoomEasing easing, ZoomBezierCurve curve, bool holdsAtEnd)
+    {
+        if (time < start) return 0;
+        enterDuration = Math.Min(enterDuration, Math.Max(end - start, 0));
+        if (enterDuration > 0 && time < start + enterDuration)
+            return Ease(Math.Clamp((time - start) / enterDuration, 0, 1), easing, curve, project.Settings.Spring);
+        if (time < end) return 1;
+        if (returnDuration > 0 && time < end + returnDuration)
+            return 1 - Ease(Math.Clamp((time - end) / returnDuration, 0, 1), easing, curve, project.Settings.Spring);
+        return holdsAtEnd && time == end ? 1 : 0;
     }
 
     private IReadOnlyList<FrameBlurScene> EvaluateBlurRegions(double time)
@@ -688,9 +825,15 @@ public sealed class PreparedFrameSceneEvaluator
         foreach (var clip in blurClips)
         {
             if (time < clip.Start || time >= clip.End) continue;
-            var enter = clip.EnterDuration <= 0 ? 1 : Ease(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1), ZoomEasing.Cubic);
-            var exit = clip.ExitDuration <= 0 ? 1 : Ease(Math.Clamp((clip.End - time) / clip.ExitDuration, 0, 1), ZoomEasing.Cubic);
-            result.Add(new FrameBlurScene(clip.Rect, clip.Strength, clip.Kind, clip.CornerRadius, Math.Min(enter, exit)));
+            double Curve(double t) => clip.TransitionStyle switch
+            {
+                RegionTransitionStyle.None => 1, RegionTransitionStyle.Linear => t,
+                RegionTransitionStyle.Smooth => t * t * t * (10 + t * (-15 + 6 * t)),
+                _ => Ease(t, ZoomEasing.Cubic)
+            };
+            var enter = clip.EnterDuration <= 0 ? 1 : Curve(Math.Clamp((time - clip.Start) / clip.EnterDuration, 0, 1));
+            var exit = clip.ExitDuration <= 0 ? 1 : Curve(Math.Clamp((clip.End - time) / clip.ExitDuration, 0, 1));
+            result.Add(new FrameBlurScene(clip.Rect, clip.Strength, clip.Kind, clip.CornerRadius, Math.Min(enter, exit), clip.SpotlightDimming, clip.SourceSpace));
         }
         return result;
     }
@@ -706,23 +849,24 @@ public sealed class PreparedFrameSceneEvaluator
     }
     private static int UpperBound(double[] values, double time)
     { var low = 0; var high = values.Length; while (low < high) { var mid = low + (high - low) / 2; if (values[mid] <= time) low = mid + 1; else high = mid; } return low; }
-    private static double Ease(double x, ZoomEasing easing)
+    private static double Ease(double x, ZoomEasing easing, ZoomBezierCurve customCurve = default, SpringAnimationSettings? spring = null)
     {
         x = Math.Clamp(x, 0, 1);
         return easing switch
         {
             ZoomEasing.Linear => x,
-            ZoomEasing.Quintic => Bezier(x, .82, 0, .18, 1),
-            ZoomEasing.Spring => Spring(x),
-            ZoomEasing.Quadratic => Bezier(x, .45, 0, .55, 1),
-            _ => Bezier(x, .65, 0, .35, 1)
+            ZoomEasing.Quintic => Bezier(x, ZoomBezierCurve.Quintic),
+            ZoomEasing.Spring => Spring(x, spring ?? new SpringAnimationSettings()),
+            ZoomEasing.Quadratic => Bezier(x, ZoomBezierCurve.Quadratic),
+            ZoomEasing.Custom => Bezier(x, customCurve.IsValid ? customCurve : ZoomBezierCurve.Cubic),
+            _ => Bezier(x, ZoomBezierCurve.Cubic)
         };
     }
 
     // These control points and the normalized spring are the defaults in
     // RecorderCore/ZoomAnimation.swift. Solving x(t)=time is essential: using
     // the Bezier parameter directly produces a visibly different timeline.
-    private static double Bezier(double x, double x1, double y1, double x2, double y2)
+    private static double Bezier(double x, ZoomBezierCurve curve)
     {
         if (x is <= 0 or >= 1) return x;
         static double Coordinate(double t, double p1, double p2)
@@ -739,9 +883,9 @@ public sealed class PreparedFrameSceneEvaluator
         var t = x;
         for (var i = 0; i < 7; i++)
         {
-            var error = Coordinate(t, x1, x2) - x;
-            if (Math.Abs(error) < .00001) return Coordinate(t, y1, y2);
-            var derivative = Derivative(t, x1, x2);
+            var error = Coordinate(t, curve.X1, curve.X2) - x;
+            if (Math.Abs(error) < .00001) return Coordinate(t, curve.Y1, curve.Y2);
+            var derivative = Derivative(t, curve.X1, curve.X2);
             if (Math.Abs(derivative) < .00001) break;
             var next = t - error / derivative;
             if (next is < 0 or > 1) break;
@@ -753,18 +897,18 @@ public sealed class PreparedFrameSceneEvaluator
         t = x;
         for (var i = 0; i < 18; i++)
         {
-            var value = Coordinate(t, x1, x2);
-            if (Math.Abs(value - x) < .00001) return Coordinate(t, y1, y2);
+            var value = Coordinate(t, curve.X1, curve.X2);
+            if (Math.Abs(value - x) < .00001) return Coordinate(t, curve.Y1, curve.Y2);
             if (value < x) low = t; else high = t;
             t = (low + high) / 2;
         }
-        return Coordinate(t, y1, y2);
+        return Coordinate(t, curve.Y1, curve.Y2);
     }
 
-    private static double Spring(double x)
+    private static double Spring(double x, SpringAnimationSettings spring)
     {
         if (x is <= 0 or >= 1) return x;
-        const double mass = 2.4, stiffness = 210, damping = 42, duration = .72;
+        var mass = Math.Max(spring.Mass, .01); var stiffness = Math.Max(spring.Stiffness, .01); var damping = Math.Max(spring.Damping, .01); const double duration = .72;
         var omega0 = Math.Sqrt(stiffness / mass);
         var zeta = Math.Min(damping / (2 * Math.Sqrt(stiffness * mass)), .9999);
         var omegaD = omega0 * Math.Sqrt(Math.Max(1 - zeta * zeta, double.Epsilon));

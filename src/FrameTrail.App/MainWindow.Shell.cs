@@ -32,10 +32,10 @@ public partial class MainWindow
   foreach(var text in new[]{"1.3","1.6","2.0"})ZoomScale.Items.Add(text);ZoomScale.SelectedIndex=1;
   foreach(var text in new[]{"素材","1080p","1440p","4K"})Resolution.Items.Add(text);Resolution.SelectedIndex=1;
   foreach(var text in new[]{"30","60"})ExportFps.Items.Add(text);ExportFps.SelectedIndex=1;
-  foreach(var text in new[]{"1","1.5","2","4"})Speed.Items.Add(text);Speed.SelectedIndex=0;
+  foreach(var text in new[]{"0.25","0.5","0.75","1","1.5","2","4"})Speed.Items.Add(text);Speed.SelectedIndex=3;
   Playhead.ValueChanged+=PlayheadChanged;Clips.SelectionChanged+=ClipSelected;
   TimelineView.SeekRequested+=t=>{Playhead.Value=t;};
-  TimelineView.SelectionRequested+=s=>{selectedEffect=s.Kind=="screen"?null:s;if(s.Kind=="screen"){refreshing=true;Clips.SelectedItem=Clips.Items.Cast<ClipItem>().FirstOrDefault(x=>x.Id==s.Id);refreshing=false;}else {inspectorTab=s.Kind switch{"camera" or "cameraMotion"=>"camera","audio"=>"audio","overlay"=>"overlay","blur"=>"blur",_=>"zoom"};motionTab=s.Kind=="motion"?"motion":"zoom";}BuildInspector();_=Guard(()=>RenderPreview(Playhead.Value));};
+  TimelineView.SelectionRequested+=s=>{selectedEffect=s.Kind=="screen"?null:s;selectedScreenSegmentId=s.Kind=="screen"?s.Id:null;if(s.Kind=="screen"){inspectorTab="audio";refreshing=true;Clips.SelectedItem=Clips.Items.Cast<ClipItem>().FirstOrDefault(x=>x.Id==s.Id);refreshing=false;}else {inspectorTab=s.Kind switch{"camera" or "cameraMotion"=>"camera","audio"=>"audio","overlay"=>"overlay","blur"=>"blur",_=>"zoom"};motionTab=s.Kind=="motion"?"motion":"zoom";}BuildInspector();_=Guard(()=>RenderPreview(Playhead.Value));};
   TimelineView.ChangeRequested+=ApplyTimelineChange;
   TimelineView.HoverRequested+=TimelineHover;
   TimelineView.ZoomRequested+=v=>TimelineZoom.Value=v;

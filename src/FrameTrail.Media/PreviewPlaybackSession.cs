@@ -29,7 +29,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
     /// <summary>Decoder PID for diagnostics only. The session owns and closes this process.</summary>
     public int? ActiveDecoderProcessId => decoder is { HasExited: false } active ? active.Id : null;
 
-    private PreviewPlaybackSession(FrameTrailProject project, string sourcePath, string projectFilePath, int width, int height, int frameRate, int sourceWidth, int sourceHeight)
+    private PreviewPlaybackSession(FrameTrailProject project, string sourcePath, string projectFilePath, int width, int height, int frameRate, int sourceWidth, int sourceHeight, double? cameraAspectRatio)
     {
         this.project = project;
         this.sourcePath = Path.GetFullPath(sourcePath);
@@ -38,7 +38,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         var scale = Math.Min(1, Math.Min(width / (double)sourceWidth, height / (double)sourceHeight));
         this.sourceWidth = Math.Max(2, (int)Math.Round(sourceWidth * scale));
         this.sourceHeight = Math.Max(2, (int)Math.Round(sourceHeight * scale));
-        evaluator = new PreparedFrameSceneEvaluator(project);
+        evaluator = new PreparedFrameSceneEvaluator(project, cameraAspectRatio);
         assets = new SceneAssetLoader(this.projectFilePath, width, height);
         renderer = new GpuFrameRenderer(this.sourceWidth, this.sourceHeight, width, height);
     }
@@ -54,7 +54,8 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         if (!File.Exists(projectFilePath)) throw new FileNotFoundException("找不到 FrameTrail 项目文件。", projectFilePath);
         var info = await MediaTools.ProbeAsync(fullSourcePath, cancellation);
         if (info.Width < 2 || info.Height < 2 || info.Duration <= 0) throw new InvalidDataException("预览源视频没有有效视频流。" );
-        return new PreviewPlaybackSession(project, fullSourcePath, projectFilePath, width, height, frameRate, info.Width, info.Height);
+        var cameraAspectRatio = await SceneAssetLoader.ProbeCameraAspectRatioAsync(project, projectFilePath, cancellation);
+        return new PreviewPlaybackSession(project, fullSourcePath, projectFilePath, width, height, frameRate, info.Width, info.Height, cameraAspectRatio);
     }
 
     /// <summary>Reads and composes one output-time frame. Calls on a shared session are serialized.</summary>

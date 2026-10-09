@@ -3,7 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.2.1',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'FrameTrail.exe',
     [switch]$WithoutFfmpeg,

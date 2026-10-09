@@ -18,7 +18,19 @@ public partial class MainWindow
  private async Task StartRealtimePlaybackCore(CancellationToken token)
  {
   if(project==null||projectFile==null)return;seekCancellation?.Cancel();var snapshot=project;var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
-  var info=await MediaTools.ProbeAsync(source,token);var cameraAudio=snapshot.Camera is {Muted:false} camera&&(await MediaTools.ProbeAsync(FrameTrailProjectStore.ResolveAssetPath(file,camera.MediaPath),token)).HasAudio;var hasAudio=info.HasAudio&&!snapshot.Settings.MainAudioMuted||snapshot.AudioTracks.Any(x=>!x.Muted)||cameraAudio;
+  var info=await MediaTools.ProbeAsync(source,token);
+  var hasAudio=info.HasAudio&&MediaTools.HasAudibleMainAudio(snapshot.Timeline,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted)
+   ||MediaTools.HasAudibleAudioTracks(snapshot.Timeline,snapshot.AudioTracks,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted);
+  if(snapshot.Camera is {Muted:false,Volume:>0} camera)
+  {
+   var cameraInfo=await MediaTools.ProbeAsync(FrameTrailProjectStore.ResolveAssetPath(file,camera.MediaPath),token);
+   if(cameraInfo.HasAudio)
+   {
+    IReadOnlyList<CameraSyncSegment> mappings=camera.SyncSegments is {Count:>0} sync?sync:[new CameraSyncSegment(camera.SourceStart,camera.TimelineStart,camera.Duration)];
+    var track=new AudioTrack{MediaPath=camera.MediaPath,SourceStart=camera.SourceStart,Duration=camera.Duration,OffsetSeconds=camera.TimelineStart,Volume=camera.Volume,SourceRate=mappings[0].SourceRate,SyncSegments=mappings.ToList(),Source=AudioTrackSource.Camera};
+    hasAudio|=MediaTools.HasAudibleAudioTrack(snapshot.Timeline,track);
+   }
+  }
   if(hasAudio&&(proxyPath==null||!File.Exists(proxyPath)))
   {
    var dir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"FrameTrail","cache");Directory.CreateDirectory(dir);var candidate=Path.Combine(dir,Guid.NewGuid()+".m4a");

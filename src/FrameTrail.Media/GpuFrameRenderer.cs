@@ -11,7 +11,7 @@ using Vortice.Mathematics;
 namespace FrameTrail.Media;
 
 /// <summary>A decoded BGRA image/video layer positioned on the output canvas. Input buffers are consumed synchronously.</summary>
-public sealed record FrameLayerInput(int Width, int Height, byte[] Bgra, NormalizedRect Rect, double Rotation = 0, double Opacity = 1, int Layer = 0, double CornerRadius = 0, bool Mirrored = false, bool BehindScreen = false, BackgroundImageFit Fit = BackgroundImageFit.Stretch, double Blur = 0, CameraShape Shape = CameraShape.RoundedRectangle, NormalizedRect? SourceCrop = null, bool FollowScreenTransform = false, double BorderWidth = 0, string BorderColor = "#FFFFFF");
+public sealed record FrameLayerInput(int Width, int Height, byte[] Bgra, NormalizedRect Rect, double Rotation = 0, double Opacity = 1, int Layer = 0, double CornerRadius = 0, bool Mirrored = false, bool BehindScreen = false, BackgroundImageFit Fit = BackgroundImageFit.Stretch, double Blur = 0, CameraShape Shape = CameraShape.RoundedRectangle, NormalizedRect? SourceCrop = null, bool FollowScreenTransform = false, double BorderWidth = 0, string BorderColor = "#FFFFFF", double ShadowOpacity = 0, double ShadowRadius = 0, double ShadowOffsetX = 0, double ShadowOffsetY = 0, bool BorderOutside = false);
 
 /// <summary>One-frame Direct3D 11 compositor. Calls may move between threads, but must remain sequential.</summary>
 public sealed class GpuFrameRenderer : IDisposable
@@ -22,11 +22,13 @@ public sealed class GpuFrameRenderer : IDisposable
     private ID3D11Texture2D? sourceTexture, targetTexture, stagingTexture;
     private ID3D11ShaderResourceView? sourceView;
     private ID3D11RenderTargetView? targetView;
+    private readonly Dictionary<string, CursorSlot> cursorSlots = new(StringComparer.Ordinal);
     private ID3D11VertexShader? vertexShader;
     private ID3D11PixelShader? pixelShader;
     private ID3D11SamplerState? sampler;
     private ID3D11Buffer? constantsBuffer;
     private readonly LayerSlot?[] layerSlots = new LayerSlot?[9];
+    private readonly CompositeTarget?[] compositeTargets = new CompositeTarget?[4];
     private bool disposed;
 
     public string Backend { get; }
@@ -73,6 +75,7 @@ public sealed class GpuFrameRenderer : IDisposable
         var foregroundLayers = orderedLayers.Where(x => !x.BehindScreen).ToArray();
         if (foregroundLayers.Length > 8) throw new ArgumentException("单帧最多支持 8 个前景合成图层。", nameof(layers));
         var constants = MakeConstants(scene, foregroundLayers, underlay, sourceWidth, sourceHeight, outputWidth, outputHeight);
+        var treatment = scene.OverlayBackdrop ?? new FrameOverlayBackdrop();
         unsafe
         {
             fixed (byte* sourcePtr = bgraSource)
@@ -110,9 +113,70 @@ public sealed class GpuFrameRenderer : IDisposable
             }
             else context.PSSetShaderResource((uint)(i + 1), null!);
         }
+        CursorSlot? cursorSlot = null;
+        var cursorStyle = scene.CursorAppearance?.Style ?? CursorStyle.SystemArrow;
+        if (cursorStyle is CursorStyle.FollowRecorded or CursorStyle.SystemHand or CursorStyle.SystemText)
+        {
+            var cursorAssetId = cursorStyle switch
+            {
+                CursorStyle.SystemHand => "system.hand",
+                CursorStyle.SystemText => "system.ibeam",
+                _ => SystemCursorAssetLibrary.Normalize(scene.CursorAsset)
+            };
+            cursorSlots.TryGetValue(cursorAssetId, out cursorSlot);
+        }
+        context.PSSetShaderResource(10, cursorSlot is null ? null! : cursorSlot.View);
         context.PSSetSampler(0, sampler!);
-        context.Draw(3, 0);
-        for (var i = 0; i < 10; i++) context.PSSetShaderResource((uint)i, null!);
+        var baseBlur = treatment.ScreenBlur * (1 - Math.Clamp(treatment.ScreenSuppression, 0, 1));
+        var cameraBlur = treatment.CameraBlur;
+        if (baseBlur > .01 || cameraBlur > .01)
+        {
+            // Keep screen/background and camera independent through the blur passes. All
+            // intermediates stay on the GPU; only the final frame is read back for encoding.
+            var headerCount = foregroundLayers.TakeWhile(l => l.FollowScreenTransform).Count();
+            var cameraIndex = Array.FindIndex(foregroundLayers, l => l.Layer == int.MinValue + 1);
+            var cameraCount = cameraIndex >= 0 ? 1 : 0;
+            var baseTarget = EnsureCompositeTarget(0);
+            var pass = constants;
+            pass.LayerCount = new(headerCount, 0, 0, 0);
+            pass.BackdropPass = new(0, 0, 0, 0);
+            DrawPass(pass, baseTarget.Target);
+            var baseView = baseTarget.View;
+            if (baseBlur > .01)
+            {
+                var horizontal = EnsureCompositeTarget(1);
+                context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
+                context.PSSetShaderResource(11, baseView);
+                pass.BackdropPass = new(1, (float)baseBlur, 0, 0);
+                DrawPass(pass, horizontal.Target); baseView = horizontal.View;
+                context.PSSetShaderResource(11, null!);
+            }
+            ID3D11ShaderResourceView? cameraView = null;
+            if (cameraCount > 0)
+            {
+                var cameraTarget = EnsureCompositeTarget(2);
+                pass = constants; pass.LayerCount = new(cameraIndex + 1, cameraIndex, 0, 0);
+                pass.BackdropPass = new(3, 0, 0, 0);
+                DrawPass(pass, cameraTarget.Target); cameraView = cameraTarget.View;
+                if (cameraBlur > .01)
+                {
+                    var horizontal = EnsureCompositeTarget(3);
+                    context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
+                    context.PSSetShaderResource(11, cameraView);
+                    pass.BackdropPass = new(1, (float)cameraBlur, 0, 0);
+                    DrawPass(pass, horizontal.Target); cameraView = horizontal.View;
+                    context.PSSetShaderResource(11, null!);
+                }
+            }
+            context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
+            context.PSSetShaderResource(11, baseView);
+            context.PSSetShaderResource(12, cameraView!);
+            pass = constants; pass.LayerCount.Y = headerCount + cameraCount;
+            pass.BackdropPass = new(2, (float)baseBlur, (float)cameraBlur, cameraCount);
+            DrawPass(pass, targetView!);
+        }
+        else context.Draw(3, 0);
+        for (var i = 0; i < 13; i++) context.PSSetShaderResource((uint)i, null!);
         context.OMSetRenderTargets(Array.Empty<ID3D11RenderTargetView>(), null);
         context.CopyResource(stagingTexture!, targetTexture!);
         context.Map(stagingTexture!, 0, MapMode.Read, Vortice.Direct3D11.MapFlags.None, out MappedSubresource mapped).CheckError();
@@ -129,6 +193,21 @@ public sealed class GpuFrameRenderer : IDisposable
         finally { context.Unmap(stagingTexture!, 0); }
     }
 
+    private void DrawPass(ShaderConstants constants, ID3D11RenderTargetView target)
+    {
+        context!.OMSetRenderTargets(target, null);
+        context.UpdateSubresource(in constants, constantsBuffer!);
+        context.Draw(3, 0);
+    }
+
+    private CompositeTarget EnsureCompositeTarget(int index)
+    {
+        if (compositeTargets[index] is { } existing) return existing;
+        var texture = device!.CreateTexture2D(TextureDescription(outputWidth, outputHeight, Format.B8G8R8A8_UNorm,
+            BindFlags.RenderTarget | BindFlags.ShaderResource, ResourceUsage.Default, CpuAccessFlags.None));
+        return compositeTargets[index] = new(texture, device.CreateRenderTargetView(texture), device.CreateShaderResourceView(texture));
+    }
+
     private void Initialize()
     {
         sourceTexture = device!.CreateTexture2D(TextureDescription(sourceWidth, sourceHeight, Format.B8G8R8A8_UNorm, BindFlags.ShaderResource, ResourceUsage.Default, CpuAccessFlags.None));
@@ -137,10 +216,8 @@ public sealed class GpuFrameRenderer : IDisposable
         targetView = device.CreateRenderTargetView(targetTexture);
         stagingTexture = device.CreateTexture2D(TextureDescription(outputWidth, outputHeight, Format.B8G8R8A8_UNorm, BindFlags.None, ResourceUsage.Staging, CpuAccessFlags.Read));
 
-        var shader = Compiler.Compile(ShaderSource, "VSMain", "FrameTrail.Scene.hlsl", "vs_5_0").ToArray();
-        vertexShader = device.CreateVertexShader(shader);
-        shader = Compiler.Compile(ShaderSource, "PSMain", "FrameTrail.Scene.hlsl", "ps_5_0").ToArray();
-        pixelShader = device.CreatePixelShader(shader);
+        vertexShader = device.CreateVertexShader(VertexBytecode.Value);
+        pixelShader = device.CreatePixelShader(PixelBytecode.Value);
         constantsBuffer = device.CreateBuffer((uint)Marshal.SizeOf<ShaderConstants>(), BindFlags.ConstantBuffer);
         sampler = device.CreateSamplerState(new SamplerDescription
         {
@@ -153,6 +230,17 @@ public sealed class GpuFrameRenderer : IDisposable
             MaxLOD = float.MaxValue,
             MaxAnisotropy = 1
         });
+        foreach (var cursor in SystemCursorAssetLibrary.All.Values)
+        {
+            var texture = device.CreateTexture2D(TextureDescription(cursor.Width, cursor.Height, Format.B8G8R8A8_UNorm,
+                BindFlags.ShaderResource, ResourceUsage.Default, CpuAccessFlags.None));
+            unsafe
+            {
+                fixed (byte* ptr = cursor.Bgra)
+                    context!.UpdateSubresource(texture, 0, null, (IntPtr)ptr, (uint)(cursor.Width * 4), 0);
+            }
+            cursorSlots.Add(cursor.Id, new(cursor, texture, device.CreateShaderResourceView(texture)));
+        }
     }
 
     /// <summary>Maps a normalized canvas coordinate onto the recorded source image when it hits the visible screen body.</summary>
@@ -210,6 +298,35 @@ public sealed class GpuFrameRenderer : IDisposable
             constants.Crop.X + sourceX * constants.Crop.Z,
             constants.Crop.Y + sourceY * constants.Crop.W);
         return sourcePoint.IsFinite;
+    }
+
+    /// <summary>Projects a full-source normalized point through crop, screen motion, and opening into normalized output-canvas coordinates.</summary>
+    public static bool TryMapSourcePointToCanvas(FrameScene scene, int sourceWidth, int sourceHeight, int outputWidth, int outputHeight,
+        NormalizedPoint sourcePoint, out NormalizedPoint canvasPoint)
+    {
+        ArgumentNullException.ThrowIfNull(scene);
+        if (sourceWidth <= 0 || sourceHeight <= 0 || outputWidth <= 0 || outputHeight <= 0)
+            throw new ArgumentOutOfRangeException(nameof(sourceWidth), "源图像与输出画布的宽高必须为正数。");
+        canvasPoint = default;
+        if (!sourcePoint.IsFinite || sourcePoint.X is < 0 or > 1 || sourcePoint.Y is < 0 or > 1) return false;
+        var constants = MakeConstants(scene, [], null, sourceWidth, sourceHeight, outputWidth, outputHeight);
+        var localX = (sourcePoint.X - constants.Crop.X) / constants.Crop.Z;
+        var localY = (sourcePoint.Y - constants.Crop.Y) / constants.Crop.W;
+        // Permit extrapolation beyond the crop so a partly cropped source-space
+        // rectangle still displays its true projected edge at the crop boundary.
+        var x = (float)(localX * 2 - 1);
+        var y = (float)(localY * 2 - 1);
+        var projected = TransformPoint(x, y, constants.Transform0, constants.Transform1, constants.Transform2);
+        if (!float.IsFinite(projected.X) || !float.IsFinite(projected.Y) || !float.IsFinite(projected.Z) || Math.Abs(projected.Z) < 1e-6f) return false;
+        var centerX = constants.ScreenRect.X + constants.ScreenRect.Z * .5f;
+        var centerY = constants.ScreenRect.Y + constants.ScreenRect.W * .5f;
+        var pixelX = centerX + projected.X / Math.Abs(projected.Z) * MathF.Sign(projected.Z) * constants.ScreenRect.Z * .5f;
+        var pixelY = centerY + projected.Y / Math.Abs(projected.Z) * MathF.Sign(projected.Z) * constants.ScreenRect.W * .5f;
+        var angle = constants.Motion.X * (MathF.PI / 180);
+        var dx = pixelX - centerX; var dy = pixelY - centerY;
+        canvasPoint = new((centerX + MathF.Cos(angle) * dx - MathF.Sin(angle) * dy) / outputWidth,
+            (centerY + MathF.Sin(angle) * dx + MathF.Cos(angle) * dy) / outputHeight);
+        return canvasPoint.IsFinite;
     }
 
     /// <summary>Returns the projected screen quadrilateral in canvas-normalized TL, TR, BR, BL order.</summary>
@@ -273,8 +390,10 @@ public sealed class GpuFrameRenderer : IDisposable
         var position = scene.ScreenMotion?.Position ?? scene.Canvas?.ContentPosition ?? new NormalizedPoint(.5, .5);
         if (!position.IsFinite) position = new(.5, .5);
         var opening = scene.Opening ?? new FrameOpeningState();
-        var screenCenterX = Math.Clamp(position.X, 0, 1) * outputWidth + Math.Clamp(opening.OffsetX, -1, 1) * outputWidth;
-        var screenCenterY = Math.Clamp(position.Y, 0, 1) * outputHeight + Math.Clamp(opening.OffsetY, -1, 1) * outputHeight;
+        var offsetX = double.IsFinite(opening.OffsetX) ? Math.Clamp(opening.OffsetX, -2, 2) : 0;
+        var offsetY = double.IsFinite(opening.OffsetY) ? Math.Clamp(opening.OffsetY, -2, 2) : 0;
+        var screenCenterX = Math.Clamp(position.X, 0, 1) * outputWidth + offsetX * outputWidth;
+        var screenCenterY = Math.Clamp(position.Y, 0, 1) * outputHeight + offsetY * outputHeight;
         var motionScale = scene.ScreenMotion?.Scale ?? 1;
         var totalScale = Math.Clamp(contentScale * frameScale * (double.IsFinite(motionScale) ? motionScale : 1) * Math.Clamp(opening.Scale, .1, 4), .1, 8);
         var headerHeight = baseHeaderHeight * totalScale;
@@ -286,7 +405,9 @@ public sealed class GpuFrameRenderer : IDisposable
         var deviceOuterRadius = authoredOuterRadius.HasValue
             ? shortEdge * Math.Clamp(authoredOuterRadius.Value, 0, 160) / 1080d * totalScale
             : outerRadiusBase * totalScale;
-        var radius = deviceKind > 0 ? Math.Max(1, deviceOuterRadius - deviceBezel) : Math.Clamp(scene.CornerRadius, 0, .5) * shortEdge;
+        var openingScaleForEdges = scene.Opening is null ? 1 : Math.Clamp(double.IsFinite(opening.Scale) ? opening.Scale : 1, .1, 4);
+        var radius = deviceKind > 0 ? Math.Max(1, deviceOuterRadius - deviceBezel)
+            : Math.Clamp(scene.CornerRadius, 0, .5) * shortEdge * openingScaleForEdges;
         var chromeOuterRadius = frame switch
         {
             ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * totalScale * ((float)(authoredOuterRadius ?? 18) / 1080f),
@@ -311,7 +432,26 @@ public sealed class GpuFrameRenderer : IDisposable
             && p.Y >= crop.Y && p.Y <= crop.Y + cropSize.Y;
         var cursor = cursorVisible ? scene.Cursor!.Value : new NormalizedPoint(-1, -1);
         var cursorScale = shortEdge / 1080f * (float)Math.Clamp(scene.CursorAppearance?.Scale ?? 1, .1, 5);
-        var style = scene.CursorAppearance?.Style ?? CursorStyle.SystemArrow;
+        var cursorStyle = scene.CursorAppearance?.Style ?? CursorStyle.SystemArrow;
+        var cursorAsset = cursorStyle switch
+        {
+            CursorStyle.SystemHand => SystemCursorAssetLibrary.Resolve("system.hand"),
+            CursorStyle.SystemText => SystemCursorAssetLibrary.Resolve("system.ibeam"),
+            _ => SystemCursorAssetLibrary.Resolve(scene.CursorAsset)
+        };
+        var cursorReferenceHeight = Math.Max(SystemCursorAssetLibrary.Resolve("system.arrow").Height, 1);
+        var cursorAssetInfo = new Vector4(
+            cursorAsset.Width * 44f / cursorReferenceHeight,
+            cursorAsset.Height * 44f / cursorReferenceHeight,
+            cursorAsset.HotspotX * 44f / cursorReferenceHeight,
+            cursorAsset.HotspotY * 44f / cursorReferenceHeight);
+        var cursorRotation = scene.CursorAppearance?.MotionTiltEnabled == false || !double.IsFinite(scene.CursorRotationRadians)
+            ? 0 : Math.Clamp(scene.CursorRotationRadians, -Math.PI / 4, Math.PI / 4);
+        var clickProgress = scene.ClickProgress is { } progress && double.IsFinite(progress)
+            ? (float)Math.Clamp(progress, 0, 1) : -1;
+        var clickScale = (float)Math.Clamp(scene.CursorAppearance?.ClickScale ?? 1, .4, 3);
+        var clickOpacity = (float)Math.Clamp(scene.CursorAppearance?.ClickOpacity ?? .8, .05, 1);
+        var style = cursorStyle;
         var clickStyle = scene.CursorAppearance is { ClickEffectsEnabled: false } ? ClickEffectStyle.None : scene.CursorAppearance?.ClickEffect ?? ClickEffectStyle.Pulse;
         var gradient = scene.BackgroundStyle ?? new BackgroundSettings { Color = scene.Background, EndColor = scene.Background };
         var background = ParseColor(gradient.Color);
@@ -338,6 +478,7 @@ public sealed class GpuFrameRenderer : IDisposable
             ScreenRect = new((float)left, (float)top, (float)screenWidth, (float)screenHeight),
             Style = new((float)radius, (float)shadowRadius, (float)Math.Clamp(scene.Shadow, 0, 1), cursorVisible ? (float)Math.Clamp(scene.ClickStrength, 0, 1) : 0),
             Cursor = new((float)cursor.X, (float)cursor.Y, cursorVisible ? 1 : 0, cursorScale),
+            CursorDynamics = new((float)cursorRotation, clickProgress, clickScale, clickOpacity),
             Background = background,
             Style2 = new(angle, (float)style, (float)clickStyle, (float)chromeOuterRadius),
             BackgroundEnd = endBackground,
@@ -345,7 +486,7 @@ public sealed class GpuFrameRenderer : IDisposable
             PatternColor = ParseColor(gradient.PatternColor),
             BackgroundAnimation = new(gradient.Kind == BackgroundKind.Dynamic ? 1 : 0, (float)gradient.Preset,
                 (float)((double.IsFinite(scene.OutputTime) ? scene.OutputTime : 0) * Math.Clamp(gradient.Speed, 0, 10)), 0),
-            FrameStyle = new((float)headerHeight, (float)frame, frameLight ? 1 : 0, (float)Math.Clamp(scene.Canvas?.BorderWidth ?? 0, 0, 60) * outputHeight / Math.Max(scene.CanvasHeight, 1)),
+            FrameStyle = new((float)headerHeight, (float)frame, frameLight ? 1 : 0, (float)Math.Clamp(scene.Canvas?.BorderWidth ?? 0, 0, 60) * outputHeight / Math.Max(scene.CanvasHeight, 1) * (float)openingScaleForEdges),
             DeviceFrame = new((float)deviceBezel, (float)deviceOuterRadius, (float)(deviceBezel * .18), deviceKind),
             FrameColor = frameLight ? new(.92f, .93f, .95f, 1) : new(.12f, .13f, .15f, 1),
             Motion = new((float)((scene.ScreenMotion?.RotationZ ?? 0) + opening.Rotation), (float)Math.Clamp(opening.Opacity, 0, 1), 0, 0),
@@ -359,13 +500,28 @@ public sealed class GpuFrameRenderer : IDisposable
             BlurStyle0 = BlurStyle(scene, 0), BlurStyle1 = BlurStyle(scene, 1), BlurStyle2 = BlurStyle(scene, 2), BlurStyle3 = BlurStyle(scene, 3),
             LayerCount = new(layers.Length, 0, 0, 0)
         };
+        result.CursorAssetInfo = cursorAssetInfo;
+        result.BackdropTreatment = new((float)Math.Clamp(scene.OverlayBackdrop?.ScreenSuppression ?? 0, 0, 1), 0, 0, 0);
+        result.SpotlightControl = new(scene.BlurRegions?.Any(b => b.Kind == BlurKind.Spotlight && b.Opacity > .001 &&
+            (!b.SourceSpace || b.Rect.X < result.Crop.X + result.Crop.Z && b.Rect.X + b.Rect.Width > result.Crop.X
+                && b.Rect.Y < result.Crop.Y + result.Crop.W && b.Rect.Y + b.Rect.Height > result.Crop.Y)) == true ? 1 : 0,
+            (float)(scene.BlurRegions?.Where(b => b.Kind == BlurKind.Spotlight).Select(b => b.SpotlightDimming * b.Opacity).DefaultIfEmpty(0).Max() ?? 0), 0, 0);
+        var shadowReferenceScale = outputWidth / 1920f;
         for (var i = 0; i < layers.Length; i++)
         {
             var layer = layers[i]; var rect = layer.Rect;
             if (!rect.IsFinite || rect.Width <= 0 || rect.Height <= 0) throw new ArgumentException("场景图层矩形必须是有限的正尺寸区域。", nameof(layers));
+            var shadowAngle = (double.IsFinite(layer.Rotation) ? layer.Rotation : 0) * Math.PI / 180;
+            var layerShadowX = double.IsFinite(layer.ShadowOffsetX) ? Math.Clamp(layer.ShadowOffsetX, -4096, 4096) : 0;
+            var layerShadowY = double.IsFinite(layer.ShadowOffsetY) ? Math.Clamp(layer.ShadowOffsetY, -4096, 4096) : 0;
+            var rotatedOffsetX = layerShadowX * Math.Cos(shadowAngle) - layerShadowY * Math.Sin(shadowAngle);
+            var rotatedOffsetY = layerShadowX * Math.Sin(shadowAngle) + layerShadowY * Math.Cos(shadowAngle);
             SetLayer(ref result, i, new((float)rect.X, (float)rect.Y, (float)rect.Width, (float)rect.Height),
-                new((float)Math.Clamp(layer.Opacity, 0, 1), layer.Shape == CameraShape.Circle ? -1 : (float)Math.Clamp(layer.CornerRadius, 0, .5), (float)layer.Rotation, (layer.Mirrored ? 1 : 0) + (layer.FollowScreenTransform ? 2 : 0) + (float)Math.Clamp(layer.Blur, 0, 1) * .25f),
-                ValidCrop(layer.SourceCrop), new((float)Math.Clamp(layer.BorderWidth, 0, 60) * outputHeight / Math.Max(scene.CanvasHeight, 1), ParseColor(layer.BorderColor).X, ParseColor(layer.BorderColor).Y, ParseColor(layer.BorderColor).Z));
+                new((float)Math.Clamp(layer.Opacity * (layer.FollowScreenTransform ? 1 - result.BackdropTreatment.X : layer.Layer == int.MinValue + 1 ? 1 - Math.Clamp(scene.OverlayBackdrop?.CameraSuppression ?? 0, 0, 1) : 1), 0, 1), layer.Shape == CameraShape.Circle ? -1 : (float)Math.Clamp(layer.CornerRadius, 0, .5), (float)layer.Rotation, (layer.Mirrored ? 1 : 0) + (layer.FollowScreenTransform ? 2 : 0) + (float)Math.Clamp(layer.Blur, 0, 1) * .25f),
+                ValidCrop(layer.SourceCrop), new((float)Math.Clamp(layer.BorderWidth, 0, 60) * (layer.BorderOutside ? -outputWidth / 1920f : (float)outputHeight / Math.Max(scene.CanvasHeight, 1)), ParseColor(layer.BorderColor).X, ParseColor(layer.BorderColor).Y, ParseColor(layer.BorderColor).Z),
+                new((float)Math.Clamp(double.IsFinite(layer.ShadowOpacity) ? layer.ShadowOpacity : 0, 0, 1),
+                    (float)Math.Clamp(double.IsFinite(layer.ShadowRadius) ? layer.ShadowRadius : 0, 0, 160) * shadowReferenceScale,
+                    (float)rotatedOffsetX * shadowReferenceScale, (float)rotatedOffsetY * shadowReferenceScale));
         }
         if (underlay is { } backgroundLayer)
             result.UnderlayStyle = new((float)Math.Clamp(backgroundLayer.Opacity, 0, 1), 1, (float)backgroundLayer.Fit, (float)Math.Clamp(backgroundLayer.Blur, 0, 1) * 100);
@@ -391,14 +547,14 @@ public sealed class GpuFrameRenderer : IDisposable
         return (new(A*scale,B*scale,C*scale,0),new(D*scale,E*scale,F*scale,0),new(G*scale,H*scale,I*scale,0));
     }
 
-    private static void SetLayer(ref ShaderConstants c, int i, Vector4 rect, Vector4 style, Vector4 crop, Vector4 border)
+    private static void SetLayer(ref ShaderConstants c, int i, Vector4 rect, Vector4 style, Vector4 crop, Vector4 border, Vector4 shadow)
     {
         switch (i)
         {
-            case 0: c.LayerRect0=rect; c.LayerStyle0=style; c.LayerCrop0=crop; c.LayerBorder0=border; break; case 1: c.LayerRect1=rect; c.LayerStyle1=style; c.LayerCrop1=crop; c.LayerBorder1=border; break;
-            case 2: c.LayerRect2=rect; c.LayerStyle2=style; c.LayerCrop2=crop; c.LayerBorder2=border; break; case 3: c.LayerRect3=rect; c.LayerStyle3=style; c.LayerCrop3=crop; c.LayerBorder3=border; break;
-            case 4: c.LayerRect4=rect; c.LayerStyle4=style; c.LayerCrop4=crop; c.LayerBorder4=border; break; case 5: c.LayerRect5=rect; c.LayerStyle5=style; c.LayerCrop5=crop; c.LayerBorder5=border; break;
-            case 6: c.LayerRect6=rect; c.LayerStyle6=style; c.LayerCrop6=crop; c.LayerBorder6=border; break; case 7: c.LayerRect7=rect; c.LayerStyle7=style; c.LayerCrop7=crop; c.LayerBorder7=border; break;
+            case 0: c.LayerRect0=rect; c.LayerStyle0=style; c.LayerCrop0=crop; c.LayerBorder0=border; c.LayerShadow0=shadow; break; case 1: c.LayerRect1=rect; c.LayerStyle1=style; c.LayerCrop1=crop; c.LayerBorder1=border; c.LayerShadow1=shadow; break;
+            case 2: c.LayerRect2=rect; c.LayerStyle2=style; c.LayerCrop2=crop; c.LayerBorder2=border; c.LayerShadow2=shadow; break; case 3: c.LayerRect3=rect; c.LayerStyle3=style; c.LayerCrop3=crop; c.LayerBorder3=border; c.LayerShadow3=shadow; break;
+            case 4: c.LayerRect4=rect; c.LayerStyle4=style; c.LayerCrop4=crop; c.LayerBorder4=border; c.LayerShadow4=shadow; break; case 5: c.LayerRect5=rect; c.LayerStyle5=style; c.LayerCrop5=crop; c.LayerBorder5=border; c.LayerShadow5=shadow; break;
+            case 6: c.LayerRect6=rect; c.LayerStyle6=style; c.LayerCrop6=crop; c.LayerBorder6=border; c.LayerShadow6=shadow; break; case 7: c.LayerRect7=rect; c.LayerStyle7=style; c.LayerCrop7=crop; c.LayerBorder7=border; c.LayerShadow7=shadow; break;
         }
     }
 
@@ -434,7 +590,7 @@ public sealed class GpuFrameRenderer : IDisposable
         var list = scene.BlurRegions;
         if (list is null || index >= list.Count) return Vector4.Zero;
         var item = list[index];
-        return new((float)item.Strength, (float)item.Kind, (float)item.CornerRadius, (float)item.Opacity);
+        return new((float)(item.Kind == BlurKind.Spotlight ? item.SpotlightDimming : item.Strength), (float)item.Kind + (item.SourceSpace ? 4 : 0), (float)item.CornerRadius, (float)item.Opacity);
     }
 
     private static Texture2DDescription TextureDescription(int width, int height, Format format, BindFlags bind, ResourceUsage usage, CpuAccessFlags cpu) => new()
@@ -458,7 +614,10 @@ public sealed class GpuFrameRenderer : IDisposable
     {
         if (disposed) return; disposed = true;
         context?.ClearState(); context?.Flush();
+        foreach (var cursor in cursorSlots.Values) cursor.Dispose();
+        cursorSlots.Clear();
         foreach (var slot in layerSlots) slot?.Dispose();
+        foreach (var target in compositeTargets) target?.Dispose();
         constantsBuffer?.Dispose(); sampler?.Dispose(); pixelShader?.Dispose(); vertexShader?.Dispose();
         targetView?.Dispose(); sourceView?.Dispose(); stagingTexture?.Dispose(); targetTexture?.Dispose(); sourceTexture?.Dispose();
         context?.Dispose(); device?.Dispose();
@@ -472,6 +631,7 @@ public sealed class GpuFrameRenderer : IDisposable
         public Vector4 ScreenRect;
         public Vector4 Style;
         public Vector4 Cursor; // normalized source position, visible flag, 1080-short-edge size scale
+        public Vector4 CursorDynamics; // hotspot rotation radians, click progress (-1 uses legacy strength), click scale, click opacity
         public Vector4 Background;
         public Vector4 Style2; // gradient angle, cursor style, click effect style, reserved
         public Vector4 BackgroundEnd;
@@ -496,12 +656,24 @@ public sealed class GpuFrameRenderer : IDisposable
         public Vector4 BackgroundAnimation;
         public Vector4 LayerCrop0, LayerCrop1, LayerCrop2, LayerCrop3, LayerCrop4, LayerCrop5, LayerCrop6, LayerCrop7;
         public Vector4 LayerBorder0, LayerBorder1, LayerBorder2, LayerBorder3, LayerBorder4, LayerBorder5, LayerBorder6, LayerBorder7;
+        public Vector4 CursorAssetInfo; // width/height and hotspot in 44px arrow-height units
+        public Vector4 LayerShadow0, LayerShadow1, LayerShadow2, LayerShadow3, LayerShadow4, LayerShadow5, LayerShadow6, LayerShadow7;
+        public Vector4 BackdropTreatment, BackdropPass;
+        public Vector4 SpotlightControl;
     }
 
     private sealed record LayerSlot(int Width, int Height, ID3D11Texture2D Texture, ID3D11ShaderResourceView View) : IDisposable
     { public void Dispose() { View.Dispose(); Texture.Dispose(); } }
 
+    private sealed record CompositeTarget(ID3D11Texture2D Texture, ID3D11RenderTargetView Target, ID3D11ShaderResourceView View) : IDisposable
+    { public void Dispose() { View.Dispose(); Target.Dispose(); Texture.Dispose(); } }
+
+    private sealed record CursorSlot(SystemCursorRaster Raster, ID3D11Texture2D Texture, ID3D11ShaderResourceView View) : IDisposable
+    { public void Dispose() { View.Dispose(); Texture.Dispose(); } }
+
     private static readonly string ShaderSource = ReadShaderSource();
+    private static readonly Lazy<byte[]> VertexBytecode = new(() => Compiler.Compile(ShaderSource, "VSMain", "FrameTrail.Scene.hlsl", "vs_5_0").ToArray());
+    private static readonly Lazy<byte[]> PixelBytecode = new(() => Compiler.Compile(ShaderSource, "PSMain", "FrameTrail.Scene.hlsl", "ps_5_0").ToArray());
     private static string ReadShaderSource()
     {
         using var stream = typeof(GpuFrameRenderer).Assembly.GetManifestResourceStream("FrameTrail.Media.Scene.hlsl")

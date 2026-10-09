@@ -60,6 +60,11 @@ try
     PrepareFeatureFixture(projectCopyFile);
     if (args.Contains("--effects-only") || args.Contains("--full-uncut-effects"))
         PrepareUncutEffectTimeline(projectCopyFile);
+    if (args.Contains("--motion-curves-only"))
+    {
+        PrepareUncutEffectTimeline(projectCopyFile);
+        PrepareMotionCurveFixture(projectCopyFile);
+    }
 
     app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } })
         ?? throw new InvalidOperationException("无法启动 FrameTrail。");
@@ -84,6 +89,91 @@ try
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
+    if (args.Contains("--motion-curves-only"))
+    {
+        RunMotionCurveUiTests(window, app, projectCopyFile, results);
+        app.CloseMainWindow();
+        if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+        app.Dispose(); app = null;
+        using var reopened = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } });
+        var curveReopenedWindow = reopened is null ? null : WaitForWindow(reopened, TimeSpan.FromSeconds(20));
+        var curveReopenedTitle = curveReopenedWindow is null ? null : WaitForProjectTitle(curveReopenedWindow, TimeSpan.FromSeconds(10));
+        var persisted = curveReopenedWindow is not null && curveReopenedTitle is not null
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "zoomClips", 0, "customCurve", "x1") - .42) < .015
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "screenMotions", 0, "customCurve", "y2") - .63) < .015
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "cameraMotions", ReadArrayCount(projectCopyFile, "cameraMotions") - 1, "customCurve", "x2") - .58) < .015
+            && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "spring", "mass") - 2.7) < .015
+            && ReadJsonArrayString(projectCopyFile, "zoomClips", 0, "easing") == "spring"
+            && ReadJsonArrayString(projectCopyFile, "screenMotions", 0, "easing") == "custom"
+            && ReadJsonArrayString(projectCopyFile, "cameraMotions", ReadArrayCount(projectCopyFile, "cameraMotions") - 1, "easing") == "custom"
+            && ReadJsonString(projectCopyFile, "settings", "opening", "preset") == "light3D"
+            && ReadJsonString(projectCopyFile, "settings", "opening", "elementCurve") == "gentle"
+            && ReadJsonString(projectCopyFile, "settings", "cursor", "clickEffect") == "ripple"
+            && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "cursor", "clickDuration") - .84) < .015
+            && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "cursor", "clickScale") - 1.7) < .015
+            && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "cursor", "clickOpacity") - .68) < .015
+            && ReadJsonBoolean(projectCopyFile, "settings", "cursor", "motionTiltEnabled") == true
+            && ReadTimelineSegmentRate(projectCopyFile, 0) == .5
+            && ReadJsonString(projectCopyFile, "settings", "cursor", "style") == "followRecorded";
+        AddResult(new("曲线与开场/光标参数保存后重开", persisted,
+            $"重开窗口={curveReopenedWindow is not null}，缩放X1={ReadJsonArrayNumber(projectCopyFile, "zoomClips", 0, "customCurve", "x1"):0.###}，屏幕3D Y2={ReadJsonArrayNumber(projectCopyFile, "screenMotions", 0, "customCurve", "y2"):0.###}，摄像运动X2={ReadJsonArrayNumber(projectCopyFile, "cameraMotions", ReadArrayCount(projectCopyFile, "cameraMotions") - 1, "customCurve", "x2"):0.###}，弹簧质量={ReadJsonNumber(projectCopyFile, "settings", "spring", "mass"):0.###}，慢放={ReadTimelineSegmentRate(projectCopyFile, 0):0.##}×，光标={ReadJsonString(projectCopyFile, "settings", "cursor", "style")}，开场={ReadJsonString(projectCopyFile, "settings", "opening", "preset")}/{ReadJsonString(projectCopyFile, "settings", "opening", "elementCurve")}，点击效果={ReadJsonString(projectCopyFile, "settings", "cursor", "clickEffect")}。"));
+        if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
+    if (args.Contains("--advanced-styles-only"))
+    {
+        RunAdvancedStyleUiTests(window, app.Id, projectCopyFile, results);
+        app.CloseMainWindow();
+        if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+        app.Dispose(); app = null;
+        using var reopened = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } });
+        var advancedReopenedWindow = reopened is null ? null : WaitForWindow(reopened, TimeSpan.FromSeconds(20));
+        var advancedReopenedTitle = advancedReopenedWindow is null ? null : WaitForProjectTitle(advancedReopenedWindow, TimeSpan.FromSeconds(10));
+        var focusSaved = ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "shape") == "linear"
+            && ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "target") == "fixed"
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "angleDegrees") - 27) < .2;
+        var cameraIndex = ReadArrayCount(projectCopyFile, "cameraMotions") - 1;
+        var cameraMotionSaved = ReadJsonArrayString(projectCopyFile, "cameraMotions", cameraIndex, "targetLayout") == "horizontal"
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetRoundness") - .63) < .015
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetOpacity") - .47) < .015;
+        var cameraStyleSaved = Math.Abs(ReadJsonNumber(projectCopyFile, "camera", "scaleDuringZoom") - 1.4) < .025
+            && Math.Abs(ReadJsonNumber(projectCopyFile, "camera", "shadowStrength") - .56) < .015;
+        var overlaySaved = ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "borderWidth") >= 4.9
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowOpacity") - .42) < .015
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowRadius") - 31) < .2
+            && ReadJsonArrayString(projectCopyFile, "overlays", 0, "animationCurve") == "gentle"
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "backdropBlur") - 37) < .2
+            && ReadJsonArrayBoolean(projectCopyFile, "overlays", 0, "backdropBlurIncludesCamera")
+            && ReadJsonArrayBoolean(projectCopyFile, "overlays", 0, "hidesScreen")
+            && ReadJsonArrayBoolean(projectCopyFile, "overlays", 0, "hidesCamera");
+        var reopenedSaved = advancedReopenedWindow is not null && advancedReopenedTitle is not null && focusSaved && cameraMotionSaved && cameraStyleSaved && overlaySaved;
+        AddResult(new("ZoomFocus、摄像头目标与贴图样式保存后重开", reopenedSaved,
+            $"窗口={advancedReopenedWindow is not null}，Focus={ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "shape")}/{ReadJsonArrayString(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "target")}/角度{ReadJsonArrayNumber(projectCopyFile, "zoomClips", ReadArrayCount(projectCopyFile, "zoomClips") - 1, "focusEffect", "angleDegrees"):0.##}，摄像头={ReadJsonArrayString(projectCopyFile, "cameraMotions", cameraIndex, "targetLayout")}/圆角{ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetRoundness"):0.##}/透明度{ReadJsonArrayNumber(projectCopyFile, "cameraMotions", cameraIndex, "targetOpacity"):0.##}，贴图描边{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "borderWidth"):0.##}/阴影{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowOpacity"):0.##},{ReadJsonArrayNumber(projectCopyFile, "overlays", 0, "shadowRadius"):0.##}/曲线{ReadJsonArrayString(projectCopyFile, "overlays", 0, "animationCurve")}。"));
+        if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
+    if (args.Contains("--spotlight-audio-only"))
+    {
+        RunSpotlightAndSegmentAudioUiTests(window, app.Id, projectCopyFile, results);
+        app.CloseMainWindow();
+        if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+        app.Dispose(); app = null;
+        using var reopened = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } });
+        var spotlightReopenedWindow = reopened is null ? null : WaitForWindow(reopened, TimeSpan.FromSeconds(20));
+        var spotlightReopenedTitle = spotlightReopenedWindow is null ? null : WaitForProjectTitle(spotlightReopenedWindow, TimeSpan.FromSeconds(10));
+        var segmentVolume = ReadTimelineSegmentSystemVolume(projectCopyFile, 0);
+        var persisted = spotlightReopenedWindow is not null && spotlightReopenedTitle is not null
+            && ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "kind") == "spotlight"
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "spotlightDimming") - .37) < .015
+            && ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "transitionStyle") == "smooth"
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "enterDuration") - .4) < .015
+            && Math.Abs(ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "exitDuration") - .25) < .015
+            && Math.Abs(segmentVolume - .32) < .015;
+        AddResult(new("聚光与屏幕片段音量覆盖保存后重开", persisted,
+            $"窗口={spotlightReopenedWindow is not null}，聚光={ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "kind")}，区域外压暗={ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "spotlightDimming"):0.##}，转场={ReadJsonArrayString(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "transitionStyle")}，进/出={ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "enterDuration"):0.##}/{ReadJsonArrayNumber(projectCopyFile, "blurClips", ReadArrayCount(projectCopyFile, "blurClips") - 1, "exitDuration"):0.##}，第 1 屏幕片段系统声音={segmentVolume:0.##}。"));
+        if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
         return results.All(x => x.Passed) ? 0 : 1;
     }
     if (args.Contains("--memo-only"))
@@ -210,8 +300,12 @@ try
         && (openingWasEnabled || TryClickPhysical(openingEnabled, preferAutomationInvoke: false));
     var openingToggleChanged = openingToggleClicked
         && WaitForJsonBoolean(projectCopyFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5));
-    var zoomOpeningCard = openingToggleChanged ? FindButtonByHint(window, "放大入场") : null;
-    var openingPresetSelected = zoomOpeningCard is not null && TryClickPhysical(zoomOpeningCard);
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var openingCustomDisclosure = openingToggleChanged ? FindNamed(window, "自定开场与起始姿态") : null;
+    var openingCustomExpanded = openingCustomDisclosure is not null && TryExpand(openingCustomDisclosure);
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var zoomOpeningCard = openingCustomExpanded ? FindButtonByHint(window, "放大入场") : null;
+    var openingPresetSelected = openingCustomExpanded && zoomOpeningCard is not null && TryClickPhysical(zoomOpeningCard);
     var openingSaved = openingPresetSelected && openingToggleChanged && WaitForJsonBoolean(projectCopyFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5)) && WaitForJsonString(projectCopyFile, ["settings", "opening", "preset"], "zoomUp", TimeSpan.FromSeconds(5));
     AddResult(new("开场面板可编辑并保存动画", openingSaved, openingSaved ? "启用全局开场后选择放大入场卡片并写入项目副本。" : $"面板={openingOpened}，下拉数={openingCombos.Length}，预设={openingPresetSelected}，开关={openingToggleChanged}，enabled={ReadJsonBoolean(projectCopyFile, "settings", "opening", "enabled")}, preset={ReadJsonString(projectCopyFile, "settings", "opening", "preset")}，控件=[{DescribeInspector(window)}]"));
 
@@ -507,11 +601,15 @@ static void RunNewPanelUiTests(AutomationElement window, Process app, string app
     var toggleClicked = enabled is not null && (projectAlreadyEnabled || TryClickPhysical(enabled, preferAutomationInvoke: false));
     var toggleSet = toggleClicked
         && WaitForJsonBoolean(projectFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5));
-    var openingCard = toggleSet ? FindButtonByHint(window, "放大入场") : null;
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var customDisclosure = toggleSet ? FindNamed(window, "自定开场与起始姿态") : null;
+    var customExpanded = customDisclosure is not null && TryExpand(customDisclosure);
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var openingCard = customExpanded ? FindButtonByHint(window, "放大入场") : null;
     var openingSet = openingCard is not null && TryClickPhysical(openingCard)
         && WaitForJsonString(projectFile, ["settings", "opening", "preset"], "zoomUp", TimeSpan.FromSeconds(5));
-    AddStep(results, new("开场启用与预设卡片提交", openingOpened && toggleSet && openingSet,
-        $"面板={openingOpened}，复选框={enabled is not null}，原值={isEnabled}，点击/已启用={toggleSet}，预设={openingSet}，JSON={ReadJsonBoolean(projectFile, "settings", "opening", "enabled")}/{ReadJsonString(projectFile, "settings", "opening", "preset")}"));
+    AddStep(results, new("开场启用与折叠自定预设提交", openingOpened && toggleSet && customExpanded && openingSet,
+        $"面板={openingOpened}，复选框={enabled is not null}，原值={isEnabled}，启用={toggleSet}，自定折叠展开={customExpanded}，预设={openingSet}，JSON={ReadJsonBoolean(projectFile, "settings", "opening", "enabled")}/{ReadJsonString(projectFile, "settings", "opening", "preset")}"));
 
     app.CloseMainWindow();
     if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
@@ -529,6 +627,404 @@ static void RunNewPanelUiTests(AutomationElement window, Process app, string app
     AddStep(results, new("新面板设置保存并重开", persisted,
         $"窗口={reopenedWindow is not null}，标题={reopenedTitle?.Current.Name}，样机/指针/开场值已按 JSON 复核。"));
     if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
+}
+
+static void RunAdvancedStyleUiTests(AutomationElement window, int processId, string projectFile, List<StepResult> results)
+{
+    var priorDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try
+    {
+        var handle = (IntPtr)window.Current.NativeWindowHandle;
+        if (handle != IntPtr.Zero)
+        {
+            try { if (window.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern) windowPattern.SetWindowVisualState(WindowVisualState.Normal); } catch { }
+            ActivateOwnedWindow(handle);
+        }
+    }
+    finally { if (priorDpiContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(priorDpiContext); }
+    Thread.Sleep(300);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+
+    // 聚焦虚化：从真实界面新建缩放片段，启用并改形状、目标与数值。
+    var zoomRail = FindRailButton(window, "运镜");
+    var zoomOpened = zoomRail is not null && TryClickPhysical(zoomRail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var addZoom = zoomOpened ? FindButtonByHint(window, "添加手动缩放") : null;
+    var oldZoomCount = ReadArrayCount(projectFile, "zoomClips");
+    var zoomAdded = addZoom is not null && TryInvoke(addZoom)
+        && WaitForArrayCount(projectFile, "zoomClips", oldZoomCount + 1, TimeSpan.FromSeconds(5));
+    var zoomIndex = ReadArrayCount(projectFile, "zoomClips") - 1;
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusToggle = zoomAdded ? FindCheckboxContaining(window, "启用聚焦") : null;
+    var focusEnabled = focusToggle is not null && TrySetToggleOn(focusToggle)
+        && WaitForArrayObject(projectFile, "zoomClips", zoomIndex, "focusEffect", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusShape = focusEnabled ? WaitForComboByName(window, "形状", TimeSpan.FromSeconds(3)) : null;
+    var focusLinear = focusShape is not null && SelectComboOption(focusShape, "线性", processId, 1)
+        && WaitForJsonArrayStringPath(projectFile, "zoomClips", zoomIndex, ["focusEffect", "shape"], "linear", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusTarget = focusLinear ? WaitForComboByName(window, "目标", TimeSpan.FromSeconds(3)) : null;
+    var targetFixed = focusTarget is not null && SelectComboOption(focusTarget, "固定", processId, 2)
+        && WaitForJsonArrayStringPath(projectFile, "zoomClips", zoomIndex, ["focusEffect", "target"], "fixed", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusSize = targetFixed ? WaitForControlName(window, ControlType.Slider, "范围", TimeSpan.FromSeconds(3)) : null;
+    var sizeSet = focusSize is not null && SetRangeValue(focusSize, .62)
+        && WaitForJsonArrayNumber(projectFile, "zoomClips", zoomIndex, ["focusEffect", "size"], .62, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusBlur = sizeSet ? WaitForControlName(window, ControlType.Slider, "虚化", TimeSpan.FromSeconds(3)) : null;
+    var blurSet = focusBlur is not null && SetRangeValue(focusBlur, .41)
+        && WaitForJsonArrayNumber(projectFile, "zoomClips", zoomIndex, ["focusEffect", "blur"], .41, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var focusAngle = blurSet ? WaitForControlName(window, ControlType.Slider, "焦面角度", TimeSpan.FromSeconds(3)) : null;
+    var angleSet = focusAngle is not null && SetRangeValue(focusAngle, 27)
+        && WaitForJsonArrayNumber(projectFile, "zoomClips", zoomIndex, ["focusEffect", "angleDegrees"], 27, TimeSpan.FromSeconds(5));
+    AddStep(results, new("ZoomFocus 线性固定目标与参数写入项目", zoomOpened && zoomAdded && focusEnabled && focusLinear && targetFixed && sizeSet && blurSet && angleSet,
+        $"运镜页={zoomOpened}，新增缩放={zoomAdded}，聚焦={focusEnabled}，线性={focusLinear}，固定目标={targetFixed}，范围/虚化/角度={sizeSet}/{blurSet}/{angleSet}；Focus={ReadJsonArrayString(projectFile, "zoomClips", zoomIndex, "focusEffect", "shape")}/{ReadJsonArrayString(projectFile, "zoomClips", zoomIndex, "focusEffect", "target")}/{ReadJsonArrayNumber(projectFile, "zoomClips", zoomIndex, "focusEffect", "size"):0.##}/{ReadJsonArrayNumber(projectFile, "zoomClips", zoomIndex, "focusEffect", "blur"):0.##}/{ReadJsonArrayNumber(projectFile, "zoomClips", zoomIndex, "focusEffect", "angleDegrees"):0.##}。"));
+
+    // 摄像头动画：选择横向目标形状并实际修改目标圆角和透明度。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var cameraRail = FindRailButton(window, "摄像头");
+    var cameraOpened = cameraRail is not null && TryClickPhysical(cameraRail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var cameraScale = cameraOpened ? WaitForControlName(window, ControlType.Slider, "缩放联动", TimeSpan.FromSeconds(3)) : null;
+    var cameraScaleSet = cameraScale is not null && SetRangeValue(cameraScale, 1.4)
+        && WaitForJsonNumber(projectFile, ["camera", "scaleDuringZoom"], 1.4, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var cameraShadow = cameraScaleSet ? WaitForControlName(window, ControlType.Slider, "阴影", TimeSpan.FromSeconds(3)) : null;
+    var cameraShadowSet = cameraShadow is not null && SetRangeValue(cameraShadow, 56)
+        && WaitForJsonNumber(projectFile, ["camera", "shadowStrength"], .56, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var addCamera = cameraOpened ? FindButtonByHint(window, "添加摄像头运动") : null;
+    var oldCameraCount = ReadArrayCount(projectFile, "cameraMotions");
+    var cameraAdded = addCamera is not null && TryInvoke(addCamera)
+        && WaitForArrayCount(projectFile, "cameraMotions", oldCameraCount + 1, TimeSpan.FromSeconds(5));
+    var cameraIndex = ReadArrayCount(projectFile, "cameraMotions") - 1;
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var horizontal = cameraAdded ? FindButtonByHint(window, "横向") : null;
+    var horizontalSet = horizontal is not null && TryInvoke(horizontal)
+        && WaitForJsonArrayString(projectFile, "cameraMotions", cameraIndex, "targetLayout", "horizontal", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var roundness = horizontalSet ? WaitForControlName(window, ControlType.Slider, "目标圆角", TimeSpan.FromSeconds(3)) : null;
+    var roundnessSet = roundness is not null && SetRangeValue(roundness, 63)
+        && WaitForJsonArrayNumber(projectFile, "cameraMotions", cameraIndex, ["targetRoundness"], .63, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var opacity = roundnessSet ? WaitForControlName(window, ControlType.Slider, "目标不透明度", TimeSpan.FromSeconds(3)) : null;
+    var opacitySet = opacity is not null && SetRangeValue(opacity, 47)
+        && WaitForJsonArrayNumber(projectFile, "cameraMotions", cameraIndex, ["targetOpacity"], .47, TimeSpan.FromSeconds(5));
+    AddStep(results, new("摄像头动画、缩放联动与阴影写入项目", cameraOpened && cameraAdded && horizontalSet && roundnessSet && opacitySet && cameraScaleSet && cameraShadowSet,
+        $"摄像头页={cameraOpened}，新增动画={cameraAdded}，横向/圆角/透明度={horizontalSet}/{roundnessSet}/{opacitySet}，联动缩放/阴影={cameraScaleSet}/{cameraShadowSet}；数值={ReadJsonNumber(projectFile, "camera", "scaleDuringZoom"):0.##}/{ReadJsonNumber(projectFile, "camera", "shadowStrength"):0.##}。"));
+
+    // 贴图样式：按时间线点击首个既有贴图，并验证边框、阴影及曲线。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var timeline = FindById(window, "TimelineView");
+    var overlayIndex = 0;
+    var overlaySelected = false;
+    var overlayHitDiagnostic = timeline is null ? "未找到 TimelineView。" : "点击尚未执行。";
+    if (timeline is not null)
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(projectFile));
+        overlaySelected = ClickEffectClip(timeline, window, doc.RootElement, laneIndex: 4, sourceTime: .9, out overlayHitDiagnostic);
+    }
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var border = overlaySelected ? WaitForControlName(window, ControlType.Slider, "贴图描边", TimeSpan.FromSeconds(3)) : null;
+    var borderSet = border is not null && SetRangeValue(border, 5)
+        && WaitForJsonArrayNumber(projectFile, "overlays", overlayIndex, ["borderWidth"], 5, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var shadowOpacity = borderSet ? WaitForControlName(window, ControlType.Slider, "阴影不透明度", TimeSpan.FromSeconds(3)) : null;
+    var shadowSet = shadowOpacity is not null && SetRangeValue(shadowOpacity, 42)
+        && WaitForJsonArrayNumber(projectFile, "overlays", overlayIndex, ["shadowOpacity"], .42, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var shadowRadius = shadowSet ? WaitForControlName(window, ControlType.Slider, "阴影柔和度", TimeSpan.FromSeconds(3)) : null;
+    var radiusSet = shadowRadius is not null && SetRangeValue(shadowRadius, 31)
+        && WaitForJsonArrayNumber(projectFile, "overlays", overlayIndex, ["shadowRadius"], 31, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var curve = radiusSet ? WaitForComboByName(window, "动画节奏", TimeSpan.FromSeconds(3)) : null;
+    var curveSet = curve is not null && SelectComboOption(curve, "柔和", processId, 3)
+        && WaitForJsonArrayString(projectFile, "overlays", overlayIndex, "animationCurve", "gentle", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var backdropBlur = curveSet ? WaitForControlName(window, ControlType.Slider, "背景柔化", TimeSpan.FromSeconds(3)) : null;
+    var backdropSet = backdropBlur is not null && SetRangeValue(backdropBlur, 37)
+        && WaitForJsonArrayNumber(projectFile, "overlays", overlayIndex, ["backdropBlur"], 37, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var includesCamera = backdropSet ? FindCheckboxContaining(window, "同时柔化摄像头") : null;
+    var includesCameraSet = includesCamera is not null && TrySetToggleOn(includesCamera)
+        && WaitForJsonArrayBoolean(projectFile, "overlays", overlayIndex, "backdropBlurIncludesCamera", true, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var hidesScreen = includesCameraSet ? FindCheckboxContaining(window, "贴图显示时隐藏屏幕") : null;
+    var hidesScreenSet = hidesScreen is not null && TrySetToggleOn(hidesScreen)
+        && WaitForJsonArrayBoolean(projectFile, "overlays", overlayIndex, "hidesScreen", true, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(4)) ?? window;
+    var hidesCamera = hidesScreenSet ? FindCheckboxContaining(window, "贴图显示时隐藏摄像头") : null;
+    var hidesCameraSet = hidesCamera is not null && TrySetToggleOn(hidesCamera)
+        && WaitForJsonArrayBoolean(projectFile, "overlays", overlayIndex, "hidesCamera", true, TimeSpan.FromSeconds(5));
+    AddStep(results, new("贴图边框、阴影、背景柔化与覆盖开关写入项目", overlaySelected && borderSet && shadowSet && radiusSet && curveSet && backdropSet && includesCameraSet && hidesScreenSet && hidesCameraSet,
+        $"选中贴图={overlaySelected}，命中={overlayHitDiagnostic}，边框/阴影/圆角/曲线/柔化={borderSet}/{shadowSet}/{radiusSet}/{curveSet}/{backdropSet}，开关={includesCameraSet}/{hidesScreenSet}/{hidesCameraSet}。"));
+}
+
+static void RunSpotlightAndSegmentAudioUiTests(AutomationElement window, int processId, string projectFile, List<StepResult> results)
+{
+    var addButton = FindButtonByHint(window, "添加元素");
+    var menuOpened = addButton is not null && TryInvoke(addButton);
+    var addBlurItem = menuOpened ? WaitForName("添加模糊遮罩", processId, TimeSpan.FromSeconds(4)) : null;
+    var oldCount = ReadArrayCount(projectFile, "blurClips");
+    var blurAdded = addBlurItem is not null && TryInvoke(addBlurItem)
+        && WaitForArrayCount(projectFile, "blurClips", oldCount + 1, TimeSpan.FromSeconds(6));
+    var blurIndex = ReadArrayCount(projectFile, "blurClips") - 1;
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var method = blurAdded ? WaitForComboByName(window, "处理方式", TimeSpan.FromSeconds(4)) : null;
+    var spotlightSet = method is not null && SelectComboOption(method, "聚光", processId, 2)
+        && WaitForJsonArrayString(projectFile, "blurClips", blurIndex, "kind", "spotlight", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var dimming = spotlightSet ? WaitForControlName(window, ControlType.Slider, "区域外压暗", TimeSpan.FromSeconds(4)) : null;
+    var dimmingSet = dimming is not null && SetRangeValue(dimming, .37)
+        && WaitForJsonArrayNumber(projectFile, "blurClips", blurIndex, ["spotlightDimming"], .37, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var transition = dimmingSet ? WaitForComboByName(window, "转场", TimeSpan.FromSeconds(4)) : null;
+    var transitionSet = transition is not null && SelectComboOption(transition, "顺滑", processId, 3)
+        && WaitForJsonArrayString(projectFile, "blurClips", blurIndex, "transitionStyle", "smooth", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var enter = transitionSet ? WaitForControlName(window, ControlType.Slider, "进入", TimeSpan.FromSeconds(4)) : null;
+    var enterSet = enter is not null && SetRangeValue(enter, .4)
+        && WaitForJsonArrayNumber(projectFile, "blurClips", blurIndex, ["enterDuration"], .4, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var exit = enterSet ? WaitForControlName(window, ControlType.Slider, "退出", TimeSpan.FromSeconds(4)) : null;
+    var exitSet = exit is not null && SetRangeValue(exit, .25)
+        && WaitForJsonArrayNumber(projectFile, "blurClips", blurIndex, ["exitDuration"], .25, TimeSpan.FromSeconds(5));
+    AddStep(results, new("聚光遮罩压暗与转场写入项目", menuOpened && blurAdded && spotlightSet && dimmingSet && transitionSet && enterSet && exitSet,
+        $"菜单={menuOpened}，新增遮罩={blurAdded}，聚光={spotlightSet}，区域外压暗={dimmingSet}，顺滑转场={transitionSet}，进/出时长={enterSet}/{exitSet}；JSON={ReadJsonArrayString(projectFile, "blurClips", blurIndex, "kind")}/{ReadJsonArrayNumber(projectFile, "blurClips", blurIndex, "spotlightDimming"):0.##}/{ReadJsonArrayString(projectFile, "blurClips", blurIndex, "transitionStyle")}/{ReadJsonArrayNumber(projectFile, "blurClips", blurIndex, "enterDuration"):0.##}/{ReadJsonArrayNumber(projectFile, "blurClips", blurIndex, "exitDuration"):0.##}。"));
+
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(5)) ?? window;
+    var timeline = FindById(window, "TimelineView");
+    var segmentClicked = false;
+    var clickDiagnostic = "未找到 TimelineView。";
+    if (timeline is not null)
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(projectFile));
+        var first = doc.RootElement.GetProperty("timeline").GetProperty("segments")[0];
+        var sourceTime = first.GetProperty("sourceStart").GetDouble() + Math.Min(.2, first.GetProperty("sourceDuration").GetDouble() * .35);
+        segmentClicked = ClickPrimarySegment(timeline, window, doc.RootElement, sourceTime, out clickDiagnostic);
+    }
+    var audioTitle = segmentClicked ? WaitForInspectorTitle(window, "声音", TimeSpan.FromSeconds(4)) == "声音" : false;
+    var segmentSection = audioTitle && FindNamed(window, "所选片段音量") is not null;
+    var systemVolume = segmentSection ? WaitForControlName(window, ControlType.Slider, "系统声音", TimeSpan.FromSeconds(4)) : null;
+    var volumeSet = systemVolume is not null && SetRangeValue(systemVolume, 32)
+        && WaitForTimelineSegmentSystemVolume(projectFile, 0, .32, TimeSpan.FromSeconds(6));
+    AddStep(results, new("点选屏幕片段并单独调整系统声音", segmentClicked && audioTitle && segmentSection && volumeSet,
+        $"点击={segmentClicked}，命中={clickDiagnostic}，声音 Inspector={audioTitle}，片段音量分组={segmentSection}，系统声音滑块={systemVolume is not null}，写入={volumeSet}；片段覆写={ReadTimelineSegmentSystemVolume(projectFile, 0):0.##}。"));
+}
+
+static bool ClickPrimarySegment(AutomationElement timeline, AutomationElement mainWindow, JsonElement project, double sourceTime, out string diagnostic)
+{
+    diagnostic = "";
+    var outputTime = double.NaN;
+    var outputStart = 0d;
+    foreach (var segment in project.GetProperty("timeline").GetProperty("segments").EnumerateArray())
+    {
+        var start = segment.GetProperty("sourceStart").GetDouble();
+        var duration = segment.GetProperty("sourceDuration").GetDouble();
+        var rate = segment.GetProperty("playbackRate").GetDouble();
+        if (sourceTime >= start && sourceTime < start + duration) { outputTime = outputStart + (sourceTime - start) / rate; break; }
+        outputStart += duration / rate;
+    }
+    if (!double.IsFinite(outputTime)) { diagnostic = $"源时间 {sourceTime:0.###} 秒不在时间线上。"; return false; }
+    var handle = (IntPtr)mainWindow.Current.NativeWindowHandle;
+    var dpi = NativeMethods.GetDpiForWindow(handle) / 96d; if (dpi < .5 || dpi > 4) dpi = 1;
+    if (!PrepareTimelinePoint(timeline, project, 85, dpi, out var viewport, out var scrollOffset, out var scrollDescription, out _))
+    { diagnostic = "无法将屏幕录制轨道滚入可见视口：" + scrollDescription; return false; }
+    var bounds = timeline.Current.BoundingRectangle;
+    var scale = (bounds.Width - 152 * dpi) / project.GetProperty("timeline").GetProperty("duration").GetDouble();
+    var x = (int)(bounds.Left + 152 * dpi + outputTime * scale);
+    var y = (int)(viewport.Top + (85 - scrollOffset) * dpi);
+    var priorContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try
+    {
+        try
+        {
+            if (mainWindow.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern)
+                windowPattern.SetWindowVisualState(WindowVisualState.Normal);
+        }
+        catch { }
+        var activation = ActivateOwnedWindow(handle);
+        try { mainWindow.SetFocus(); } catch { }
+        NativeMethods.SetForegroundWindow(handle);
+        NativeMethods.SetCursorPos(x, y);
+        Thread.Sleep(150);
+        NativeMethods.GetCursorPos(out var cursor);
+        var point = NativeMethods.WindowFromPoint(cursor);
+        var root = NativeMethods.GetAncestor(point, 2);
+        NativeMethods.GetWindowThreadProcessId(root, out var rootPid);
+        var processId = (int)mainWindow.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (root != handle)
+        {
+            diagnostic = $"点击被拦截：指针位于其他窗口。xy={x},{y},point={point.ToInt64():X},root={root.ToInt64():X}/pid{rootPid},app={handle.ToInt64():X}/pid{processId},activation={activation},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
+            return false;
+        }
+        NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(65);
+        NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(250);
+        diagnostic = $"输出时间={outputTime:0.###} 秒，坐标={x},{y}，DPI={dpi:0.##}，窗口={handle.ToInt64():X}，前台={root.ToInt64():X}，视口={viewport}，滚动={scrollDescription}。";
+        return true;
+    }
+    finally { if (priorContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(priorContext); }
+}
+
+static void RunMotionCurveUiTests(AutomationElement window, Process app, string projectFile, List<StepResult> results)
+{
+    var processId = app.Id;
+
+    // 缩放：在真实曲线选项中选“自定义”，改控制点，再切换弹簧并改全项目弹簧质量。
+    var rail = FindRailButton(window, "运镜");
+    var opened = rail is not null && TryClickPhysical(rail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var zoomTab = FindButtonByHint(window, "缩放");
+    var zoomSelected = zoomTab is not null && TryClickPhysical(zoomTab);
+    var zoomCurve = zoomSelected ? WaitForComboByName(window, "曲线", TimeSpan.FromSeconds(3)) : null;
+    var zoomCustom = zoomCurve is not null && SelectComboOption(zoomCurve, "自定义", processId, 5);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var zoomDisclosure = zoomCustom ? FindNamed(window, "曲线控制点") : null;
+    var zoomExpanded = zoomDisclosure is not null && TryExpand(zoomDisclosure);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var zoomX1 = zoomExpanded ? WaitForControlName(window, ControlType.Slider, "起点控制 X", TimeSpan.FromSeconds(3)) : null;
+    var zoomChanged = zoomX1 is not null && SetRangeValue(zoomX1, .42)
+        && WaitForJsonArrayNumber(projectFile, "zoomClips", 0, ["customCurve", "x1"], .42, TimeSpan.FromSeconds(5));
+    AddStep(results, new("缩放自定贝塞尔控制点实际写入项目", opened && zoomSelected && zoomCustom && zoomChanged,
+        $"运镜={opened}，缩放页={zoomSelected}，自定曲线={zoomCustom}，控制点展开={zoomExpanded}，X1={ReadJsonArrayNumber(projectFile, "zoomClips", 0, "customCurve", "x1"):0.###}。"));
+
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var springCombo = WaitForComboByName(window, "曲线", TimeSpan.FromSeconds(3));
+    var springSelected = springCombo is not null && SelectComboOption(springCombo, "弹簧", processId, 4);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var springDisclosure = springSelected ? FindNamed(window, "弹簧参数") : null;
+    var springExpanded = springDisclosure is not null && TryExpand(springDisclosure);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var mass = springExpanded ? WaitForControlName(window, ControlType.Slider, "弹簧质量", TimeSpan.FromSeconds(3)) : null;
+    var massSet = mass is not null && SetRangeValue(mass, 2.7)
+        && WaitForJsonNumber(projectFile, ["settings", "spring", "mass"], 2.7, TimeSpan.FromSeconds(5));
+    AddStep(results, new("弹簧动画参数实际写入项目", springSelected && springExpanded && massSet,
+        $"曲线弹簧={springSelected}，参数展开={springExpanded}，质量={ReadJsonNumber(projectFile, "settings", "spring", "mass"):0.###}。"));
+
+    // 屏幕 3D：在自定义曲线的第二个控制点上写入不同数值。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    rail = FindRailButton(window, "运镜"); if (rail is not null) TryClickPhysical(rail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var screenTab = FindButtonByHint(window, "屏幕 3D");
+    var screenSelected = screenTab is not null && TryClickPhysical(screenTab);
+    var screenCurve = screenSelected ? WaitForComboByName(window, "曲线", TimeSpan.FromSeconds(3)) : null;
+    var screenCustom = screenCurve is not null && SelectComboOption(screenCurve, "自定义", processId, 5);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var screenDisclosure = screenCustom ? FindNamed(window, "曲线控制点") : null;
+    var screenExpanded = screenDisclosure is not null && TryExpand(screenDisclosure);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var screenY2 = screenExpanded ? WaitForControlName(window, ControlType.Slider, "终点控制 Y", TimeSpan.FromSeconds(3)) : null;
+    var screenChanged = screenY2 is not null && SetRangeValue(screenY2, .63)
+        && WaitForJsonArrayNumber(projectFile, "screenMotions", 0, ["customCurve", "y2"], .63, TimeSpan.FromSeconds(5));
+    AddStep(results, new("屏幕 3D 自定曲线实际写入项目", screenSelected && screenCustom && screenChanged,
+        $"屏幕3D={screenSelected}，自定曲线={screenCustom}，控制点展开={screenExpanded}，Y2={ReadJsonArrayNumber(projectFile, "screenMotions", 0, "customCurve", "y2"):0.###}。"));
+
+    // 摄像头动画需从真实时间线选中片段，避免只验证空态面板。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cameraRail = FindRailButton(window, "摄像头");
+    var cameraOpened = cameraRail is not null && TryClickPhysical(cameraRail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cameraMotionCount = ReadArrayCount(projectFile, "cameraMotions");
+    var addCameraMotion = cameraOpened ? FindButtonByHint(window, "添加摄像头运动") : null;
+    var cameraClipCreated = addCameraMotion is not null && TryClickPhysical(addCameraMotion)
+        && WaitForArrayCount(projectFile, "cameraMotions", cameraMotionCount + 1, TimeSpan.FromSeconds(5));
+    var cameraClipIndex = ReadArrayCount(projectFile, "cameraMotions") - 1;
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cameraCurve = cameraClipCreated ? FindButtonByHint(window, "自定义") : null;
+    var cameraCustom = cameraCurve is not null && TryClickPhysical(cameraCurve)
+        && WaitForJsonArrayString(projectFile, "cameraMotions", cameraClipIndex, "easing", "custom", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cameraDisclosure = cameraCustom ? FindNamed(window, "曲线控制点") : null;
+    var cameraExpanded = cameraDisclosure is not null && TryExpand(cameraDisclosure);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cameraX2 = cameraExpanded ? WaitForControlName(window, ControlType.Slider, "终点控制 X", TimeSpan.FromSeconds(3)) : null;
+    var cameraChanged = cameraX2 is not null && SetRangeValue(cameraX2, .58)
+        && WaitForJsonArrayNumber(projectFile, "cameraMotions", cameraClipIndex, ["customCurve", "x2"], .58, TimeSpan.FromSeconds(5));
+    AddStep(results, new("新建摄像头动画并保存自定曲线", cameraOpened && cameraClipCreated && cameraCustom && cameraChanged,
+        $"摄像头页={cameraOpened}，新片段={cameraClipCreated}，自定曲线={cameraCustom}，按钮={SafeName(cameraCurve)}，控制点展开={cameraExpanded}，X2={ReadJsonArrayNumber(projectFile, "cameraMotions", cameraClipIndex, "customCurve", "x2"):0.###}；控件={DescribeInspector(window)}。"));
+
+    // 开场：顶层三种原预设与三种节奏逐项验证 JSON，确保卡片交互更新模型。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var openingRail = FindRailButton(window, "开场");
+    var openingOpened = openingRail is not null && TryClickPhysical(openingRail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var enabled = openingOpened ? FindCheckboxContaining(window, "启用全局开场") : null;
+    var alreadyEnabled = ReadJsonBoolean(projectFile, "settings", "opening", "enabled") == true;
+    var enabledSet = enabled is not null && (alreadyEnabled || TryClickPhysical(enabled, preferAutomationInvoke: false))
+        && WaitForJsonBoolean(projectFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5));
+    var presetChecks = new List<bool>();
+    foreach (var (label, value) in new[] { ("聚拢", "converge"), ("侧滑", "sideSlide"), ("轻 3D", "light3D") })
+    {
+        window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+        var card = FindButtonByHint(window, label);
+        var selected = card is not null && TryClickPhysical(card)
+            && WaitForJsonString(projectFile, ["settings", "opening", "preset"], value, TimeSpan.FromSeconds(5));
+        presetChecks.Add(selected);
+    }
+    var curveChecks = new List<bool>();
+    foreach (var (label, value) in new[] { ("顺滑", "smooth"), ("利落", "swift"), ("柔和", "gentle") })
+    {
+        window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+        var card = FindButtonByHint(window, label);
+        var selected = card is not null && TryClickPhysical(card)
+            && WaitForJsonString(projectFile, ["settings", "opening", "elementCurve"], value, TimeSpan.FromSeconds(5));
+        curveChecks.Add(selected);
+    }
+    AddStep(results, new("开场三种原预设与三种节奏实际写入项目", enabledSet && presetChecks.All(x => x) && curveChecks.All(x => x),
+        $"启用={enabledSet}，预设={string.Join(",", presetChecks)}，节奏={string.Join(",", curveChecks)}，最终={ReadJsonString(projectFile, "settings", "opening", "preset")}/{ReadJsonString(projectFile, "settings", "opening", "elementCurve")}。"));
+
+    // 光标：测倾斜开关和点击效果种类及三个数值的真实项目变更。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var cursorRail = FindRailButton(window, "光标");
+    var cursorOpened = cursorRail is not null && TryClickPhysical(cursorRail);
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var tilt = cursorOpened ? FindCheckboxContaining(window, "移动时倾斜") : null;
+    var tiltSet = tilt is not null && (ReadJsonBoolean(projectFile, "settings", "cursor", "motionTiltEnabled") == true || TryClickPhysical(tilt, preferAutomationInvoke: false))
+        && WaitForJsonBoolean(projectFile, ["settings", "cursor", "motionTiltEnabled"], true, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var tiltStrength = WaitForComboByName(window, "倾斜强度", TimeSpan.FromSeconds(3));
+    var tiltStrengthSet = tiltStrength is not null && SelectComboOption(tiltStrength, "明显", processId, 1)
+        && WaitForJsonNumber(projectFile, ["settings", "cursor", "motionTiltStrength"], 3, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var clickEnabled = FindCheckboxContaining(window, "显示点击效果");
+    var clickEnabledSet = clickEnabled is not null && (ReadJsonBoolean(projectFile, "settings", "cursor", "clickEffectsEnabled") == true || TrySetToggleOn(clickEnabled))
+        && WaitForJsonBoolean(projectFile, ["settings", "cursor", "clickEffectsEnabled"], true, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var effectCombo = WaitForComboByName(window, "效果", TimeSpan.FromSeconds(3));
+    var effectSet = effectCombo is not null && SelectComboOption(effectCombo, "涟漪", processId, 2)
+        && WaitForJsonString(projectFile, ["settings", "cursor", "clickEffect"], "ripple", TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var duration = WaitForControlName(window, ControlType.Slider, "持续时间", TimeSpan.FromSeconds(3));
+    var durationSet = duration is not null && SetRangeValue(duration, .84)
+        && WaitForJsonNumber(projectFile, ["settings", "cursor", "clickDuration"], .84, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var scale = WaitForControlName(window, ControlType.Slider, "点击范围", TimeSpan.FromSeconds(3));
+    var scaleSet = scale is not null && SetRangeValue(scale, 1.7)
+        && WaitForJsonNumber(projectFile, ["settings", "cursor", "clickScale"], 1.7, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var opacity = WaitForControlName(window, ControlType.Slider, "点击不透明度", TimeSpan.FromSeconds(3));
+    var opacitySet = opacity is not null && SetRangeValue(opacity, 68)
+        && WaitForJsonNumber(projectFile, ["settings", "cursor", "clickOpacity"], .68, TimeSpan.FromSeconds(5));
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var recordedCursor = FindButtonByHint(window, "跟随录制");
+    var recordedCursorSet = recordedCursor is not null && TryClickPhysical(recordedCursor)
+        && WaitForJsonString(projectFile, ["settings", "cursor", "style"], "followRecorded", TimeSpan.FromSeconds(5));
+    AddStep(results, new("光标倾斜、点击反馈与指针样式实际写入项目", cursorOpened && tiltSet && tiltStrengthSet && clickEnabledSet && effectSet && durationSet && scaleSet && opacitySet && recordedCursorSet,
+        $"倾斜={tiltSet}/{tiltStrengthSet}，点击={clickEnabledSet}/{effectSet}，时长/范围/不透明度={durationSet}/{scaleSet}/{opacitySet}，指针样式={recordedCursorSet}；JSON={ReadJsonString(projectFile, "settings", "cursor", "style")}/{ReadJsonString(projectFile, "settings", "cursor", "clickEffect")}/{ReadJsonNumber(projectFile, "settings", "cursor", "clickDuration")}/{ReadJsonNumber(projectFile, "settings", "cursor", "clickScale")}/{ReadJsonNumber(projectFile, "settings", "cursor", "clickOpacity")}。"));
+
+    // 时间线右键菜单的慢放是一次真实编辑；验证项目模型写入 0.5 倍。
+    window = WaitForMainWindow(processId, TimeSpan.FromSeconds(3)) ?? window;
+    var timelineForRate = FindById(window, "TimelineView");
+    var slowMenuDiagnostic = timelineForRate is null ? "未找到 TimelineView 自动化元素。" : "";
+    var slowMenuOpened = timelineForRate is not null && OpenScreenSegmentContext(timelineForRate, window, projectFile, 1.0, out slowMenuDiagnostic);
+    var slowItem = slowMenuOpened ? WaitForNameContaining("速度 0.5×", processId, TimeSpan.FromSeconds(3)) : null;
+    var slowSet = slowItem is not null && TryInvoke(slowItem)
+        && WaitForTimelineSegmentRate(projectFile, 0, .5, TimeSpan.FromSeconds(5));
+    AddStep(results, new("时间线菜单慢放写入项目", slowSet,
+        $"右键菜单={slowMenuOpened}，0.5×选项={slowItem is not null}，片段速率={ReadTimelineSegmentRate(projectFile, 0):0.##}；定位={slowMenuDiagnostic}。"));
 }
 
 static void RunRelinkOnly(string appPath, string sourceProject, string isolatedProject, List<StepResult> results)
@@ -876,6 +1372,21 @@ static bool TryExpand(AutomationElement element)
         var expansion = Task.Run(() => ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand());
         if (!expansion.Wait(TimeSpan.FromSeconds(5))) return false;
         expansion.GetAwaiter().GetResult();
+        return true;
+    }
+    catch { return false; }
+}
+static bool TrySetToggleOn(AutomationElement element)
+{
+    try
+    {
+        var toggleTask = Task.Run(() =>
+        {
+            var pattern = (TogglePattern)element.GetCurrentPattern(TogglePattern.Pattern);
+            if (pattern.Current.ToggleState == ToggleState.Off) pattern.Toggle();
+        });
+        if (!toggleTask.Wait(TimeSpan.FromSeconds(5))) return false;
+        toggleTask.GetAwaiter().GetResult();
         return true;
     }
     catch { return false; }
@@ -1338,6 +1849,110 @@ static string ReadJsonString(string project, params string[] path)
     try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); var node = Navigate(doc.RootElement, path); return node.ValueKind == JsonValueKind.String ? node.GetString() ?? "" : node.ToString(); }
     catch { return ""; }
 }
+static string ReadJsonArrayString(string project, string arrayName, int index, params string[] path)
+{
+    try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); var node = doc.RootElement.GetProperty(arrayName)[index]; foreach (var part in path) node = node.GetProperty(part); return node.ValueKind == JsonValueKind.String ? node.GetString() ?? "" : node.ToString(); }
+    catch { return ""; }
+}
+static bool WaitForJsonArrayString(string project, string arrayName, int index, string path, string value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (string.Equals(ReadJsonArrayString(project, arrayName, index, path), value, StringComparison.OrdinalIgnoreCase)) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static bool WaitForJsonArrayStringPath(string project, string arrayName, int index, string[] path, string value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (string.Equals(ReadJsonArrayString(project, arrayName, index, path), value, StringComparison.OrdinalIgnoreCase)) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static bool WaitForArrayObject(string project, string arrayName, int index, string property, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(ReadSharedBytes(project));
+            if (doc.RootElement.GetProperty(arrayName)[index].TryGetProperty(property, out var value) && value.ValueKind == JsonValueKind.Object) return true;
+        }
+        catch { }
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static double ReadJsonArrayNumber(string project, string arrayName, int index, params string[] path)
+{
+    try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); var node = doc.RootElement.GetProperty(arrayName)[index]; foreach (var part in path) node = node.GetProperty(part); return node.GetDouble(); }
+    catch { return double.NaN; }
+}
+static double ReadTimelineSegmentRate(string project, int index)
+{
+    try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); return doc.RootElement.GetProperty("timeline").GetProperty("segments")[index].GetProperty("playbackRate").GetDouble(); }
+    catch { return double.NaN; }
+}
+static double ReadTimelineSegmentSystemVolume(string project, int index)
+{
+    try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); return doc.RootElement.GetProperty("timeline").GetProperty("segments")[index].GetProperty("audioOverrides").GetProperty("systemVolume").GetDouble(); }
+    catch { return double.NaN; }
+}
+static bool WaitForTimelineSegmentSystemVolume(string project, int index, double value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (Math.Abs(ReadTimelineSegmentSystemVolume(project, index) - value) < .001) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static bool WaitForTimelineSegmentRate(string project, int index, double value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (Math.Abs(ReadTimelineSegmentRate(project, index) - value) < .001) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static bool WaitForJsonArrayNumber(string project, string arrayName, int index, string[] path, double value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (Math.Abs(ReadJsonArrayNumber(project, arrayName, index, path) - value) < .001) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
+static bool ReadJsonArrayBoolean(string project, string arrayName, int index, params string[] path)
+{
+    try
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(project));
+        return Navigate(doc.RootElement.GetProperty(arrayName)[index], path).GetBoolean();
+    }
+    catch { return false; }
+}
+static bool WaitForJsonArrayBoolean(string project, string arrayName, int index, string property, bool value, TimeSpan timeout)
+{
+    var until = DateTime.UtcNow + timeout;
+    while (DateTime.UtcNow < until)
+    {
+        if (ReadJsonArrayBoolean(project, arrayName, index, property) == value) return true;
+        Thread.Sleep(120);
+    }
+    return false;
+}
 static double ReadJsonNumber(string project, params string[] path)
 {
     try { using var doc = JsonDocument.Parse(ReadSharedBytes(project)); return Navigate(doc.RootElement, path).GetDouble(); }
@@ -1523,6 +2138,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
 {
     diagnostic = "";
     ScrollPattern? timelineScroll = null;
+    double? originalScrollPercent = null;
     try
     {
         using var before = JsonDocument.Parse(ReadSharedBytes(projectFile));
@@ -1539,13 +2155,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
         var sourceInspector = "";
         var targetInspector = "";
         timelineScroll = FindTimelineScrollPattern(timeline);
-        if (laneIndex >= 2 && timelineScroll is not null)
-        {
-            timelineScroll.Scroll(ScrollAmount.NoAmount, ScrollAmount.LargeIncrement);
-            Thread.Sleep(300);
-            timeline = FindById(mainWindow, "TimelineView") ?? timeline;
-            timelineScroll = FindTimelineScrollPattern(timeline);
-        }
+        if (timelineScroll is not null) originalScrollPercent = timelineScroll.Current.VerticalScrollPercent;
         if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, sourceStart + Math.Min(.2, sourceDuration * .35), out var sourceClick)) { diagnostic = "无法选择来源片段。"; return false; }
         sourceInspector = WaitForInspectorTitle(mainWindow, expectedInspector, TimeSpan.FromSeconds(2));
         if (sourceInspector != expectedInspector)
@@ -1602,9 +2212,9 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
     catch (Exception ex) { diagnostic = $"{ex.GetType().Name}: {ex.Message}; {ex.StackTrace}"; return false; }
     finally
     {
-        if (timelineScroll is not null)
+        if (timelineScroll is not null && originalScrollPercent is double original && double.IsFinite(original) && original >= 0)
         {
-            try { timelineScroll.Scroll(ScrollAmount.NoAmount, ScrollAmount.LargeDecrement); Thread.Sleep(200); } catch { }
+            try { timelineScroll.SetScrollPercent(ScrollPattern.NoScroll, original); Thread.Sleep(200); } catch { }
         }
     }
 }
@@ -1632,14 +2242,71 @@ static double ReadCurrentClipValue(string projectFile, string arrayName, double 
     catch { return double.NaN; }
 }
 
-static ScrollPattern? FindTimelineScrollPattern(AutomationElement timeline)
+static (ScrollPattern? Pattern, AutomationElement? Viewport) FindTimelineScroll(AutomationElement timeline)
 {
     var node = TreeWalker.ControlViewWalker.GetParent(timeline);
     for (var depth = 0; node is not null && depth < 12; depth++, node = TreeWalker.ControlViewWalker.GetParent(node))
     {
-        try { if (node.TryGetCurrentPattern(ScrollPattern.Pattern, out var pattern) && pattern is ScrollPattern scroll) return scroll; } catch { }
+        try { if (node.TryGetCurrentPattern(ScrollPattern.Pattern, out var pattern) && pattern is ScrollPattern scroll) return (scroll, node); } catch { }
     }
-    return null;
+    return (null, null);
+}
+
+static ScrollPattern? FindTimelineScrollPattern(AutomationElement timeline) => FindTimelineScroll(timeline).Pattern;
+
+static bool PrepareTimelinePoint(AutomationElement timeline, JsonElement project, double contentY, double dpi,
+    out System.Windows.Rect viewport, out double scrollOffset, out string diagnostic, out ScrollPattern? scroll)
+{
+    viewport = default; scrollOffset = 0; diagnostic = ""; scroll = null;
+    var ancestor = FindTimelineScroll(timeline);
+    scroll = ancestor.Pattern;
+    if (ancestor.Viewport is null || scroll is null) { diagnostic = "未找到包裹时间线的可滚动视口。"; return false; }
+    try { viewport = ancestor.Viewport.Current.BoundingRectangle; }
+    catch (Exception ex) { diagnostic = "无法读取滚动视口边界：" + ex.Message; return false; }
+    if (viewport.IsEmpty || viewport.Height <= 0) { diagnostic = $"视口边界无效：{viewport}"; return false; }
+
+    var laneCount = 2;
+    if (project.TryGetProperty("camera", out var camera) && camera.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)) laneCount++;
+    if (project.TryGetProperty("cameraMotions", out var cameraMotions) && cameraMotions.ValueKind == JsonValueKind.Array && cameraMotions.GetArrayLength() > 0) laneCount++;
+    if (project.TryGetProperty("overlays", out var overlays) && overlays.ValueKind == JsonValueKind.Array && overlays.GetArrayLength() > 0) laneCount++;
+    if (project.TryGetProperty("blurClips", out var blurClips) && blurClips.ValueKind == JsonValueKind.Array && blurClips.GetArrayLength() > 0) laneCount++;
+    if (project.TryGetProperty("audioTracks", out var audioTracks) && audioTracks.ValueKind == JsonValueKind.Array && audioTracks.GetArrayLength() > 0) laneCount++;
+    var contentHeight = 130d + laneCount * 52d;
+    var viewportHeightDip = viewport.Height / dpi;
+    var rangeDip = Math.Max(0, contentHeight - viewportHeightDip);
+    var maxOffset = Math.Max(0, rangeDip);
+    var wantedOffset = Math.Clamp(contentY - viewportHeightDip * .52, 0, maxOffset);
+    var targetPercent = maxOffset <= 0 ? 0 : wantedOffset / maxOffset * 100;
+    try
+    {
+        if (targetPercent > .05 && scroll.Current.VerticallyScrollable)
+            scroll.SetScrollPercent(ScrollPattern.NoScroll, targetPercent);
+        else if (scroll.Current.VerticallyScrollable)
+            scroll.SetScrollPercent(ScrollPattern.NoScroll, 0);
+        Thread.Sleep(220);
+        var actualPercent = scroll.Current.VerticalScrollPercent;
+        if (actualPercent < 0 || !double.IsFinite(actualPercent)) actualPercent = 0;
+        scrollOffset = maxOffset * actualPercent / 100;
+        viewport = ancestor.Viewport.Current.BoundingRectangle;
+        var y = viewport.Top + (contentY - scrollOffset) * dpi;
+        var within = y >= viewport.Top + 2 && y <= viewport.Bottom - 2;
+        diagnostic = $"contentY={contentY:0.#} DIP, offset={scrollOffset:0.#}/{maxOffset:0.#} DIP, scroll={actualPercent:0.#}%, viewport={viewport}, pointY={y:0.#}, laneCount={laneCount}";
+        return within;
+    }
+    catch (Exception ex) { diagnostic = $"设置滚动位置失败：{ex.GetType().Name}: {ex.Message}；viewport={viewport}"; return false; }
+}
+
+static int GetContentLaneIndex(JsonElement project, int requestedLane)
+{
+    var targetKey = requestedLane switch { 1 => "motion", 3 => "cameraMotion", 4 => "overlay", 5 => "blur", _ => "" };
+    if (targetKey.Length == 0) return -1;
+    var lanes = new List<string> { "zoom", "motion" };
+    if (project.TryGetProperty("camera", out var camera) && camera.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)) lanes.Add("camera");
+    if (project.TryGetProperty("cameraMotions", out var cameraMotions) && cameraMotions.ValueKind == JsonValueKind.Array && cameraMotions.GetArrayLength() > 0) lanes.Add("cameraMotion");
+    if (project.TryGetProperty("overlays", out var overlays) && overlays.ValueKind == JsonValueKind.Array && overlays.GetArrayLength() > 0) lanes.Add("overlay");
+    if (project.TryGetProperty("blurClips", out var blurClips) && blurClips.ValueKind == JsonValueKind.Array && blurClips.GetArrayLength() > 0) lanes.Add("blur");
+    if (project.TryGetProperty("audioTracks", out var audioTracks) && audioTracks.ValueKind == JsonValueKind.Array && audioTracks.GetArrayLength() > 0) lanes.Add("audio");
+    return lanes.IndexOf(targetKey);
 }
 
 static void TryFocusTimeline(AutomationElement timeline)
@@ -1671,16 +2338,24 @@ static bool ClickEffectClip(AutomationElement timeline, AutomationElement mainWi
         elapsed += duration / rate;
     }
     if (!double.IsFinite(outputTime)) return false;
-    var bounds = timeline.Current.BoundingRectangle; var windowBounds = mainWindow.Current.BoundingRectangle;
-    var dpi = windowBounds.Width / 1920d; if (dpi < .5 || dpi > 4) dpi = 1;
+    var mainHandle = (IntPtr)mainWindow.Current.NativeWindowHandle;
+    var dpi = NativeMethods.GetDpiForWindow(mainHandle) / 96d; if (dpi < .5 || dpi > 4) dpi = 1;
+    var contentLaneIndex = GetContentLaneIndex(project, laneIndex);
+    if (contentLaneIndex < 0) { diagnostic = $"无法匹配时间线轨道 laneIndex={laneIndex}；项目轨道布局已改变。"; return false; }
+    var contentY = 156 + contentLaneIndex * 52;
+    if (!PrepareTimelinePoint(timeline, project, contentY, dpi, out var viewport, out var scrollOffset, out var scrollDescription, out _))
+    { diagnostic = "时间线轨道当前不在可见视口：" + scrollDescription; return false; }
+    var bounds = timeline.Current.BoundingRectangle;
     var scale = (bounds.Width - 152 * dpi) / project.GetProperty("timeline").GetProperty("duration").GetDouble();
     var x = (int)(bounds.Left + 152 * dpi + outputTime * scale);
-    var y = (int)(bounds.Top + (156 + laneIndex * 52) * dpi);
-    var mainHandle = (IntPtr)mainWindow.Current.NativeWindowHandle;
+    var y = (int)(viewport.Top + (contentY - scrollOffset) * dpi);
     var previousDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
+    var rootAfter = IntPtr.Zero;
     try
     {
         NativeMethods.SetWindowPos(mainHandle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
+        try { if (mainWindow.TryGetCurrentPattern(WindowPattern.Pattern, out var pattern) && pattern is WindowPattern windowPattern) windowPattern.SetWindowVisualState(WindowVisualState.Normal); } catch { }
+        var activation = ActivateOwnedWindow(mainHandle);
         try { mainWindow.SetFocus(); } catch { }
         var foregroundSet = NativeMethods.SetForegroundWindow(mainHandle);
         NativeMethods.SetCursorPos(x, y); Thread.Sleep(100);
@@ -1691,16 +2366,36 @@ static bool ClickEffectClip(AutomationElement timeline, AutomationElement mainWi
         var rootOwner = NativeMethods.GetWindowThreadProcessId(rootBefore, out var rootPid);
         var rootName = new System.Text.StringBuilder(256); var rootClass = new System.Text.StringBuilder(128);
         NativeMethods.GetWindowText(rootBefore, rootName, rootName.Capacity); NativeMethods.GetClassName(rootBefore, rootClass, rootClass.Capacity);
-        NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(65); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
-        var rootAfter = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(cursor), 2);
-        if (rootBefore != mainHandle && rootAfter == mainHandle)
+        if (rootBefore != mainHandle)
         {
-            NativeMethods.SetCursorPos(x, y); Thread.Sleep(60); NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(65); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(220);
+            diagnostic = $"点击被拦截：点位属于其他窗口。xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},root={rootBefore.ToInt64():X}/pid{rootPid},own={mainHandle.ToInt64():X},foregroundSet={foregroundSet},activation={activation},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
+            return false;
         }
-        diagnostic = $"out={outputTime:0.###},xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},thread{pointOwner},root={rootBefore.ToInt64():X}->{rootAfter.ToInt64():X}/pid{rootPid},thread{rootOwner},own={mainHandle.ToInt64():X},foregroundSet={foregroundSet},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}";
+        NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(65); NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
+        rootAfter = NativeMethods.GetAncestor(NativeMethods.WindowFromPoint(cursor), 2);
+    diagnostic = $"out={outputTime:0.###},xy={x},{y},cursor={cursor.X},{cursor.Y},hwnd={pointWindow.ToInt64():X}/pid{pointPid},thread{pointOwner},root={rootBefore.ToInt64():X}->{rootAfter.ToInt64():X}/pid{rootPid},thread{rootOwner},own={mainHandle.ToInt64():X},foregroundSet={foregroundSet},activation={activation},rootTitle={rootName},rootClass={rootClass},timeline={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#},viewport={viewport},scroll={scrollDescription}";
     }
     finally { if (previousDpiContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(previousDpiContext); }
-    return true;
+    return rootAfter == mainHandle;
+}
+static string ActivateOwnedWindow(IntPtr handle)
+{
+    var foreground = NativeMethods.GetForegroundWindow();
+    var foregroundThread = NativeMethods.GetWindowThreadProcessId(foreground, out var foregroundPid);
+    var currentThread = NativeMethods.GetCurrentThreadId();
+    var attached = foregroundThread != 0 && foregroundThread != currentThread && NativeMethods.AttachThreadInput(currentThread, foregroundThread, true);
+    try
+    {
+        NativeMethods.SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0040);
+        NativeMethods.BringWindowToTop(handle);
+        NativeMethods.SetActiveWindow(handle);
+        var foregroundSet = NativeMethods.SetForegroundWindow(handle);
+        Thread.Sleep(120);
+        var actual = NativeMethods.GetForegroundWindow();
+        NativeMethods.GetWindowThreadProcessId(actual, out var actualPid);
+        return $"fg={foreground.ToInt64():X}/pid{foregroundPid},thread={foregroundThread},attached={attached},set={foregroundSet},actual={actual.ToInt64():X}/pid{actualPid}";
+    }
+    finally { if (attached) NativeMethods.AttachThreadInput(currentThread, foregroundThread, false); }
 }
 
 static double ReadNumberPath(JsonElement root, string path)
@@ -1781,6 +2476,58 @@ static bool OpenTimelineContextAt(AutomationElement timeline,AutomationElement w
     }
     catch{return false;}
 }
+static bool OpenScreenSegmentContext(AutomationElement timeline, AutomationElement window, string projectFile, double sourceTime, out string diagnostic)
+{
+    diagnostic = "";
+    var previousDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4));
+    try
+    {
+        using var doc = JsonDocument.Parse(ReadSharedBytes(projectFile));
+        var segments = doc.RootElement.GetProperty("timeline").GetProperty("segments");
+        if (segments.GetArrayLength() == 0) return false;
+        var segment = segments[0];
+        var sourceStart = segment.GetProperty("sourceStart").GetDouble();
+        var sourceDuration = segment.GetProperty("sourceDuration").GetDouble();
+        var rate = segment.GetProperty("playbackRate").GetDouble();
+        if (sourceTime < sourceStart || sourceTime >= sourceStart + sourceDuration) sourceTime = sourceStart + sourceDuration * .5;
+        var outputStart = 0d;
+        foreach (var item in segments.EnumerateArray())
+        {
+            if (item.GetProperty("id").GetString() == segment.GetProperty("id").GetString()) break;
+            outputStart += item.GetProperty("sourceDuration").GetDouble() / item.GetProperty("playbackRate").GetDouble();
+        }
+        var outputTime = outputStart + (sourceTime - sourceStart) / rate;
+        var bounds = timeline.Current.BoundingRectangle;
+        var windowBounds = window.Current.BoundingRectangle;
+        var dpi = windowBounds.Width / 1920d; if (dpi < .5 || dpi > 4) dpi = 1;
+        var scale = (bounds.Width - 152 * dpi) / doc.RootElement.GetProperty("timeline").GetProperty("duration").GetDouble();
+        var x = (int)(bounds.Left + 152 * dpi + outputTime * scale);
+        var y = (int)(bounds.Top + 40 * dpi + 35 * dpi);
+        var handle = (IntPtr)window.Current.NativeWindowHandle;
+        var processId = (int)window.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
+        if (handle == IntPtr.Zero) { diagnostic = "主窗口句柄为空。"; return false; }
+        NativeMethods.SetWindowPos(handle, new IntPtr(-1), 0, 0, 0, 0, 0x0001 | 0x0002);
+        try { window.SetFocus(); } catch { }
+        var foregroundSet = NativeMethods.SetForegroundWindow(handle);
+        NativeMethods.SetCursorPos(x, y); Thread.Sleep(100);
+        var point = NativeMethods.WindowFromPoint(new PointNative { X = x, Y = y });
+        NativeMethods.GetWindowThreadProcessId(point, out var pointProcessId);
+        if (pointProcessId != (uint)processId)
+        {
+            diagnostic = $"点击点不属于测试进程：xy={x},{y}，hwnd={point.ToInt64():X}，pid={pointProcessId}，期望pid={processId}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}，foregroundSet={foregroundSet}。";
+            return false;
+        }
+        NativeMethods.MouseEvent(0x0002, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(60);
+        NativeMethods.MouseEvent(0x0004, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
+        NativeMethods.MouseEvent(0x0008, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(70);
+        NativeMethods.MouseEvent(0x0010, 0, 0, 0, UIntPtr.Zero); Thread.Sleep(180);
+        var menu = WaitForNameContaining("速度 0.5×", processId, TimeSpan.FromSeconds(2));
+        diagnostic = $"点击测试进程窗口：xy={x},{y}，窗口={bounds.Left:0.#},{bounds.Top:0.#},{bounds.Width:0.#},{bounds.Height:0.#}，foregroundSet={foregroundSet}，菜单={menu is not null}。";
+        return true;
+    }
+    catch (Exception ex) { diagnostic = ex.GetType().Name + ": " + ex.Message; return false; }
+    finally { if (previousDpiContext != IntPtr.Zero) NativeMethods.SetThreadDpiAwarenessContext(previousDpiContext); }
+}
 static bool ClickTimelineAt(AutomationElement timeline,AutomationElement window,string projectFile,double time)
 {
     try
@@ -1854,6 +2601,26 @@ static void PrepareFeatureFixture(string projectFile)
     }
     File.WriteAllText(projectFile, project.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
 }
+static void PrepareMotionCurveFixture(string projectFile)
+{
+    var project = JsonNode.Parse(File.ReadAllBytes(projectFile))?.AsObject() ?? throw new InvalidDataException("测试项目 JSON 无效。");
+    static JsonObject Curve(double x1 = .65, double y1 = .15, double x2 = .35, double y2 = .85) => new() { ["x1"] = x1, ["y1"] = y1, ["x2"] = x2, ["y2"] = y2 };
+    var zooms = project["zoomClips"]?.AsArray() ?? new JsonArray();
+    if (zooms.Count == 0) zooms.Add(new JsonObject { ["start"] = 0, ["end"] = 1.8, ["automatic"] = false });
+    var zoom = zooms[0]!.AsObject(); zoom["start"] = 0; zoom["end"] = 1.8; zoom["automatic"] = false; zoom["easing"] = "cubic"; zoom["customCurve"] = Curve(); project["zoomClips"] = zooms;
+    var screens = project["screenMotions"]?.AsArray() ?? new JsonArray();
+    if (screens.Count == 0) screens.Add(new JsonObject { ["start"] = 0, ["duration"] = 1.8, ["target"] = new JsonObject { ["position"] = new JsonObject { ["x"] = .5, ["y"] = .5 }, ["scale"] = 1.2 } });
+    var screen = screens[0]!.AsObject(); screen["start"] = 0; screen["duration"] = 1.8; screen["easing"] = "cubic"; screen["customCurve"] = Curve(); project["screenMotions"] = screens;
+    var cameras = project["cameraMotions"]?.AsArray() ?? new JsonArray();
+    if (cameras.Count == 0) cameras.Add(new JsonObject { ["start"] = 0, ["duration"] = 1.8, ["targetPosition"] = new JsonObject { ["x"] = .5, ["y"] = .5 }, ["targetSize"] = .3 });
+    var camera = cameras[0]!.AsObject(); camera["start"] = 0; camera["duration"] = 1.8; camera["easing"] = "cubic"; camera["customCurve"] = Curve(); project["cameraMotions"] = cameras;
+    var settings = project["settings"]?.AsObject() ?? new JsonObject();
+    settings["opening"] = new JsonObject { ["enabled"] = false, ["preset"] = "converge", ["elementCurve"] = "swift", ["duration"] = 2.2 };
+    settings["spring"] = new JsonObject { ["mass"] = 2.4, ["stiffness"] = 210, ["damping"] = 42 };
+    settings["cursor"] = new JsonObject { ["visible"] = true, ["scale"] = 1, ["style"] = "systemArrow", ["motionTiltEnabled"] = false, ["motionTiltStrength"] = 2, ["clickEffectsEnabled"] = false, ["clickEffect"] = "pulse", ["clickDuration"] = .55, ["clickScale"] = 1.2, ["clickOpacity"] = .55 };
+    project["settings"] = settings;
+    File.WriteAllText(projectFile, project.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+}
 static void PrepareUncutEffectTimeline(string projectFile)
 {
     var project = JsonNode.Parse(File.ReadAllText(projectFile))?.AsObject() ?? throw new InvalidDataException("测试项目JSON无效。");
@@ -1911,7 +2678,14 @@ sealed class ApplicationErrorDialogException(string message) : Exception(message
 static class NativeMethods
 {
     [DllImport("user32.dll")] internal static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] internal static extern IntPtr SetActiveWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern bool AttachThreadInput(uint attach, uint attachTo, bool attachState);
+    [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetWindowPos(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hWnd, int command);
+    [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("user32.dll")] internal static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out PointNative point);
     [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(PointNative point);
@@ -1920,7 +2694,6 @@ static class NativeMethods
     [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] internal static extern int GetClassName(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
-    [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("user32.dll", EntryPoint = "mouse_event")] internal static extern void MouseEvent(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
     [DllImport("user32.dll", EntryPoint = "keybd_event")] internal static extern void KeybdEvent(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
     [DllImport("user32.dll")] internal static extern IntPtr GetWindowDC(IntPtr hWnd);

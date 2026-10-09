@@ -13,10 +13,10 @@ FrameTrail 使用 Windows 自有的 `.frametrail` 项目格式。本文记录了
 
 ## 已知差异
 
-- C# 缩放动画暴露 Linear、Quadratic、Cubic、Quintic、Spring 五种枚举；Quadratic 已使用 Swift 的 Bezier 控制点 `(0.45, 0, 0.55, 1)`。原 Swift 仍有自定义曲线及可配置弹簧参数，尚未迁移。当前五次曲线对应 Swift 的五次 Bezier 控制点，不是常见的 smootherstep 多项式。
+- C# 缩放、屏幕和摄像头运动支持 Linear、Quadratic、Cubic、Quintic、Spring 和 Custom。Custom 保存四个 Bezier 控制点并反解 X；检查器可拖动控制柄或直接输入数值。项目级弹簧质量、刚度、阻尼供缩放和自动跟随共用。Quadratic 使用 Swift 控制点 `(0.45, 0, 0.55, 1)`；Quintic 对应五次 Bezier 控制点。
 - 屏幕运动的相邻继承已支持，但复杂布局锚点与原 Swift 的 `ManualZoomViewportTransition`、动态透视下的像素级 pivot 求解不完全相同。
-- 指针位置的 Smooth/Medium/Rapid 采样、慢速移动判定和点击锚点修正已按 Swift 源码对照移植；测试使用 Swift 公式首步期望值和行为边界，不是运行 Swift 后与 C# 做差分。鼠标速度驱动的光标旋转、皮肤资源和完整点击样式仍未完整迁移；FrameTrail 的点击强度仍是简化脉冲。
-- 开场动画支持元素启用、顺序和错峰，但 Swift `ElementMotionEvaluator` 的曲线、轻微回弹和各元素独立姿态没有逐公式复刻。场景效果时间线以源时间求值；开场从成片输出起点求值。
+- 指针位置的 Smooth/Medium/Rapid 采样、慢速移动判定和点击锚点修正已按 Swift 源码对照移植；速度驱动倾斜和点击进度由 `PreparedPointerDynamics` 求值，GPU 支持脉冲、柔光、涟漪和迸发。点击持续时间、范围和不透明度参与渲染。系统光标形态采集与本机 `.cur` 资源加载参考了 Windows 分支，提供跟随录制、固定箭头/手型/文本及圆点/圆环；没有搬运 Apple 平台光标文件。
+- 三个原版开场预设、Smooth/Swift/Gentle 曲线、overshoot 和屏幕/摄像头/贴图独立起始姿态已在 `OpeningMotionEvaluator` 按源公式移植。旧 FrameTrail 项目没有 `ElementCurve` 时继续使用原有通用缓动。场景效果时间线以源时间求值；开场从成片输出起点求值。源码公式测试不代表 macOS Metal 渲染器逐像素认证。
 - FrameTrail 拒绝未知项目格式版本，且不把 `.dogscproject` 伪装成兼容格式。导入器只映射报告中明确支持的字段；未表达的 Swift 字段会列入损失报告。
 
 ## 验证证据与边界

@@ -172,7 +172,8 @@ internal sealed class FfmpegDesktopRecorder : IAsyncDisposable
             RedirectStandardInput = true, RedirectStandardError = true
         };
         var args = new List<string> { "-hide_banner", "-loglevel", "info", "-stats_period", "0.05", "-progress", "pipe:2", "-f", "lavfi", "-i", filter,
-            "-an", "-vf", FormattableString.Invariant($"hwdownload,format=bgra,scale={_outputWidth}:{_outputHeight}:flags=bilinear"),
+            "-an", "-vf", FormattableString.Invariant($"hwdownload,format=bgra,scale={_outputWidth}:{_outputHeight}:flags=bilinear:in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p"),
+            "-color_range", "tv", "-colorspace", "bt709", "-color_trc", "iec61966-2-1", "-color_primaries", "bt709",
             "-r", _video.FrameRate.ToString(CultureInfo.InvariantCulture), "-fps_mode", "cfr" };
         args.AddRange(EncoderArguments(EncoderName, _video));
         args.AddRange(["-movflags", "+faststart", "-y", segment]);

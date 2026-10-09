@@ -71,7 +71,7 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(Project.Camera is {} camera)Lane("camera",new[]{(Guid.Empty,camera.TimelineStart,camera.Duration,"摄像头")},Color.FromRgb(179,200,219));
   if(Project.CameraMotions.Count>0)Lane("cameraMotion",Project.CameraMotions.Select(z=>(z.Id,z.Start,z.Duration,"摄像头运动")),Color.FromRgb(152,181,206));
   if(Project.Overlays.Count>0)Lane("overlay",Project.Overlays.Select(z=>(z.Id,z.Start,z.Duration,"贴图 · "+System.IO.Path.GetFileNameWithoutExtension(z.MediaPath))),Color.FromRgb(188,216,192));
-  if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind==BlurKind.Blur?"柔化":"马赛克")),Color.FromRgb(208,192,220));
+  if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind switch{BlurKind.Blur=>"柔化",BlurKind.Spotlight=>"聚光",_=>"马赛克"})),Color.FromRgb(208,192,220));
   if(Project.AudioTracks.Count>0)Lane("audio",Project.AudioTracks.Select((z,i)=>(AudioId(i),z.OffsetSeconds,z.Duration,z.Muted?"音频 · 静音":"音频 · "+(i+1))),Color.FromRgb(198,200,228));
   foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14);}
   if(HoverTime.HasValue){var x=X(HoverTime.Value);dc.DrawLine(new Pen(B("Secondary"),1){DashStyle=DashStyles.Dash},new(x,0),new(x,ActualHeight));}
@@ -80,10 +80,11 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}
   dc.Pop();dc.DrawRectangle(B("Surface"),null,new Rect(0,RulerHeight,LabelWidth,Math.Max(0,ActualHeight-RulerHeight)));
   EditorIcon.DrawVector(dc,"trackScreen",new Rect(16,RulerHeight+31,18,18),B("Ink"));Text(dc,"屏幕录制",new(40,RulerHeight+35),11,B("Ink"));y=RulerHeight+PrimaryHeight;
-  foreach(var lane in LaneNames()){dc.DrawLine(pen,new(0,y),new(ActualWidth,y));EditorIcon.DrawVector(dc,lane.Icon,new Rect(17,y+16,17,17),B("Secondary"));Text(dc,lane.Label,new(41,y+18),11,B("Ink"));y+=LaneHeight;}
+  foreach(var lane in LaneNames()){dc.DrawLine(pen,new(0,y),new(ActualWidth,y));EditorIcon.DrawVector(dc,lane.Icon,new Rect(17,y+16,17,17),B("Secondary"));Text(dc,lane.Label,new(41,y+18),11,B("Ink"));DrawHideButton(dc,new Rect(LabelWidth-30,y+12,24,28),B("Secondary"));y+=LaneHeight;}
   dc.DrawLine(pen,new(0,RulerHeight),new(ActualWidth,RulerHeight));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
  }
- IEnumerable<(string Icon,string Label)> LaneNames(){if(!HiddenTracks.Contains("zoom"))yield return ("trackZoom","缩放");if(!HiddenTracks.Contains("motion"))yield return ("track3d","屏幕 3D");if(Project?.Camera!=null&&!HiddenTracks.Contains("camera"))yield return ("trackCamera","摄像头");if(Project?.CameraMotions.Count>0&&!HiddenTracks.Contains("cameraMotion"))yield return ("trackCameraMotion","摄像运动");if(Project?.Overlays.Count>0&&!HiddenTracks.Contains("overlay"))yield return ("trackOverlay","贴图");if(Project?.BlurClips.Count>0&&!HiddenTracks.Contains("blur"))yield return ("trackBlur","柔化");if(Project?.AudioTracks.Count>0&&!HiddenTracks.Contains("audio"))yield return ("trackAudio","声音");}
+ IEnumerable<(string Key,string Icon,string Label)> LaneNames(){if(!HiddenTracks.Contains("zoom"))yield return ("zoom","trackZoom","缩放");if(!HiddenTracks.Contains("motion"))yield return ("motion","track3d","屏幕 3D");if(Project?.Camera!=null&&!HiddenTracks.Contains("camera"))yield return ("camera","trackCamera","摄像头");if(Project?.CameraMotions.Count>0&&!HiddenTracks.Contains("cameraMotion"))yield return ("cameraMotion","trackCameraMotion","摄像运动");if(Project?.Overlays.Count>0&&!HiddenTracks.Contains("overlay"))yield return ("overlay","trackOverlay","贴图");if(Project?.BlurClips.Count>0&&!HiddenTracks.Contains("blur"))yield return ("blur","trackBlur","柔化");if(Project?.AudioTracks.Count>0&&!HiddenTracks.Contains("audio"))yield return ("audio","trackAudio","声音");}
+ static void DrawHideButton(DrawingContext dc,Rect bounds,Brush brush){EditorIcon.DrawVector(dc,"eye",new Rect(bounds.X+6,bounds.Y+8,12,12),brush);dc.DrawLine(new Pen(brush,.85),new(bounds.X+6,bounds.Y+21),new(bounds.X+18,bounds.Y+7));}
  public static Guid AudioId(int i)=>new(i+1,0,0,new byte[8]);
  void DrawEffects(DrawingContext dc,string kind,IEnumerable<(Guid Id,double Start,double Duration,string Label)> clips,double y,Color color)
  {
@@ -92,7 +93,7 @@ public sealed class EditorTimelineControl : FrameworkElement
  }
  protected override void OnMouseDown(MouseButtonEventArgs e)
  {
-  base.OnMouseDown(e);Focus();if(Project==null)return;var p=e.GetPosition(this);if(p.X<LabelWidth){if(p.Y<RulerHeight)TrackMenuRequested?.Invoke();return;}
+  base.OnMouseDown(e);Focus();if(Project==null)return;var p=e.GetPosition(this);if(p.X<LabelWidth){if(e.ChangedButton==MouseButton.Left&&p.Y<RulerHeight){TrackMenuRequested?.Invoke();return;}if(e.ChangedButton==MouseButton.Left&&p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);if((uint)index<(uint)lanes.Length){HiddenTracks.Add(lanes[index].Key);Refresh();e.Handled=true;}}return;}
   var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));
   if(e.ChangedButton==MouseButton.Right){if(hit!=null){Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);}ContextRequested?.Invoke();e.Handled=true;return;}
   if(e.ChangedButton!=MouseButton.Left)return;
@@ -105,6 +106,7 @@ public sealed class EditorTimelineControl : FrameworkElement
  {
   base.OnMouseMove(e);var p=e.GetPosition(this);if(Project==null)return;
   if(IsMouseCaptured){if(seeking)SeekRequested?.Invoke(Snapped(Time(p.X)));else if(drag!=null){dragDelta=p.X-down.X;InvalidateVisual();}return;}
+  if(p.X<LabelWidth&&p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);if((uint)index<(uint)lanes.Length){Cursor=Cursors.Hand;HoverTime=null;InvalidateVisual();return;}}
   var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));Cursor=hit!=null&&(p.X-hit.Rect.Left<8||hit.Rect.Right-p.X<8)?Cursors.SizeWE:hit!=null?Cursors.Hand:Cursors.Arrow;
   HoverTime=HoverEnabled&&p.X>=LabelWidth?Time(p.X):null;HoverRequested?.Invoke(HoverTime);InvalidateVisual();
  }

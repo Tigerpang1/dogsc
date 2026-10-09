@@ -14,6 +14,12 @@ if (args.Length >= 2 && args[0] == "--failure-lifecycle-test")
     await CaptureFailureLifecycleProbe.RunNativeAsync(Path.GetFullPath(args[1]));
     return;
 }
+if (args.Length > 0 && args[0] == "--cursor-shapes")
+{
+    var outputPath = args.Length > 1 ? args[1] : Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "cursor-shapes", "cursor-shapes.mp4");
+    await CursorShapeInputProbe.RunAsync(outputPath);
+    return;
+}
 if (args.Length > 0 && args[0] == "--pattern-window-standalone")
 {
     PatternWindowHost.RunStandalone(args);

@@ -7,12 +7,25 @@ using FrameTrail.Media;
 using Vortice.D3DCompiler;
 
 const int sourceWidth = 320, sourceHeight = 180, outputWidth = 640, outputHeight = 360;
+if (args.Length > 0 && args[0] == "--color-slow-motion")
+{
+    await ColorAndSlowMotionProbe.Run(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length == 2 && args[0] == "--real-paused-project")
 {
     await RunRealPausedProjectExport(args[1]);
     return;
 }
 var source = MakeCheckerboard(sourceWidth, sourceHeight);
+CursorDynamicsRenderProbe.Run();
+RecordedCursorRenderProbe.Run();
+ZoomFocusRenderProbe.Run();
+LayerShadowRenderProbe.Run();
+OverlayBackdropRenderProbe.Run();
+SpotlightRenderProbe.Run();
+FrameTrail.Render.Probe.SourceSpaceMappingProbe.Run();
+CameraMotionRenderProbe.Run();
 using (var textLoader = new SceneAssetLoader(Path.Combine(Path.GetTempPath(), "frametrail-text-test.frametrail"), outputWidth, outputHeight))
 {
     var textLayers = await textLoader.LoadAsync(new FrameScene(0, 0, new(0, 0), new(1, 1), 1, null, 0, "#202124", .07, .05, outputWidth, outputHeight, .2,
@@ -33,7 +46,16 @@ try
         await File.WriteAllTextAsync(script, audioFilter);
         await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", input, "-filter_complex_script", script, "-map", "[out]", "-c:a", "pcm_s16le", "-y", output]);
         var info = await MediaTools.ProbeAsync(output);
-        Check(Math.Abs(info.Duration - audioTimeline.Duration) < .1, "FFmpeg renders independent track at edited timeline duration");
+        Check(Math.Abs(info.Duration - audioTimeline.Duration) < .02, "FFmpeg renders independent track at exact edited timeline duration");
+        var sourceRms = await MeasureAudioRms(input, 5, .5);
+        var silentLeadRms = await MeasureAudioRms(output, 0, .5);
+        var firstSpeedRms = await MeasureAudioRms(output, 1.25, .5);
+        var secondSpeedRms = await MeasureAudioRms(output, 2.125, .25);
+        var silentTailRms = await MeasureAudioRms(output, 2.75, .25);
+        Check(silentLeadRms < sourceRms * .02, "independent audio preserves the 1s silent lead");
+        Check(Math.Abs(firstSpeedRms / sourceRms - .5) < .08, "first edited region has 0.5x gain after source trim");
+        Check(Math.Abs(secondSpeedRms / sourceRms - .5) < .08, "second edited region keeps 0.5x gain through 2x retiming");
+        Check(silentTailRms < sourceRms * .02, "independent audio preserves the final 0.5s silence");
 
         var pausedWav = Path.Combine(audioRoot, "paused-track.wav");
         var pausedOutput = Path.Combine(audioRoot, "paused-track.m4a");
@@ -59,6 +81,10 @@ var ffmpegAvailable = true;
 try { _ = MediaTools.Ffmpeg; _ = MediaTools.Ffprobe; }
 catch (FileNotFoundException) { ffmpegAvailable = false; }
 if (ffmpegAvailable) await RunCompositeExportProbe();
+if (ffmpegAvailable) await ColorAndSlowMotionProbe.Run();
+if (ffmpegAvailable) await OverlaySceneExportProbe.Run();
+if (ffmpegAvailable) await CameraMediaPipelineProbe.RunAsync();
+if (ffmpegAvailable) await CameraClockMediaProbe.RunAsync();
 var hlslPath = FindWorkspaceFile(Path.Combine("src", "FrameTrail.Media", "Scene.hlsl"));
 var hlsl = File.ReadAllText(hlslPath);
 _ = Compiler.Compile(hlsl, "VSMain", "Scene.hlsl", "vs_5_0");
@@ -138,7 +164,9 @@ using (var titleLoader = new SceneAssetLoader(Path.Combine(Path.GetTempPath(), "
 var flatTitleBounds = DifferenceBounds(blankFlat, titleFlat, outputWidth, outputHeight);
 var tiltedTitleBounds = DifferenceBounds(blankTilted, titleTilted, outputWidth, outputHeight);
 Console.WriteLine($"Perspective title bounds: flat {flatTitleBounds.Width}×{flatTitleBounds.Height} → tilted {tiltedTitleBounds.Width}×{tiltedTitleBounds.Height}");
-Check(flatTitleBounds.Width > 20 && tiltedTitleBounds.Width > 10 && tiltedTitleBounds.Width != flatTitleBounds.Width && tiltedTitleBounds.Height < flatTitleBounds.Height,
+// Z rotation can enlarge a glyph's canvas-aligned box. The old height-decrease assertion
+// accidentally depended on clipping the projected text to its untransformed header rectangle.
+Check(flatTitleBounds.Width > 20 && tiltedTitleBounds.Width > 10 && tiltedTitleBounds.Width != flatTitleBounds.Width && tiltedTitleBounds.Height != flatTitleBounds.Height,
     "browser title and address follow screen X/Y/Z perspective instead of floating above the frame");
 var blurAssetRoot = Path.Combine(Path.GetTempPath(), "frametrail-bg-blur-probe-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(blurAssetRoot);
@@ -714,6 +742,26 @@ static string FindWorkspaceFile(string relativePath)
         }
     }
     throw new FileNotFoundException($"Cannot find {relativePath} from current probe directory.");
+}
+static async Task<double> MeasureAudioRms(string path, double start, double duration)
+{
+    using var process = new Process { StartInfo = new ProcessStartInfo(MediaTools.Ffmpeg) { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true } };
+    foreach (var argument in new[] { "-v", "error", "-ss", MediaTools.Number(start), "-i", path, "-t", MediaTools.Number(duration), "-vn", "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1" }) process.StartInfo.ArgumentList.Add(argument);
+    if (!process.Start()) throw new InvalidOperationException("FFmpeg could not start for the audio timing probe.");
+    using var pcm = new MemoryStream();
+    var copy = process.StandardOutput.BaseStream.CopyToAsync(pcm);
+    var errors = process.StandardError.ReadToEndAsync();
+    await copy; await process.WaitForExitAsync();
+    if (process.ExitCode != 0) throw new IOException("FFmpeg audio timing probe failed: " + await errors);
+    var bytes = pcm.ToArray();
+    if (bytes.Length < sizeof(float) * 1000) throw new InvalidDataException("FFmpeg returned too few audio samples for the timing probe.");
+    double sum = 0;
+    for (var offset = 0; offset + sizeof(float) <= bytes.Length; offset += sizeof(float))
+    {
+        var sample = BitConverter.ToSingle(bytes, offset);
+        sum += sample * sample;
+    }
+    return Math.Sqrt(sum / (bytes.Length / sizeof(float)));
 }
 static async Task RunRealPausedProjectExport(string projectFile)
 {

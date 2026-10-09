@@ -253,7 +253,7 @@ public partial class MainWindow : Window
                     var time = MediaTime(ev.StopwatchTicks,result);
                     if (time < 0 || time > info.Duration || ev.Kind is not (InputEventKind.Move or InputEventKind.MouseDown)) continue;
                     var kind = ev.Kind == InputEventKind.MouseDown ? ev.MouseButton == FrameTrail.Capture.MouseButton.Right ? PointerEventKind.RightClick : PointerEventKind.LeftClick : PointerEventKind.Move;
-                    created.PointerEvents.Add(new(time, new(ev.NormalizedX, ev.NormalizedY), kind));
+                    created.PointerEvents.Add(new(time, new(ev.NormalizedX, ev.NormalizedY), kind, ev.CursorAsset));
                 }
             }
             created.Markers = recordingMarkers.Select(x => new RecordingMarker(Guid.NewGuid(), Math.Clamp(MediaTime(x.Tick,result), 0, info.Duration), x.Label)).ToList();
@@ -370,7 +370,7 @@ public partial class MainWindow : Window
     private async void TrimRightClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Trim(s.Id, s.SourceStart, SelectedSourceAtPlayhead(p,s)); }); return Task.CompletedTask; });
     private async void MoveLeftClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Max(0,p.Timeline.Segments.IndexOf(s)-1)); }); return Task.CompletedTask; });
     private async void MoveRightClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => { var s = Selected(p); p.Timeline.Reorder(s.Id, Math.Min(p.Timeline.Segments.Count-1,p.Timeline.Segments.IndexOf(s)+1)); }); return Task.CompletedTask; });
-    private async void SpeedClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.SetPlaybackRate(Selected(p).Id, new[] {1d,1.5,2,4}[Speed.SelectedIndex])); return Task.CompletedTask; });
+    private async void SpeedClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.SetPlaybackRate(Selected(p).Id, new[] {.25,.5,.75,1d,1.5,2,4}[Speed.SelectedIndex])); return Task.CompletedTask; });
     private async void RestoreClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.Segments = [new() { SourceDuration = p.Media.Duration }]); return Task.CompletedTask; });
     private void ClipSelected(object sender, SelectionChangedEventArgs e) { if (refreshing || project == null || Clips.SelectedItem is not ClipItem item) return; var time = 0d; foreach (var s in project.Timeline.Segments) { if (s.Id == item.Id) break; time += s.OutputDuration; } Playhead.Value = time; }
     private void UndoClick(object sender, RoutedEventArgs e) { if (history?.CanUndo != true) return; project = history.Undo(); SaveProject(); InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }

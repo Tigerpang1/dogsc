@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Version = '0.2.0', [switch]$SkipInstallation)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.1', [switch]$SkipInstallation)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
@@ -37,7 +37,7 @@ function Check-Report([string]$Path, [string]$Name) {
 try {
     $exe = Join-Path $release 'app/FrameTrail.exe'
     $sample = Join-Path $release 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
-    foreach ($path in @($exe, $sample, (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'))) {
+    foreach ($path in @($exe, $sample, (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
     $report.Checks += [ordered]@{ Name='主程序、原创样例与许可证齐备'; Passed=$true }

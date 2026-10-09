@@ -39,6 +39,7 @@ internal sealed class InputSampler : IAsyncDisposable
     {
         var delay = TimeSpan.FromSeconds(1d / _rate);
         var oldPoint = new WindowsNative.Point { X = int.MinValue, Y = int.MinValue };
+        string? oldCursorAsset = null;
         try
         {
             while (!_stop.IsCancellationRequested)
@@ -52,13 +53,16 @@ internal sealed class InputSampler : IAsyncDisposable
                 {
                     _down.Clear();
                     oldPoint = new WindowsNative.Point { X = int.MinValue, Y = int.MinValue };
+                    oldCursorAsset = null;
                 }
                 WindowsNative.GetPhysicalCursorPos(out var point);
                 var bounds = _boundsProvider();
-                if (point.X != oldPoint.X || point.Y != oldPoint.Y)
+                var cursorAsset = WindowsNative.GetRecordedCursorAsset();
+                if (point.X != oldPoint.X || point.Y != oldPoint.Y || !StringComparer.Ordinal.Equals(cursorAsset, oldCursorAsset))
                 {
-                    Emit(InputEventKind.Move, point.X, point.Y, MouseButton.None, null, bounds);
+                    Emit(InputEventKind.Move, point.X, point.Y, MouseButton.None, null, bounds, cursorAsset);
                     oldPoint = point;
+                    oldCursorAsset = cursorAsset;
                 }
                 foreach (var (code, button) in Buttons) Check(code, () => Emit(_down.Contains(code) ? InputEventKind.MouseDown : InputEventKind.MouseUp, point.X, point.Y, button, null, bounds));
                 foreach (var (code, name) in Modifiers) Check(code, () => Emit(_down.Contains(code) ? InputEventKind.KeyDown : InputEventKind.KeyUp, point.X, point.Y, MouseButton.None, name, bounds));
@@ -75,14 +79,15 @@ internal sealed class InputSampler : IAsyncDisposable
         if (pressed) _down.Add(code); else _down.Remove(code);
         changed();
     }
-    private void Emit(InputEventKind kind, int x, int y, MouseButton button, string? key, PixelRect bounds)
+    private void Emit(InputEventKind kind, int x, int y, MouseButton button, string? key, PixelRect bounds, string? cursorAsset = null)
     {
         var evt = new InputEvent(Stopwatch.GetTimestamp(), kind, x, y,
             bounds.Width <= 1 ? 0 : (double)(x - bounds.X) / bounds.Width,
             bounds.Height <= 1 ? 0 : (double)(y - bounds.Y) / bounds.Height,
             button, key,
             (GetAsyncKeyState(0x10) & 0x8000) != 0, (GetAsyncKeyState(0x11) & 0x8000) != 0,
-            (GetAsyncKeyState(0x12) & 0x8000) != 0, (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0);
+            (GetAsyncKeyState(0x12) & 0x8000) != 0, (GetAsyncKeyState(0x5B) & 0x8000) != 0 || (GetAsyncKeyState(0x5C) & 0x8000) != 0,
+            cursorAsset ?? WindowsNative.GetRecordedCursorAsset());
         _writer?.WriteLine(JsonSerializer.Serialize(evt));
         _onEvent(evt);
     }

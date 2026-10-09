@@ -4,6 +4,22 @@ using FrameTrail;
 static void Check(bool value, string message) { if (!value) throw new Exception(message); }
 static FrameTrailProject Copy(FrameTrailProject p) => JsonSerializer.Deserialize<FrameTrailProject>(JsonSerializer.Serialize(p))!;
 
+OpeningMotionProbe.Run();
+OpeningMotionProbe.RunFrameSceneIntegration();
+PointerDynamicsProbe.Run();
+FrameScenePointerDynamicsProbe.Run();
+SlowMotionProbe.Run();
+AutoFollowProbe.Run();
+ZoomFocusEffectProbe.Run();
+OverlayStyleProbe.Run();
+OverlayBackdropProbe.Run();
+CameraMotionStateProbe.Run();
+CameraMotionEvaluationProbe.Run();
+ZoomProgressAnchorProbe.Run();
+ZoomHandoffReturnProbe.Run();
+SpotlightProbe.Run();
+FrameTrail.Core.Tests.LegacySyncSegmentProbe.Run();
+
 Check(JsonSerializer.Deserialize<MediaAsset>("{\"width\":1920,\"height\":1080,\"duration\":4}")!.FrameRate == 30,
     "legacy projects without source frame rate default to 30fps");
 
@@ -96,13 +112,13 @@ Check(Math.Abs(croppedSourceCenter.X - .4) < 1e-9 && Math.Abs(croppedSourceCente
     && Math.Abs(croppedTargetScene.CropOrigin.X - .05) < 1e-9,
     $"automatic zoom crop mapping (center={croppedSourceCenter}, cursor={croppedAutoScene.Cursor}, target={croppedTargetScene.CropOrigin})");
 
-double SampleEase(ZoomEasing easing, double progress)
+double SampleEase(ZoomEasing easing, double progress, ZoomBezierCurve? curve = null, SpringAnimationSettings? spring = null)
 {
     var easeProject = new FrameTrailProject
     {
         MediaPath = "capture.mp4", Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 2 }] },
-        Settings = new() { AutoZoom = false },
-        ZoomClips = [new() { Start = 0, End = 1, Scale = 2, Focus = new(.5, .5), EnterDuration = 1, ExitDuration = 0, Easing = easing }]
+        Settings = new() { AutoZoom = false, Spring = spring ?? new() },
+        ZoomClips = [new() { Start = 0, End = 1, Scale = 2, Focus = new(.5, .5), EnterDuration = 1, ExitDuration = 0, Easing = easing, CustomCurve = curve ?? ZoomBezierCurve.Cubic }]
     };
     return new PreparedFrameSceneEvaluator(easeProject).Evaluate(progress).Zoom - 1;
 }
@@ -111,12 +127,40 @@ Check(Math.Abs(SampleEase(ZoomEasing.Cubic, .25) - .07079658) < 1e-6
     && Math.Abs(SampleEase(ZoomEasing.Quadratic, .25) - .12015) < 1e-4
     && Math.Abs(SampleEase(ZoomEasing.Spring, .5) - .88059446) < 1e-6,
     "zoom easing matches Swift quadratic/cubic/quintic Bezier controls and normalized default spring samples");
+var customCurve = new ZoomBezierCurve(.2, .05, .8, .95);
+var customSpring = new SpringAnimationSettings { Mass = 1.8, Stiffness = 320, Damping = 28 };
+Check(Math.Abs(SampleEase(ZoomEasing.Custom, .25, customCurve) - .210574325622496) < 1e-9
+    && SampleEase(ZoomEasing.Spring, .5, spring: customSpring) > .999999,
+    "custom Bezier and configured spring match separately calculated normalized response samples");
+var customEase = .210574325622496;
+var customSceneBase = new FrameTrailProject
+{
+    MediaPath = "capture.mp4", Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 2 }] },
+    Settings = new() { AutoZoom = false, Opening = new() { Enabled = true, Duration = 1, Easing = ZoomEasing.Custom, CustomCurve = customCurve } },
+    ScreenMotions = [new() { Start = 0, Duration = 1, EnterDuration = 1, ReturnDuration = 0, Easing = ZoomEasing.Custom, CustomCurve = customCurve, Target = new() { Position = new(.9, .5) } }],
+    Camera = new() { MediaPath = "camera.mp4", Duration = 2, TimelineStart = 0 },
+    CameraMotions = [new() { Start = 0, Duration = 1, EnterDuration = 1, ReturnDuration = 0, Easing = ZoomEasing.Custom, CustomCurve = customCurve, TargetPosition = new(.9, .8) }]
+};
+var customScene = new PreparedFrameSceneEvaluator(customSceneBase).Evaluate(.25);
+var customCameraCenter = customScene.Camera!.Rect.X + customScene.Camera.Rect.Width / 2;
+Check(Math.Abs(customScene.ScreenMotion!.Position.X - (.5 + .4 * customEase)) < 1e-9
+    && Math.Abs(customCameraCenter - (.82 + .08 * customEase)) < 1e-9
+    && Math.Abs(customScene.Opening!.Scale - (.85 + .15 * customEase)) < 1e-9,
+    "custom Bezier curve is applied to screen, camera and opening transitions");
 
 var track = new[] { new PointerEvent(0, new(.1, .2)), new PointerEvent(.1, new(.2, .3)), new PointerEvent(.2, new(.4, .5)) };
 var pointer = PointerTrack.Sample(track, .15, PointerSmoothing.Medium).Position;
 Check(pointer is not null && pointer.Value.X > .2 && pointer.Value.X < .4, "monotone pointer interpolation");
 Check(JsonSerializer.Deserialize<FrameTrailSettings>("{}")!.PointerSmoothing == PointerSmoothing.Smooth,
     "projects without a pointer smoothing field retain the original smooth default");
+Check(JsonSerializer.Deserialize<FrameTrailSettings>("{}")!.Spring is { Mass: 2.4, Stiffness: 210, Damping: 42 }
+    && JsonSerializer.Deserialize<ZoomClip>("{}")!.CustomCurve == ZoomBezierCurve.Cubic,
+    "legacy projects receive the original default animation spring and cubic custom curve");
+var serializedCurveProject = Copy(customSceneBase);
+Check(serializedCurveProject.ZoomClips.Count == 0 && serializedCurveProject.ScreenMotions[0].CustomCurve == customCurve
+    && serializedCurveProject.CameraMotions[0].CustomCurve == customCurve && serializedCurveProject.Settings.Opening!.CustomCurve == customCurve
+    && serializedCurveProject.Settings.Spring == customSceneBase.Settings.Spring,
+    "curve and spring fields survive project JSON cloning used by history snapshots");
 Check(new CanvasSettings().FrameToolbarScale == 1 && new CanvasSettings().FrameOuterRadius is null,
     "legacy mock frames retain the default toolbar scale and inferred outer radius");
 const double springStep = 1d / 240;
@@ -462,6 +506,24 @@ try
     throw new Exception("oversized mock frame radius was accepted");
 }
 catch (InvalidDataException) { }
+try
+{
+    var invalid = Copy(customSceneBase);
+    invalid.ZoomClips = [new() { Start = 0, End = 1, Easing = ZoomEasing.Custom, CustomCurve = new(double.NaN, 0, 1, 1) }];
+    FrameTrailProjectStore.Save(Path.Combine(root, "invalid-custom-curve.frametrail"), invalid);
+    throw new Exception("non-finite custom easing point was accepted");
+}
+catch (InvalidDataException) { }
+try
+{
+    var invalid = Copy(customSceneBase);
+    invalid.Settings.Spring.Stiffness = double.NaN;
+    FrameTrailProjectStore.Save(Path.Combine(root, "invalid-spring.frametrail"), invalid);
+    throw new Exception("non-finite spring parameter was accepted");
+}
+catch (InvalidDataException) { }
+Check((int)ZoomEasing.Linear == 0 && (int)ZoomEasing.Quadratic == 4 && (int)ZoomEasing.Custom == 5,
+    "custom easing is appended without changing existing enum values");
 try
 {
     var invalid = Copy(negativeCameraProject);

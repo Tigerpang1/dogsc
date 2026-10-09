@@ -27,6 +27,20 @@ public sealed class SceneAssetLoader : IDisposable
         this.projectFile = Path.GetFullPath(projectFile); this.outputWidth = outputWidth; this.outputHeight = outputHeight;
     }
 
+    /// <summary>Probes the camera asset for evaluator geometry without mutating the caller's project snapshot.</summary>
+    public static async Task<double?> ProbeCameraAspectRatioAsync(FrameTrailProject project, string projectFile, CancellationToken cancellation = default)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        if (project.Camera is not { } camera) return null;
+        var path = FrameTrailProjectStore.ResolveAssetPath(projectFile, camera.MediaPath);
+        var info = await MediaTools.ProbeAsync(path, cancellation);
+        if (info.Width < 2 || info.Height < 2 || info.Duration <= 0)
+            throw new InvalidDataException($"摄像头素材没有有效画面：{camera.MediaPath}");
+        var aspect = info.Width / (double)info.Height;
+        if (!double.IsFinite(aspect) || aspect <= 0) throw new InvalidDataException($"摄像头素材宽高比无效：{camera.MediaPath}");
+        return aspect;
+    }
+
     /// <summary>Loads active background, camera and image layers. Calls are serialized for a shared preview loader.</summary>
     public async Task<IReadOnlyList<FrameLayerInput>> LoadAsync(FrameScene scene, CancellationToken cancellation = default)
     {
@@ -69,7 +83,7 @@ public sealed class SceneAssetLoader : IDisposable
                 var tileWidth = 1024; var tileHeight = Math.Clamp((int)Math.Round(tileWidth * rect.Height * outputHeight / Math.Max(rect.Width * outputWidth, 1)), 24, 128);
                 var key = $"{tileWidth}x{tileHeight}|{frameCanvas.Frame}|{frameCanvas.Title}|{frameCanvas.Address}";
                 if (!textLayers.TryGetValue(key, out var textTile)) textLayers.Add(key, textTile = BuildFrameText(frameCanvas, tileWidth, tileHeight, cancellation));
-                result.Add(new(textTile.Width, textTile.Height, textTile.Pixels, rect, Layer: int.MaxValue, FollowScreenTransform: true));
+                result.Add(new(textTile.Width, textTile.Height, textTile.Pixels, rect, Layer: int.MinValue, FollowScreenTransform: true));
             }
             foreach (var overlay in scene.Overlays ?? [])
             {
@@ -80,7 +94,9 @@ public sealed class SceneAssetLoader : IDisposable
                 var scale = Math.Min(1, 2048d / Math.Max(info.Width, info.Height));
                 var width = Math.Max(1, (int)Math.Round(info.Width * scale)); var height = Math.Max(1, (int)Math.Round(info.Height * scale));
                 var (_, _, pixels) = await LoadImage(path, width, height, cancellation);
-                result.Add(new(width, height, pixels, overlay.Rect, overlay.Rotation, overlay.Opacity, overlay.Layer, overlay.CornerRadius, Blur: overlay.Blur));
+                result.Add(new(width, height, pixels, overlay.Rect, overlay.Rotation, overlay.Opacity, overlay.Layer, overlay.CornerRadius, Blur: overlay.Blur,
+                    BorderWidth: overlay.BorderWidth, BorderColor: overlay.BorderColor, ShadowOpacity: overlay.ShadowOpacity, ShadowRadius: overlay.ShadowRadius,
+                    ShadowOffsetX: overlay.ShadowOffsetX, ShadowOffsetY: overlay.ShadowOffsetY, BorderOutside: true));
             }
             if (scene.Camera is { } camera)
             {
@@ -88,12 +104,20 @@ public sealed class SceneAssetLoader : IDisposable
                 var cameraInfo = await Probe(path, cancellation);
                 if (cameraInfo.Duration <= 0 || camera.SourceTime < 0 || camera.SourceTime >= cameraInfo.Duration)
                     throw new InvalidDataException($"摄像头素材时间越界：请求 {camera.SourceTime:0.###} 秒，素材时长 {cameraInfo.Duration:0.###} 秒。请缩短摄像头源区间或调整起点。");
-                var edge = Math.Clamp(Math.Min(outputWidth, outputHeight) / 3, 96, 720);
-                if (!cameraStreams.TryGetValue(path, out var stream)) cameraStreams.Add(path, stream = new CameraFrameStream(path, edge, edge));
+                var edge = Math.Max(outputWidth, outputHeight);
+                var (decodeWidth, decodeHeight) = CameraDecodeSize(cameraInfo.Width, cameraInfo.Height, edge);
+                if (!cameraStreams.TryGetValue(path, out var stream)) cameraStreams.Add(path, stream = new CameraFrameStream(path, decodeWidth, decodeHeight));
                 var pixels = await stream.ReadAsync(camera.SourceTime, cancellation);
-                result.Add(new(edge, edge, pixels, camera.Rect, Rotation: camera.Rotation, Opacity: camera.Opacity, Layer: int.MaxValue - 1,
-                    CornerRadius: camera.CornerRadius, Mirrored: camera.Mirrored, Shape: camera.Shape, SourceCrop: camera.Crop,
-                    BorderWidth: camera.BorderWidth, BorderColor: camera.BorderColor));
+                var targetAspect = camera.Rect.Width * outputWidth / Math.Max(camera.Rect.Height * outputHeight, 1e-9);
+                var sourceAspect = decodeWidth / (double)decodeHeight;
+                var sourceCrop = ComputeCameraFillCrop(camera.Crop == default ? NormalizedRect.Full : camera.Crop, sourceAspect, targetAspect);
+                // Camera shadows are authored against a 1080px short edge. The GPU's
+                // shared layer shadow constants use a 1920px output-width reference.
+                var shadowUnits = 1920d * Math.Min(outputWidth, outputHeight) / (1080d * outputWidth);
+                result.Add(new(decodeWidth, decodeHeight, pixels, camera.Rect, Rotation: camera.Rotation, Opacity: camera.Opacity, Layer: int.MinValue + 1,
+                    CornerRadius: camera.CornerRadius, Mirrored: camera.Mirrored, Shape: camera.Shape, SourceCrop: sourceCrop,
+                    BorderWidth: camera.BorderWidth, BorderColor: camera.BorderColor,
+                    ShadowOpacity: camera.ShadowStrength, ShadowRadius: 14 * shadowUnits, ShadowOffsetY: 8 * shadowUnits));
             }
             return result;
         }
@@ -106,6 +130,37 @@ public sealed class SceneAssetLoader : IDisposable
         if (images.TryGetValue(key, out var cached)) return cached;
         var pixels = await MediaTools.DecodeFrameAsync(path, 0, width, height, cancellation);
         var entry = (width, height, pixels); images.Add(key, entry); return entry;
+    }
+
+    /// <summary>Center-crops within the user's camera crop so the source fills the target geometry without stretching.</summary>
+    public static NormalizedRect ComputeCameraFillCrop(NormalizedRect userCrop, double sourceAspect, double targetAspect)
+    {
+        var crop = userCrop.Clamp();
+        if (!crop.IsFinite || crop.Width <= 0 || crop.Height <= 0
+            || !double.IsFinite(sourceAspect) || sourceAspect <= 0
+            || !double.IsFinite(targetAspect) || targetAspect <= 0)
+            throw new ArgumentOutOfRangeException(nameof(userCrop), "摄像头取景比例或裁切矩形无效。");
+        var currentAspect = sourceAspect * crop.Width / crop.Height;
+        if (currentAspect > targetAspect)
+        {
+            var width = crop.Width * targetAspect / currentAspect;
+            crop = crop with { X = crop.X + (crop.Width - width) / 2, Width = width };
+        }
+        else if (currentAspect < targetAspect)
+        {
+            var height = crop.Height * currentAspect / targetAspect;
+            crop = crop with { Y = crop.Y + (crop.Height - height) / 2, Height = height };
+        }
+        return crop;
+    }
+
+    private static (int Width, int Height) CameraDecodeSize(int sourceWidth, int sourceHeight, int maxEdge)
+    {
+        if (sourceWidth <= 0 || sourceHeight <= 0) throw new InvalidDataException("摄像头素材宽高无效。");
+        var scale = Math.Min(1, maxEdge / (double)Math.Max(sourceWidth, sourceHeight));
+        var width = Math.Max(2, (int)Math.Round(sourceWidth * scale / 2) * 2);
+        var height = Math.Max(2, (int)Math.Round(sourceHeight * scale / 2) * 2);
+        return (width, height);
     }
 
     private async Task<MediaInfo> Probe(string path, CancellationToken cancellation)
@@ -244,7 +299,7 @@ internal sealed class CameraFrameStream : IDisposable
         currentFrame = target - 1; lastFrame = null;
         var time = target / (double)FrameRate;
         process = MediaTools.Start(MediaTools.Ffmpeg,
-            ["-v", "error", "-ss", MediaTools.Number(time), "-i", path, "-an", "-vf", $"fps={FrameRate},scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height},format=bgra", "-f", "rawvideo", "pipe:1"], output: true);
+            ["-v", "error", "-ss", MediaTools.Number(time), "-i", path, "-an", "-vf", $"fps={FrameRate},scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,format=bgra", "-f", "rawvideo", "pipe:1"], output: true);
         errorText = process.StandardError.ReadToEndAsync();
         lastFrame = await ReadFrame(cancellation); currentFrame = target;
     }

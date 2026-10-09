@@ -54,22 +54,22 @@ public partial class MainWindow
     recordingTrackWarnings.AddRange(track.Warnings.Select(x=>Path.GetFileName(track.Handle.MediaPath)+": "+x));if(!File.Exists(track.Handle.MediaPath))throw new FileNotFoundException("独立素材文件未写入。",track.Handle.MediaPath);
     var info=await MediaTools.ProbeAsync(track.Handle.MediaPath);if(!double.IsFinite(info.Duration)||info.Duration<=0)throw new InvalidDataException("独立素材没有有效时长。");
     var relative=Path.GetRelativePath(recordingFolder!,track.Handle.MediaPath).Replace('\\','/');
-    if(track.Handle.Kind==CaptureTrackKind.Camera){if(info.Width<1)throw new InvalidDataException("摄像头素材没有视频轨。");AttachMappedCamera(created,screen,track,relative,info.Duration);if(created.Camera==null)throw new InvalidDataException("摄像头与屏幕没有可对齐的有效时段。");}
-    else{if(!info.HasAudio)throw new InvalidDataException("独立素材没有声音轨。");var before=created.AudioTracks.Count;AttachMappedAudio(created,screen,track,relative,info.Duration);if(before==created.AudioTracks.Count)throw new InvalidDataException("声音与屏幕没有可对齐的有效时段。");}
+    if(track.Handle.Kind==CaptureTrackKind.Camera){if(info.Width<1||info.Height<1)throw new InvalidDataException("摄像头素材没有视频轨。");AttachMappedCamera(created,screen,track,relative,info.Duration,info.Width/(double)info.Height);if(created.Camera==null)throw new InvalidDataException("摄像头与屏幕没有可对齐的有效时段。");}
+    else{if(!info.HasAudio)throw new InvalidDataException("独立素材没有声音轨。");var before=created.AudioTracks.Count;var source=track.Handle.Kind==CaptureTrackKind.SystemAudio?AudioTrackSource.System:AudioTrackSource.Microphone;AttachMappedAudio(created,screen,track,relative,info.Duration,source);if(before==created.AudioTracks.Count)throw new InvalidDataException("声音与屏幕没有可对齐的有效时段。");}
    }catch(Exception ex){App.Log(ex);recordingTrackWarnings.Add(Path.GetFileName(track.Handle.MediaPath)+" 未加入工程，原始文件与时钟记录已保留："+ex.Message);}
   }
   await File.WriteAllTextAsync(Path.Combine(recordingFolder!,"independent-tracks-result.json"),JsonSerializer.Serialize(tracks,new JsonSerializerOptions{WriteIndented=true}));
   if(recordingTrackWarnings.Count>0)await File.WriteAllLinesAsync(Path.Combine(recordingFolder!,"recording-warnings.txt"),recordingTrackWarnings);
  }
- private static void AttachMappedAudio(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration)
+ private static void AttachMappedAudio(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration,AudioTrackSource source=AudioTrackSource.Other)
  {
-  foreach(var interval in MapRecordedTrack(created,screen,track,sourceDuration))created.AudioTracks.Add(new(){MediaPath=relative,SourceStart=interval.SourceStart,Duration=interval.Duration,OffsetSeconds=interval.TimelineStart});
+  foreach(var interval in MapRecordedTrack(created,screen,track,sourceDuration))created.AudioTracks.Add(new(){MediaPath=relative,SourceStart=interval.SourceStart,Duration=interval.Duration,OffsetSeconds=interval.TimelineStart,Source=source});
  }
- private static void AttachMappedCamera(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration)
+ private static void AttachMappedCamera(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,string relative,double sourceDuration,double assetAspectRatio)
  {
   var intervals=MapRecordedTrack(created,screen,track,sourceDuration);if(intervals.Count==0)return;
   var first=intervals[0];var end=intervals[^1].TimelineStart+intervals[^1].Duration;
-  created.Camera=new(){MediaPath=relative,SourceStart=first.SourceStart,TimelineStart=first.TimelineStart,Duration=end-first.TimelineStart,SyncSegments=intervals.Select(x=>new CameraSyncSegment(x.SourceStart,x.TimelineStart,x.Duration)).ToList()};
+  created.Camera=new(){MediaPath=relative,AssetAspectRatio=assetAspectRatio,SourceStart=first.SourceStart,TimelineStart=first.TimelineStart,Duration=end-first.TimelineStart,SyncSegments=intervals.Select(x=>new CameraSyncSegment(x.SourceStart,x.TimelineStart,x.Duration)).ToList()};
  }
  private static List<MappedAudioInterval> MapRecordedTrack(FrameTrailProject created,RecordingResult screen,CaptureTrackResult track,double sourceDuration)
  {

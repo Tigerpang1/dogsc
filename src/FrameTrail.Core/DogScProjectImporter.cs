@@ -95,13 +95,15 @@ public static class DogScProjectImporter
             };
 
             project.MediaPath = CopyProjectAsset(sourceRoot, staging, screenPath, "media/screen", "", warnings);
+            // Sticker geometry uses the authored canvas aspect and reference short edge.
+            MapCanvas(root, sourceRoot, staging, project, warnings);
             MapTimeline(root, sourceRoot, staging, project, screenMedia.Duration, warnings);
             ValidateImportedTimeline(project, screenMedia.Duration);
             MapPointerEvents(sourceRoot, staging, media, project, warnings);
             MapMarkers(root, project, warnings);
-            MapCanvas(root, sourceRoot, staging, project, warnings);
             MapOpening(root, project, warnings);
             MapCursor(root, project, warnings);
+            MapAnimationSpring(root, project);
             MapCameraAndAudio(root, sourceRoot, staging, media, project, screenMedia.Duration, warnings);
 
             var projectFile = Path.Combine(staging, "project.frametrail");
@@ -178,13 +180,14 @@ public static class DogScProjectImporter
                     Focus = Point(focus, new(.5, .5)),
                     EnterDuration = Number(zoom, "enterDuration", .55),
                     ExitDuration = Number(zoom, "exitDuration", .55),
+                    EnterProgressOffset = Math.Clamp(Number(zoom, "enterProgressOffset", 0), 0, 1),
+                    ExitProgressOffset = Math.Clamp(Number(zoom, "exitProgressOffset", 0), 0, 1),
                     Easing = MapEasing(easing),
-                    Automatic = origin.Equals("automatic", StringComparison.OrdinalIgnoreCase)
+                    CustomCurve = ReadCurve(Get(zoom, "customCurve")),
+                    Automatic = origin.Equals("automatic", StringComparison.OrdinalIgnoreCase),
+                    FocusEffect = Get(zoom, "focusEffect").ValueKind == JsonValueKind.Object
+                        ? MapFocusEffect(Get(zoom, "focusEffect"), warnings, "缩放") : null
                 });
-                if (Get(zoom, "focusEffect").ValueKind == JsonValueKind.Object)
-                    warnings.Add("缩放片段上的 focusEffect 没有目标字段；仅缩放焦点、倍率、时段和缓动已导入。");
-                if (easing.Equals("自定义曲线", StringComparison.OrdinalIgnoreCase) || easing.Equals("custom", StringComparison.OrdinalIgnoreCase))
-                    warnings.Add("自定义缩放贝塞尔曲线被映射为三次缓动；原控制点未导入。");
             }
         }
 
@@ -193,8 +196,46 @@ public static class DogScProjectImporter
         MapMosaics(Get(timeline, "mosaicClips"), project, warnings);
         MapStickers(Get(timeline, "stickerClips"), sourceRoot, staging, project, warnings);
         var audioOverrides = Get(timeline, "primarySegmentAudioOverrides");
-        if (audioOverrides.ValueKind == JsonValueKind.Object && audioOverrides.EnumerateObject().Any())
-            warnings.Add("各剪辑的 system/microphone 音量覆写未导入；项目级系统音量和独立麦克风轨道已导入。");
+        if (audioOverrides.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in audioOverrides.EnumerateObject())
+            {
+                if (!Guid.TryParse(property.Name, out var segmentId))
+                { warnings.Add($"DogSC 音量覆写键 {property.Name} 不是有效片段 ID，已忽略。"); continue; }
+                var segment = project.Timeline.Segments.FirstOrDefault(x => x.Id == segmentId);
+                if (segment is null)
+                { warnings.Add($"DogSC 音量覆写引用了不存在的片段 {segmentId}，已忽略。"); continue; }
+                var item = property.Value;
+                var mapped = new PrimarySegmentAudioOverrides
+                {
+                    SystemVolume = OptionalVolume(item, "systemVolume", warnings, segmentId),
+                    MicrophoneVolume = OptionalVolume(item, "microphoneVolume", warnings, segmentId),
+                    SystemMuted = OptionalBoolean(item, "isSystemMuted"),
+                    MicrophoneMuted = OptionalBoolean(item, "isMicrophoneMuted")
+                };
+                if (!mapped.IsEmpty) segment.AudioOverrides = mapped;
+            }
+        }
+    }
+
+    private static double? OptionalVolume(JsonElement source, string field, List<string> warnings, Guid segmentId)
+    {
+        var value = Get(source, field);
+        if (value.ValueKind == JsonValueKind.Undefined || value.ValueKind == JsonValueKind.Null) return null;
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number) && double.IsFinite(number) && number is >= 0 and <= 1) return number;
+        warnings.Add($"DogSC 片段 {segmentId} 的 {field} 超出范围或格式无效，已忽略该值。");
+        return null;
+    }
+
+    private static bool? OptionalBoolean(JsonElement source, string field)
+    {
+        var value = Get(source, field);
+        return value.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            _ => null
+        };
     }
 
     private static void MapScreenMotion(JsonElement clips, FrameTrailProject project, List<string> warnings)
@@ -226,12 +267,11 @@ public static class DogScProjectImporter
                 EnterDuration = Math.Clamp(enter, 0, duration),
                 ReturnDuration = Math.Clamp(Number(timing, "returnDuration", 0), 0, 5),
                 Easing = MapEasing(String(timing, "easing")), Target = state,
+                CustomCurve = ReadCurve(Get(timing, "customCurve")),
                 GroupId = Guid.TryParse(String(clip, "groupID"), out var group) ? group : null,
                 Focus = Get(clip, "focusEffect").ValueKind == JsonValueKind.Object
                     ? MapFocusEffect(Get(clip, "focusEffect"), warnings, "屏幕 3D") : null
             });
-            if (Get(timing, "customCurve").ValueKind == JsonValueKind.Object)
-                warnings.Add("屏幕 3D 自定义曲线控制点未导入；已映射为最接近的标准缓动。");
         }
     }
 
@@ -247,22 +287,51 @@ public static class DogScProjectImporter
             if (!double.IsFinite(start + duration) || start < 0 || duration <= 0 || !position.IsFinite)
             { warnings.Add("无效的 DogSC 摄像头运动片段已跳过。"); continue; }
             var layout = Get(target, "layout");
-            if (String(layout, "kind").Equals("fullscreen", StringComparison.OrdinalIgnoreCase))
-            {
-                warnings.Add("DogSC 全屏摄像头运动无法由当前摄像头插图轨道表达；该运动片段已跳过。"); continue;
-            }
             project.CameraMotions.Add(new CameraMotionClip
             {
                 Id = GuidOrNew(clip, "id"), Start = start, Duration = duration,
                 EnterDuration = Math.Clamp(Number(timing, "leadInDuration", duration), 0, duration),
                 ReturnDuration = Math.Clamp(Number(timing, "returnDuration", 0), 0, 5),
                 Easing = MapEasing(String(timing, "easing")), TargetPosition = position,
-                TargetSize = Math.Clamp(Number(target, "size", .28), .02, 1)
+                CustomCurve = ReadCurve(Get(timing, "customCurve")),
+                TargetSize = Math.Clamp(Number(target, "size", .28), .02, 1),
+                TargetLayout = MapCameraLayout(layout),
+                TargetRoundness = Get(target, "roundness").ValueKind == JsonValueKind.Number
+                    ? Math.Clamp(Number(target, "roundness", .5), 0, 1) : null,
+                TargetOpacity = Get(target, "opacity").ValueKind == JsonValueKind.Number
+                    ? Math.Clamp(Number(target, "opacity", 1), 0, 1) : null
             });
-            if (Number(target, "opacity", 1) != 1 || Number(target, "roundness", .5) != .5
-                || String(layout, "kind").Equals("shape", StringComparison.OrdinalIgnoreCase))
-                warnings.Add("摄像头运动的透明度、圆角和形状过渡没有目标字段；位置和尺寸已保留。");
+            if (String(layout, "kind").Equals("shape", StringComparison.OrdinalIgnoreCase)
+                && MapCameraLayout(layout) is null)
+                warnings.Add("未识别的 DogSC 摄像头运动形状已按圆角方形近似导入。");
         }
+    }
+
+    private static CameraMotionLayoutKind? MapCameraLayout(JsonElement layout)
+    {
+        if (layout.ValueKind != JsonValueKind.Object) return null;
+        var kind = String(layout, "kind");
+        if (kind.Equals("fullscreen", StringComparison.OrdinalIgnoreCase)) return CameraMotionLayoutKind.Fullscreen;
+        if (!kind.Equals("shape", StringComparison.OrdinalIgnoreCase)) return null;
+        return MapCameraShape(String(layout, "shape"));
+    }
+
+    private static CameraMotionLayoutKind? MapCameraShape(string shape) => shape.ToLowerInvariant() switch
+    {
+        "square" or "roundedrectangle" or "rounded_rectangle" => CameraMotionLayoutKind.RoundedRectangle,
+        "circle" => CameraMotionLayoutKind.Circle,
+        "horizontal" => CameraMotionLayoutKind.Horizontal,
+        "vertical" => CameraMotionLayoutKind.Vertical,
+        "original" => CameraMotionLayoutKind.Original,
+        "fullscreen" => CameraMotionLayoutKind.Fullscreen,
+        _ => null
+    };
+
+    private static double? ReadAspectRatio(JsonElement cameraRef, JsonElement camera)
+    {
+        var width = Number(cameraRef, "width", Number(camera, "width", 0));
+        var height = Number(cameraRef, "height", Number(camera, "height", 0));
+        return width > 0 && height > 0 && double.IsFinite(width / height) ? width / height : null;
     }
 
     private static void MapMosaics(JsonElement clips, FrameTrailProject project, List<string> warnings)
@@ -283,20 +352,18 @@ public static class DogScProjectImporter
             {
                 Id = GuidOrNew(clip, "id"), Start = start, Duration = duration, Rect = clippedRect,
                 Strength = Math.Clamp(Number(clip, "intensity", .55), 0, 1),
-                Kind = BlurKind.Blur,
+                Kind = style.Equals("spotlight", StringComparison.OrdinalIgnoreCase) ? BlurKind.Spotlight : BlurKind.Blur,
+                SpotlightDimming = Math.Clamp(Number(clip, "spotlightDimming", .22), 0, .75), SourceSpace = true,
+                TransitionStyle = transition.ToLowerInvariant() switch { "linear" => RegionTransitionStyle.Linear, "smooth" => RegionTransitionStyle.Smooth, "none" or "" => RegionTransitionStyle.None, _ => null },
                 CornerRadius = Math.Clamp(Number(clip, "cornerRadius", .08), 0, .5),
                 EnterDuration = transition.Equals("none", StringComparison.OrdinalIgnoreCase) ? 0
                     : Math.Clamp(Number(clip, "transitionInDuration", .3), 0, duration),
                 ExitDuration = transition.Equals("none", StringComparison.OrdinalIgnoreCase) ? 0
                     : Math.Clamp(Number(clip, "transitionOutDuration", .3), 0, duration)
             });
-            if (style.Equals("spotlight", StringComparison.OrdinalIgnoreCase))
-                warnings.Add("DogSC spotlight 已保留其区域和过渡时间并映射为普通柔化；区域外压暗及清晰焦点效果不受支持。");
             if (!string.IsNullOrWhiteSpace(transition) && !transition.Equals("none", StringComparison.OrdinalIgnoreCase)
-                && !transition.Equals("swift", StringComparison.OrdinalIgnoreCase))
+                && !transition.Equals("linear", StringComparison.OrdinalIgnoreCase) && !transition.Equals("smooth", StringComparison.OrdinalIgnoreCase))
                 warnings.Add($"DogSC 区域柔化过渡曲线 {transition} 未单独迁移；仅保留过渡时长并使用 FrameTrail 标准缓动。");
-            if (Number(clip, "spotlightDimming", 0) > 0 && !style.Equals("spotlight", StringComparison.OrdinalIgnoreCase))
-                warnings.Add("普通区域柔化中的 spotlightDimming 没有目标效果，已忽略。");
         }
     }
 
@@ -333,36 +400,40 @@ public static class DogScProjectImporter
                 Id = GuidOrNew(clip, "id"), MediaPath = copied, Start = start, Duration = duration,
                 Rect = rect, Rotation = Number(clip, "rotationDegrees", 0), Opacity = Math.Clamp(Number(clip, "opacity", 1), 0, 1),
                 Layer = Int(clip, "layerIndex", 0), EnterMotion = animation,
-                ExitMotion = string.IsNullOrEmpty(exit) ? animation : MapStickerMotion(exit, warnings),
+                ExitMotion = string.IsNullOrEmpty(exit) ? OverlayMotionEvaluator.AutomaticExit(animation) : MapStickerMotion(exit, warnings),
                 EnterDuration = Math.Clamp(Number(clip, "enterDuration", .7), 0, 5),
                 ExitDuration = Math.Clamp(Number(clip, "exitDuration", .22), 0, 5),
-                CornerRadius = Math.Clamp(Number(clip, "cornerRadius", 0) / shortEdge, 0, .5),
-                Blur = 0
+                CornerRadius = Math.Clamp(Math.Clamp(Number(clip, "cornerRadius", 0), 0, 160)
+                    * rectWidth * project.Settings.CanvasWidth / 1920d / shortEdge, 0, .5),
+                BorderWidth = Math.Clamp(Number(clip, "borderWidth", 0), 0, 60),
+                BorderColor = Color(String(clip, "borderColor"), "#FFFFFF"),
+                ShadowOpacity = Math.Clamp(Number(clip, "shadowOpacity", .28), 0, 1),
+                ShadowRadius = Number(clip, "shadowRadius", 24),
+                ShadowOffsetX = Number(clip, "shadowOffsetX", 0),
+                ShadowOffsetY = Number(clip, "shadowOffsetY", 10),
+                AnimationCurve = String(clip, "animationCurve").ToLowerInvariant() switch
+                {
+                    "smooth" => ElementMotionCurve.Smooth, "gentle" => ElementMotionCurve.Gentle, _ => ElementMotionCurve.Swift
+                },
+                Blur = 0, BackdropBlur = Math.Clamp(Number(clip, "backdropBlur", 0), 0, 100),
+                BackdropBlurIncludesCamera = Bool(clip, "backdropBlurIncludesCamera", false),
+                HidesScreen = Bool(clip, "hidesScreen", false), HidesCamera = Bool(clip, "hidesCamera", false)
             });
-            if (Number(clip, "borderWidth", 0) > 0)
-                warnings.Add($"贴图 {relativePath} 的边框宽度/颜色没有目标字段；已保留贴图本体。");
-            if (Number(clip, "shadowOpacity", 0) > 0 || Number(clip, "shadowRadius", 0) > 0 || Number(clip, "shadowOffsetX", 0) != 0 || Number(clip, "shadowOffsetY", 0) != 0)
-                warnings.Add($"贴图 {relativePath} 的投影参数没有目标字段；已保留贴图本体。");
-            if (Number(clip, "backdropBlur", 0) > 0 || Bool(clip, "backdropBlurIncludesCamera", false))
-                warnings.Add($"贴图 {relativePath} 的背景/摄像头柔化没有目标字段；已保留贴图本体。");
-            if (Bool(clip, "hidesScreen", false) || Bool(clip, "hidesCamera", false))
-                warnings.Add($"贴图 {relativePath} 的显示期间隐藏屏幕/摄像头设置没有目标字段；已保留贴图本体。");
-            if (String(clip, "animationCurve") is { Length: > 0 } curve && !curve.Equals("swift", StringComparison.OrdinalIgnoreCase))
-                warnings.Add($"贴图 {relativePath} 的动画曲线 {curve} 未单独迁移；进入/退出动画使用 FrameTrail 标准缓动。");
+            if (String(clip, "animationCurve").ToLowerInvariant() is { Length: > 0 } curve && curve is not ("smooth" or "swift" or "gentle"))
+                warnings.Add($"贴图 {relativePath} 的未知动画曲线 {curve} 已使用原版默认利落曲线。");
         }
     }
 
     private static OverlayMotion MapStickerMotion(string value, List<string> warnings)
     {
         var normalized = value.ToLowerInvariant();
-        if (normalized is "slidetopleft" or "slidetopright" or "slidebottomleft" or "slidebottomright")
-            warnings.Add($"DogSC 贴图斜向动画 {value} 已映射为同轴滑入；对角位移未保留。");
         return normalized switch
         {
             "none" => OverlayMotion.None, "fade" => OverlayMotion.Fade, "pop" => OverlayMotion.Scale,
             "slideleft" => OverlayMotion.SlideLeft, "slideright" => OverlayMotion.SlideRight,
-            "slideup" or "slidetopleft" or "slidetopright" => OverlayMotion.SlideUp,
-            "slidedown" or "slidebottomleft" or "slidebottomright" => OverlayMotion.SlideDown,
+            "slideup" => OverlayMotion.SlideUp, "slidedown" => OverlayMotion.SlideDown,
+            "slidetopleft" => OverlayMotion.SlideTopLeft, "slidetopright" => OverlayMotion.SlideTopRight,
+            "slidebottomleft" => OverlayMotion.SlideBottomLeft, "slidebottomright" => OverlayMotion.SlideBottomRight,
             _ => UnknownStickerMotion(value, warnings)
         };
     }
@@ -397,7 +468,7 @@ public static class DogScProjectImporter
         {
             "聚拢" or "converge" => OpeningPreset.Converge,
             "侧滑" or "sideSlide" => OpeningPreset.SideSlide,
-            "轻 3D" or "light3D" => OpeningPreset.Light3D,
+            "" or "轻 3D" or "light3D" => OpeningPreset.Light3D,
             _ => OpeningPreset.Custom
         };
         var duration = Math.Clamp(Number(opening, "duration", 2.2), .4, 8);
@@ -410,17 +481,24 @@ public static class DogScProjectImporter
         var easing = curve.Equals("smooth", StringComparison.OrdinalIgnoreCase) ? ZoomEasing.Quintic
             : curve.Equals("swift", StringComparison.OrdinalIgnoreCase) || curve.Equals("gentle", StringComparison.OrdinalIgnoreCase) ? ZoomEasing.Cubic
             : MapEasing(curve);
+        var elementCurve = curve.ToLowerInvariant() switch
+        {
+            "smooth" => ElementMotionCurve.Smooth,
+            "gentle" => ElementMotionCurve.Gentle,
+            _ => ElementMotionCurve.Swift
+        };
         project.Settings.Opening = new OpeningSettings
         {
             Enabled = Bool(opening, "isEnabled", false), Preset = preset,
             Duration = duration,
             Easing = easing,
+            ElementCurve = preset == OpeningPreset.Custom ? null : elementCurve,
             Stagger = Math.Clamp(Number(opening, "stagger", .16), 0, maxStagger),
             IncludedElements = included,
             ElementOrder = order
         };
-        if (curve.Equals("swift", StringComparison.OrdinalIgnoreCase) || curve.Equals("gentle", StringComparison.OrdinalIgnoreCase))
-            warnings.Add($"DogSC 开场曲线 {curve} 近似映射到 FrameTrail 缓动；每个元素的入场顺序和错开时间已保留。");
+        if (curve.Length > 0 && curve.ToLowerInvariant() is not ("smooth" or "swift" or "gentle"))
+            warnings.Add($"未知 DogSC 开场曲线 {curve}；已使用原版默认利落曲线。");
         if (rawPreset.Length > 0 && preset == OpeningPreset.Custom)
             warnings.Add($"未知 DogSC 开场预设 {rawPreset} 未识别；仅保留开场启用状态和时长。");
     }
@@ -589,9 +667,9 @@ public static class DogScProjectImporter
             if (segment.SourceEnd > mediaDuration + 0.05)
                 throw new InvalidDataException($"DogSC 时间线片段超出主素材时长：{segment.SourceEnd:0.###} > {mediaDuration:0.###} 秒。");
         foreach (var clip in project.ZoomClips)
-            if (!double.IsFinite(clip.Start + clip.End + clip.Scale + clip.EnterDuration + clip.ExitDuration)
+            if (!double.IsFinite(clip.Start + clip.End + clip.Scale + clip.EnterDuration + clip.ExitDuration + clip.EnterProgressOffset + clip.ExitProgressOffset)
                 || clip.Start < 0 || clip.End <= clip.Start || clip.End > mediaDuration + 0.05
-                || clip.Scale < 1 || !clip.Focus.IsFinite)
+                || clip.Scale < 1 || clip.EnterProgressOffset is < 0 or > 1 || clip.ExitProgressOffset is < 0 or > 1 || !clip.Focus.IsFinite)
                 throw new InvalidDataException("DogSC 缩放片段超出支持范围或主素材时长。");
     }
 
@@ -707,6 +785,8 @@ public static class DogScProjectImporter
     {
         var cursor = Get(root, "cursorStyle");
         if (cursor.ValueKind != JsonValueKind.Object) return;
+        var motion = Get(root, "motion");
+        var cursorMotion = String(motion, "cursor");
         var rawAsset = Get(cursor, "assetID");
         var asset = rawAsset.ValueKind == JsonValueKind.String ? rawAsset.GetString() ?? "" : "";
         var hidden = asset.Equals("system.hidden", StringComparison.OrdinalIgnoreCase)
@@ -716,23 +796,40 @@ public static class DogScProjectImporter
         project.Settings.Cursor = new CursorSettings
         {
             Visible = !hidden,
+            Style = asset.ToLowerInvariant() switch
+            {
+                "system.automatic" or "" => CursorStyle.FollowRecorded,
+                "system.hand" or "system.pointinghand" => CursorStyle.SystemHand,
+                "system.ibeam" or "system.text" => CursorStyle.SystemText,
+                _ => CursorStyle.SystemArrow
+            },
             Scale = Math.Clamp(Number(cursor, "size", 1), .1, 5),
             HideWhenIdle = Bool(cursor, "hideWhenIdle", false),
             IdleSeconds = Math.Clamp(Number(cursor, "idleDelay", 1.5), 0, 60),
             ClickEffectsEnabled = !click.Equals("none", StringComparison.OrdinalIgnoreCase),
             ClickEffect = click.Equals("none", StringComparison.OrdinalIgnoreCase) ? ClickEffectStyle.None
-                : click.Equals("glow", StringComparison.OrdinalIgnoreCase) ? ClickEffectStyle.Ring : ClickEffectStyle.Pulse,
+                : click.Equals("glow", StringComparison.OrdinalIgnoreCase) ? ClickEffectStyle.Ring
+                : click.Equals("ripple", StringComparison.OrdinalIgnoreCase) ? ClickEffectStyle.Ripple
+                : click.Equals("burst", StringComparison.OrdinalIgnoreCase) ? ClickEffectStyle.Burst : ClickEffectStyle.Pulse,
             ClickColor = Color(String(cursor, "clickColor"), "#FFE066"),
-            ClickDuration = click.ToLowerInvariant() switch { "ripple" => .36, "glow" => .32, "burst" => .22, _ => .38 }
+            ClickDuration = click.ToLowerInvariant() switch { "ripple" => .36, "glow" => .32, "burst" => .22, _ => .38 },
+            MotionTiltEnabled = !cursorMotion.Equals("none", StringComparison.OrdinalIgnoreCase),
+            MotionTiltStrength = Math.Clamp(Number(cursor, "motionTiltStrength", 2), 2, 4),
+            ClickScale = Math.Clamp(Number(cursor, "clickScale", 1), .4, 3),
+            ClickOpacity = Math.Clamp(Number(cursor, "clickOpacity", .8), .05, 1)
         };
         if (!string.IsNullOrEmpty(asset) && !hidden
             && !asset.Equals("system.arrow", StringComparison.OrdinalIgnoreCase)
-            && !asset.Equals("system.automatic", StringComparison.OrdinalIgnoreCase))
+            && !asset.Equals("system.automatic", StringComparison.OrdinalIgnoreCase)
+            && !asset.Equals("system.hand", StringComparison.OrdinalIgnoreCase)
+            && !asset.Equals("system.pointinghand", StringComparison.OrdinalIgnoreCase)
+            && !asset.Equals("system.ibeam", StringComparison.OrdinalIgnoreCase)
+            && !asset.Equals("system.text", StringComparison.OrdinalIgnoreCase))
             warnings.Add("DogSC 光标资源 ID/外观没有迁移；指针位置与点击事件保留，导入后使用 FrameTrail 系统箭头。");
-        if (!click.Equals("none", StringComparison.OrdinalIgnoreCase) && !click.Equals("pulse", StringComparison.OrdinalIgnoreCase))
-            warnings.Add($"DogSC 点击效果 {click} 已映射为 FrameTrail 的近似样式，原动画外形与透明度/缩放参数未保留。");
-        if (Get(cursor, "motionTiltStrength").ValueKind == JsonValueKind.Number)
-            warnings.Add("DogSC 光标运动倾斜与资源热区配置没有对应的 FrameTrail 字段。");
+        if (!click.Equals("none", StringComparison.OrdinalIgnoreCase) && !click.Equals("pulse", StringComparison.OrdinalIgnoreCase)
+            && !click.Equals("ripple", StringComparison.OrdinalIgnoreCase) && !click.Equals("burst", StringComparison.OrdinalIgnoreCase)
+            && !click.Equals("glow", StringComparison.OrdinalIgnoreCase))
+            warnings.Add($"DogSC 点击效果 {click} 已映射为 FrameTrail 的近似样式；颜色、透明度、缩放和时长已保留。");
     }
 
     private static void MapCameraAndAudio(
@@ -744,13 +841,27 @@ public static class DogScProjectImporter
         {
             var path = CopyProjectAsset(sourceRoot, staging, String(cameraRef, "relativePath"), "media/camera", "", warnings);
             var camera = Get(root, "camera");
-            var timelineStart = Math.Clamp(Number(cameraRef, "startOffset", 0), -86400, 86400);
+            var timelineStart = Math.Clamp(Number(cameraRef, "startOffset", 0), 0, Math.Min(screenDuration, 86400));
             var sourceStart = Math.Max(0, Number(cameraRef, "sourceStartTime", 0));
             var end = Number(cameraRef, "sourceEndTime", double.NaN);
-            var duration = double.IsFinite(end) && end > sourceStart ? end - sourceStart : Math.Max(0, screenDuration - Math.Max(timelineStart, 0));
-            if (duration > 0)
+            var sourceRate = ReadSourceRate(cameraRef, warnings, "摄像头");
+            var cameraAnchors = ReadSyncAnchors(cameraRef, warnings, "摄像头");
+            var cameraMappings = DogScMediaClockMapper.Build(timelineStart, sourceStart, sourceRate,
+                double.IsFinite(end) ? end : null, screenDuration, cameraAnchors);
+            var duration = double.IsFinite(end)
+                ? Math.Max(0, end - sourceStart) / sourceRate
+                : Math.Max(0, screenDuration - timelineStart);
+            var mappedStart = cameraMappings.Count > 0 ? cameraMappings[0].TimelineStart : timelineStart;
+            var mappedDuration = cameraMappings.Count > 0
+                ? cameraMappings[^1].TimelineStart + cameraMappings[^1].Duration - mappedStart
+                : Math.Min(duration, Math.Max(0, screenDuration - timelineStart));
+            var mappedSourceStart = cameraMappings.Count > 0 ? cameraMappings[0].SourceStart : sourceStart;
+            if (mappedDuration > 0 && (!double.IsFinite(end) || end > sourceStart)
+                && (cameraMappings.Count > 0 || sourceRate == 1 && cameraAnchors.Count == 0))
             {
                 var shape = String(camera, "shape");
+                var cameraLayout = MapCameraShape(shape);
+                var cameraRoundness = Number(camera, "roundness", shape.Contains("circle", StringComparison.OrdinalIgnoreCase) ? .5 : .12);
                 var size = Number(camera, "size", .29);
                 var contentScale = Math.Clamp(Number(camera, "contentScale", 1), 1, 4);
                 var cropSize = 1 / contentScale;
@@ -759,27 +870,28 @@ public static class DogScProjectImporter
                 project.Camera = new CameraTrack
                 {
                     MediaPath = path,
-                    SourceStart = sourceStart,
-                    Duration = duration,
-                    TimelineStart = timelineStart,
+                    SourceStart = mappedSourceStart,
+                    Duration = mappedDuration,
+                    TimelineStart = mappedStart,
+                    SyncSegments = cameraMappings.Count > 0 ? cameraMappings : null,
                     Position = SafePoint(Get(camera, "position"), new(.96, .47)),
                     Size = Math.Clamp(size, .02, 1),
-                    CornerRadius = Math.Clamp(Number(camera, "roundness", shape.Contains("circle", StringComparison.OrdinalIgnoreCase) ? .5 : .12), 0, .5),
+                    CornerRadius = cameraLayout is null ? Math.Clamp(cameraRoundness, 0, .5) : Math.Clamp(cameraRoundness, 0, 1),
                     BorderWidth = Math.Clamp(Number(camera, "borderWidth", 0), 0, 18),
+                    ScaleDuringZoom = Math.Clamp(Number(camera, "scaleDuringZoom", .7), .1, 2),
+                    ShadowStrength = Math.Clamp(Number(camera, "shadowStrength", .25), 0, 1),
                     Shape = shape.Contains("circle", StringComparison.OrdinalIgnoreCase) ? CameraShape.Circle : CameraShape.RoundedRectangle,
+                    Layout = cameraLayout,
+                    AssetAspectRatio = ReadAspectRatio(cameraRef, camera),
                     Crop = crop,
                     Opacity = Bool(camera, "isHidden", false) ? 0 : 1,
                     Volume = 1,
                     Muted = true,
                     Mirrored = Bool(camera, "isMirrored", true)
                 };
-                if (Number(cameraRef, "sourceTimeScale", 1) != 1 || Get(cameraRef, "syncAnchors").ValueKind == JsonValueKind.Array && Get(cameraRef, "syncAnchors").GetArrayLength() > 0)
-                    warnings.Add("摄像头的时钟速率/分段同步锚点未迁移；素材和基础时间偏移已导入，需人工核对音画同步。");
-                if (Number(camera, "scaleDuringZoom", 1) != 1)
-                    warnings.Add("摄像头随屏幕缩放联动的大小变化没有迁移；固定尺寸和内部取景裁切已导入。");
-                if (Number(camera, "shadowStrength", 0) > 0)
-                    warnings.Add("DogSC 摄像头阴影没有目标字段；摄像头素材、形状、边框和取景裁切已导入。");
             }
+            else if ((sourceRate != 1 || cameraAnchors.Count > 0) && cameraMappings.Count == 0)
+                warnings.Add("DogSC 摄像头时钟校正没有生成可用的正向素材片段；摄像头画面已跳过。");
         }
 
         var microphone = Get(media, "microphone");
@@ -788,21 +900,35 @@ public static class DogScProjectImporter
             var path = CopyProjectAsset(sourceRoot, staging, String(microphone, "relativePath"), "media/microphone", "", warnings);
             var start = Math.Max(0, Number(microphone, "sourceStartTime", 0));
             var end = Number(microphone, "sourceEndTime", double.NaN);
-            var duration = double.IsFinite(end) && end > start ? end - start : screenDuration;
+            var timelineStart = Math.Clamp(Number(microphone, "startOffset", 0), 0, Math.Min(screenDuration, 86400));
+            var sourceRate = ReadSourceRate(microphone, warnings, "麦克风");
+            var microphoneAnchors = ReadSyncAnchors(microphone, warnings, "麦克风");
+            var audioMappings = DogScMediaClockMapper.Build(timelineStart, start, sourceRate,
+                double.IsFinite(end) ? end : null, screenDuration, microphoneAnchors);
+            var duration = double.IsFinite(end) ? Math.Max(0, end - start) / sourceRate : Math.Max(0, screenDuration - timelineStart);
+            var mappedStart = audioMappings.Count > 0 ? audioMappings[0].TimelineStart : timelineStart;
+            var mappedDuration = audioMappings.Count > 0
+                ? audioMappings[^1].TimelineStart + audioMappings[^1].Duration - mappedStart
+                : Math.Min(duration, Math.Max(0, screenDuration - timelineStart));
+            var mappedSourceStart = audioMappings.Count > 0 ? audioMappings[0].SourceStart : start;
             var audio = Get(root, "audio");
-            if (double.IsFinite(duration) && duration > 0)
+            if (double.IsFinite(mappedDuration) && mappedDuration > 0 && (!double.IsFinite(end) || end > start)
+                && (audioMappings.Count > 0 || sourceRate == 1 && microphoneAnchors.Count == 0))
                 project.AudioTracks.Add(new AudioTrack
             {
                 MediaPath = path,
-                SourceStart = start,
-                Duration = duration,
-                OffsetSeconds = Math.Clamp(Number(microphone, "startOffset", 0), -86400, 86400),
+                SourceStart = mappedSourceStart,
+                Duration = mappedDuration,
+                OffsetSeconds = mappedStart,
                 Volume = Math.Clamp(Number(audio, "microphoneVolume", .9), 0, 4),
-                Muted = Bool(audio, "isMicrophoneMuted", false)
+                Muted = Bool(audio, "isMicrophoneMuted", false),
+                SourceRate = audioMappings.Count == 1 ? audioMappings[0].SourceRate : sourceRate,
+                SyncSegments = audioMappings.Count > 0 ? audioMappings : null,
+                Source = AudioTrackSource.Microphone
             });
+            else if ((sourceRate != 1 || microphoneAnchors.Count > 0) && audioMappings.Count == 0)
+                warnings.Add("DogSC 麦克风时钟校正没有生成可用的正向素材片段；该音轨已跳过。");
             else warnings.Add("无效的 DogSC 麦克风时间范围已跳过。");
-            if (Number(microphone, "sourceTimeScale", 1) != 1 || Get(microphone, "syncAnchors").ValueKind == JsonValueKind.Array && Get(microphone, "syncAnchors").GetArrayLength() > 0)
-                warnings.Add("麦克风时钟速率/分段同步锚点未迁移；音轨偏移已导入，需人工核对同步。");
         }
 
         var audioSettings = Get(root, "audio");
@@ -812,6 +938,42 @@ public static class DogScProjectImporter
             warnings.Add("屏幕母片时钟速率不是 1，FrameTrail 当前主素材模型不保存该同步校正。");
         if (Get(root, "exportSettings").ValueKind == JsonValueKind.Object)
             warnings.Add("DogSC 导出分辨率/帧率偏好没有迁移到 FrameTrail 设置；本次媒体探测值作为主素材尺寸和时长。");
+    }
+
+    private static double ReadSourceRate(JsonElement reference, List<string> warnings, string label)
+    {
+        var rate = Number(reference, "sourceTimeScale", 1);
+        if (!double.IsFinite(rate) || rate <= 0)
+        {
+            warnings.Add($"DogSC {label}素材时钟速率无效；已按 1.0 导入。");
+            return 1;
+        }
+        var bounded = Math.Clamp(rate, .01, 100);
+        if (bounded != rate) warnings.Add($"DogSC {label}素材时钟速率 {rate:R} 超出 FrameTrail 安全范围；已限制为 {bounded:R}。");
+        return bounded;
+    }
+
+    private static List<DogScMediaClockMapper.Anchor> ReadSyncAnchors(JsonElement reference, List<string> warnings, string label)
+    {
+        var value = Get(reference, "syncAnchors");
+        if (value.ValueKind != JsonValueKind.Array) return [];
+        if (value.GetArrayLength() > 10000) throw new InvalidDataException($"DogSC {label}同步锚点超过 10,000 条上限。");
+        var result = new List<DogScMediaClockMapper.Anchor>(value.GetArrayLength());
+        var order = 0;
+        foreach (var anchor in value.EnumerateArray())
+        {
+            var sourceTime = Number(anchor, "sourceTime", double.NaN);
+            var offset = Number(anchor, "offset", double.NaN);
+            var idText = String(anchor, "id");
+            if (!double.IsFinite(sourceTime) || !double.IsFinite(offset) || !Guid.TryParse(idText, out var id))
+            {
+                warnings.Add($"DogSC {label}包含缺少 ID 或数值无效的同步锚点，已忽略该点。");
+                order++;
+                continue;
+            }
+            result.Add(new(Math.Max(0, sourceTime), Math.Clamp(offset, -10, 10), order++, id));
+        }
+        return result;
     }
 
     private static string CopyProjectAsset(string sourceRoot, string staging, string relativePath, string targetStem, string forcedSuffix, List<string> warnings)
@@ -943,8 +1105,26 @@ public static class DogScProjectImporter
         "二次方缓动" or "二次" or "quadratic" => ZoomEasing.Quadratic,
         "五次平滑" or "quintic" => ZoomEasing.Quintic,
         "弹簧" or "spring" => ZoomEasing.Spring,
+        "自定义曲线" or "custom" => ZoomEasing.Custom,
         _ => ZoomEasing.Cubic
     };
+
+    private static ZoomBezierCurve ReadCurve(JsonElement value) => value.ValueKind == JsonValueKind.Object
+        ? new ZoomBezierCurve(Math.Clamp(Number(value, "x1", .65), 0, 1), Math.Clamp(Number(value, "y1", 0), 0, 1),
+            Math.Clamp(Number(value, "x2", .35), 0, 1), Math.Clamp(Number(value, "y2", 1), 0, 1))
+        : ZoomBezierCurve.Cubic;
+
+    private static void MapAnimationSpring(JsonElement root, FrameTrailProject project)
+    {
+        var motion = Get(root, "motion");
+        if (motion.ValueKind != JsonValueKind.Object) return;
+        project.Settings.Spring = new SpringAnimationSettings
+        {
+            Mass = Math.Clamp(Number(motion, "screenSpringMass", 2.4), .01, 100),
+            Stiffness = Math.Clamp(Number(motion, "screenSpringStiffness", 210), .01, 10000),
+            Damping = Math.Clamp(Number(motion, "screenSpringDamping", 42), .01, 1000)
+        };
+    }
 
     private static NormalizedPoint Point(JsonElement value, NormalizedPoint fallback) =>
         value.ValueKind == JsonValueKind.Object

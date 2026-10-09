@@ -89,6 +89,12 @@ Probe 新增`--exclusion-test`，只在自控的纯红无边框窗口上测试�
 
 像素证据和媒体在`artifacts/validation/window-exclusion-20261009b/`：`affinity.exclusion.json`包含API结果和DDA/GDI采样值；`affinity-affinity-none.mp4`与`affinity-affinity-excluded.mp4`是DDA控制/排除片段。Probe 窗口已关闭。首次测试因尝试从 H.264 4:2:0帧裁成1×1导致 FFmpeg crop filter 拒绝该奇数尺寸，未得到像素数据；正式测试使用2×2中心采样修复后通过。
 
+## 七色色卡与录制光标实测
+
+`artifacts/validation/cursor-shapes-v5/cursor-shapes.summary.json`记录了一次本机 DDA 区域屏幕采集：输出为 H.264、440×240、30fps、73帧、2.433333秒，使用 `h264_nvenc`。探针从录制解码帧中读取七个受控色块的中心像素；红、绿、蓝、灰、白、肤色和黑的最大 RGB 通道偏差依次为1、1、1、0、0、2、0/255，整体最大偏差2/255，低于预先设定的8/255阈值。该短样片验证了本机这一路径的像素保真度，不能推及其他硬件、驱动、分辨率或编码器。样片标签为 BT.709 矩阵/基色、limited (`tv`) 范围及 sRGB `iec61966-2-1` 传递曲线。
+
+同一实测中，InputSampler 在物理点 `(268,185)` 依次记录 Arrow、Hand、IBeam；三种形态切换时位置保持不动，输入 JSONL 仍产生对应形态事件。色卡中心未被指针覆盖。样片和输入记录分别位于 `artifacts/validation/cursor-shapes-v5/cursor-shapes.mp4` 与 `artifacts/validation/cursor-shapes-v5/cursor-shapes.input.jsonl`。
+
 NAudio `RecordingStopped` 收到异常时现在会立即将音轨状态置为 `Faulted` 并发布 `ErrorOccurred`，停止调用仍可封装已收到的数据并按时钟补静音。当前仅构建验证了该分支；真实设备热插拔及注入异常的运行时验证尚未完成。
 
 ## 附加验证：独立音轨与窗口目标

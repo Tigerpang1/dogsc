@@ -20,6 +20,7 @@
 
 ## 最近结果
 
+- Capture.Probe `cursor-shapes-v5` 实际录制七色色卡：DDA/NVENC H.264 样片为440×240、30fps、73帧、2.433333秒；解码七个色块中心像素的最大RGB通道偏差为2/255，低于8/255门槛。该项只覆盖本机短样片和当前编码路径，不构成跨设备色彩保证。
 - `FrameTrail.Core.Tests`：通过。
 - `FrameTrail.Render.Probe`：通过，实际后端为硬件 D3D11；Phone 与 Tablet 的独立设备框像素测试通过。
 - FFmpeg 综合导出探针：通过，36 帧、独立音轨、输出帧解码均通过。

@@ -6,6 +6,10 @@ namespace FrameTrail.Capture;
 internal static class WindowsNative
 {
     internal const int SmXVirtualScreen = 76, SmYVirtualScreen = 77, SmCxVirtualScreen = 78, SmCyVirtualScreen = 79;
+    private const int IdcArrow = 32512, IdcIBeam = 32513, IdcHand = 32649;
+    private static readonly IntPtr ArrowCursor = LoadSystemCursor(IntPtr.Zero, new IntPtr(IdcArrow));
+    private static readonly IntPtr IBeamCursor = LoadSystemCursor(IntPtr.Zero, new IntPtr(IdcIBeam));
+    private static readonly IntPtr HandCursor = LoadSystemCursor(IntPtr.Zero, new IntPtr(IdcHand));
     internal delegate bool MonitorEnumProc(IntPtr monitor, IntPtr dc, ref Rect rect, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct MonitorInfoEx
@@ -23,6 +27,14 @@ internal static class WindowsNative
     [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr window);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out Point point);
     [DllImport("user32.dll")] internal static extern bool GetPhysicalCursorPos(out Point point);
+    [StructLayout(LayoutKind.Sequential)] private struct CursorInfo
+    {
+        public uint Size, Flags;
+        public IntPtr Cursor;
+        public Point ScreenPosition;
+    }
+    [DllImport("user32.dll", EntryPoint = "GetCursorInfo")] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool GetCursorInfoNative(ref CursorInfo info);
+    [DllImport("user32.dll", EntryPoint = "LoadCursorW", CharSet = CharSet.Unicode)] private static extern IntPtr LoadSystemCursor(IntPtr instance, IntPtr name);
     [DllImport("user32.dll")] internal static extern int GetSystemMetrics(int index);
     [DllImport("user32.dll")] internal static extern IntPtr SetThreadDpiAwarenessContext(IntPtr value);
     [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }
@@ -48,6 +60,16 @@ internal static class WindowsNative
     }
     internal static PixelRect VirtualBounds => new(GetSystemMetrics(SmXVirtualScreen), GetSystemMetrics(SmYVirtualScreen),
         GetSystemMetrics(SmCxVirtualScreen), GetSystemMetrics(SmCyVirtualScreen));
+    internal static string? GetRecordedCursorAsset()
+    {
+        var info = new CursorInfo { Size = (uint)Marshal.SizeOf<CursorInfo>() };
+        if (!GetCursorInfoNative(ref info)) return null;
+        var handle = info.Cursor;
+        if (handle == HandCursor) return "system.hand";
+        if (handle == IBeamCursor) return "system.ibeam";
+        if (handle == ArrowCursor) return "system.arrow";
+        return "system.arrow";
+    }
     internal static IDisposable UsePhysicalCoordinates() => new DpiContextScope();
     private sealed class DpiContextScope : IDisposable
     {

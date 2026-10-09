@@ -25,10 +25,14 @@ try {
     if ($IncludeMediaProbe) {
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration
         if ($LASTEXITCODE -ne 0) { throw "共享GPU/媒体测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
+        if ($LASTEXITCODE -ne 0) { throw "逐片段音量与辅助媒体时钟测试失败，退出码 $LASTEXITCODE" }
     }
     if ($IncludeIntegration) {
-        & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration -- --sync
+        & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration
         if ($LASTEXITCODE -ne 0) { throw "合成媒体集成测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration -- --sync
+        if ($LASTEXITCODE -ne 0) { throw "1080p60 音画同步集成测试失败，退出码 $LASTEXITCODE" }
     }
 
     if ($IncludeCaptureProbe) {

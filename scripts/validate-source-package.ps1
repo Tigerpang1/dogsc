@@ -2,6 +2,8 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
+    [ValidatePattern('^\d+\.\d+\.\d+$')]
+    [string]$Version = '0.2.1',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]
@@ -13,7 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $sourceZipPath = [System.IO.Path]::GetFullPath($SourceZip)
-$resultDirectory = Join-Path $workspaceRoot 'artifacts/validation/package-0.2.0'
+$resultDirectory = Join-Path $workspaceRoot "artifacts/validation/package-$Version"
 $resultPath = Join-Path $resultDirectory 'source-validation.json'
 $upstreamCommit = 'e207d11b111c5e58152238fb64115b2009850547'
 $runId = [guid]::NewGuid().ToString('N')
@@ -175,10 +177,10 @@ try {
 
     $packageScript = Join-Path $repoRoot 'scripts/package.ps1'
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $packageScript, '-Configuration', 'Release', '-Version', '0.2.0', '-WithoutFfmpeg', '-SkipInstaller') `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $packageScript, '-Configuration', 'Release', '-Version', $Version, '-WithoutFfmpeg', '-SkipInstaller') `
         -WorkingDirectory $repoRoot -TimeoutSeconds $PackageTimeoutSeconds
 
-    $buildInfoPath = Join-Path $repoRoot 'artifacts/release/FrameTrail-0.2.0-win-x64/BUILD-INFO.txt'
+    $buildInfoPath = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/BUILD-INFO.txt"
     if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
         $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw
         $sourceKindMatch = [regex]::Match($buildInfo, '(?m)^源码类型：(.+)\r?$')

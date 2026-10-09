@@ -27,7 +27,7 @@ public sealed record RecordingRequest(string OutputPath, CaptureTarget Target,
     VideoOptions? Video = null, AudioOptions? Audio = null, InputTrackingOptions? InputTracking = null);
 public sealed record InputEvent(long StopwatchTicks, InputEventKind Kind, int X, int Y,
     double NormalizedX, double NormalizedY, MouseButton MouseButton, string? KeyName,
-    bool Shift, bool Control, bool Alt, bool Windows);
+    bool Shift, bool Control, bool Alt, bool Windows, string? CursorAsset = null);
 public sealed record RecordingResult(string OutputPath, long StartStopwatchTicks, long StopStopwatchTicks,
     long StopwatchFrequency, EncoderMode EncoderMode, string EncoderName,
     int Width, int Height, int FrameRate, string? InputEventsPath, IReadOnlyList<string> Warnings,

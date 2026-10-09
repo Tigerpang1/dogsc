@@ -5,6 +5,7 @@ FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随�
 | 组件 | 版本 | 许可证 | 用途及来源 |
 |---|---:|---|---|
 | DogSC 上游源代码 | `e207d11b111c5e58152238fb64115b2009850547` | MIT | 迁移参考来源；完整上游许可见 [`DogSC-MIT.txt`](DogSC-MIT.txt)。Windows 程序不沿用 DogSC 品牌或图标。 |
+| dogscwindows Windows 适配参考 | `3bdcf00d4eb12a107c093e98aac7a894aedd2843` | MIT | 参考并移植自动镜头弹簧跟随、系统光标形态/热点处理，参考颜色往返测量方法；来源 [xiaoying8666/dogscwindows](https://github.com/xiaoying8666/dogscwindows)，完整原仓库许可及署名见 [`DogSCWindows-MIT.txt`](DogSCWindows-MIT.txt)。Windows 适配由该仓库维护者贡献，不表示原作者参与 FrameTrail。 |
 | Alibaba PuHuiTi 3.0 Regular / Medium / SemiBold | 上游锁定 OTF 文件 | 阿里巴巴普惠体使用许可 | 界面字体，未经修改嵌入应用；完整声明见 [`Alibaba-PuHuiTi-3-LICENSE.txt`](Alibaba-PuHuiTi-3-LICENSE.txt)。原文件及校验值保存在 `upstream/dogsc/Resources/Fonts`。 |
 | ScreenRecorderLib | 7.0.1 | MIT | 录制依赖；[NuGet 包](https://www.nuget.org/packages/ScreenRecorderLib/7.0.1)，许可文本见 [`ScreenRecorderLib-MIT.txt`](ScreenRecorderLib-MIT.txt)。依赖 Visual C++ Redistributable 与 Windows Media Foundation。 |
 | NAudio.Wasapi | 2.2.1 | MIT | WASAPI 系统回环与麦克风独立 WAV 采集；[NuGet 包](https://www.nuget.org/packages/NAudio.Wasapi/2.2.1)，许可文本见 [`NAudio-MIT.txt`](NAudio-MIT.txt)。依赖 Windows Core Audio（WASAPI），不附带本机二进制。 |

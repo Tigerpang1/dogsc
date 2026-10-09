@@ -18,7 +18,10 @@ public partial class MainWindow
         [
             (CursorStyle.SystemArrow, "箭头", "cursor"),
             (CursorStyle.Dot, "圆点", "dot"),
-            (CursorStyle.Ring, "圆环", "ring")
+            (CursorStyle.Ring, "圆环", "ring"),
+            (CursorStyle.FollowRecorded, "跟随录制", "cursor"),
+            (CursorStyle.SystemHand, "手型", "hand"),
+            (CursorStyle.SystemText, "文本", "text")
         ], value => ApplyEdit(x => CursorSettingsFor(x).Style = value), columns: 3, preview: BuildCursorStylePreview);
 
         Toggle("显示光标", cursor.Visible, value => ApplyEdit(x =>
@@ -30,6 +33,11 @@ public partial class MainWindow
         Choices("移动平滑", p.Settings.PointerSmoothing,
             new[] { (PointerSmoothing.Smooth, "平滑"), (PointerSmoothing.Medium, "适中"), (PointerSmoothing.Rapid, "灵敏") },
             value => ApplyEdit(x => x.Settings.PointerSmoothing = value));
+        Toggle("移动时倾斜", cursor.MotionTiltEnabled, value => ApplyEdit(x => CursorSettingsFor(x).MotionTiltEnabled = value));
+        if (cursor.MotionTiltEnabled)
+            Choices("倾斜强度", cursor.MotionTiltStrength,
+                new[] { (2d, "自然"), (3d, "明显"), (4d, "强烈") },
+                value => ApplyEdit(x => CursorSettingsFor(x).MotionTiltStrength = value));
         Toggle("静止后隐藏", cursor.HideWhenIdle, value => ApplyEdit(x => CursorSettingsFor(x).HideWhenIdle = value));
         if (cursor.HideWhenIdle)
             Number("静止隐藏延迟", cursor.IdleSeconds, .2, 10, value => ApplyEdit(x => CursorSettingsFor(x).IdleSeconds = value), " s");
@@ -37,12 +45,14 @@ public partial class MainWindow
         Section("点击反馈");
         Toggle("显示点击效果", cursor.ClickEffectsEnabled, value => ApplyEdit(x => CursorSettingsFor(x).ClickEffectsEnabled = value));
         Choices("效果", cursor.ClickEffect,
-            new[] { (ClickEffectStyle.Pulse, "脉冲"), (ClickEffectStyle.Ring, "涟漪"), (ClickEffectStyle.None, "无") },
+            new[] { (ClickEffectStyle.Pulse, "脉冲"), (ClickEffectStyle.Ring, "柔光"), (ClickEffectStyle.Ripple, "涟漪"), (ClickEffectStyle.Burst, "迸发"), (ClickEffectStyle.None, "无") },
             value => ApplyEdit(x => CursorSettingsFor(x).ClickEffect = value));
         if (cursor.ClickEffectsEnabled && cursor.ClickEffect != ClickEffectStyle.None)
         {
             TextField("颜色", cursor.ClickColor, value => ApplyEdit(x => CursorSettingsFor(x).ClickColor = ValidColor(value)));
             Number("持续时间", cursor.ClickDuration, .05, 2, value => ApplyEdit(x => CursorSettingsFor(x).ClickDuration = value), " s");
+            Number("点击范围", cursor.ClickScale, .4, 3, value => ApplyEdit(x => CursorSettingsFor(x).ClickScale = value), "×");
+            Number("点击不透明度", cursor.ClickOpacity * 100, 5, 100, value => ApplyEdit(x => CursorSettingsFor(x).ClickOpacity = value / 100), "%", "0");
         }
 
         InspectorDisclosure("时间对齐", () =>
@@ -85,7 +95,7 @@ public partial class MainWindow
     private FrameworkElement BuildCursorStylePreview(CursorStyle style)
     {
         var canvas = new Canvas { Width = 44, Height = 36, HorizontalAlignment = HorizontalAlignment.Center };
-        if (style == CursorStyle.SystemArrow)
+        if (style is CursorStyle.SystemArrow or CursorStyle.FollowRecorded)
         {
             var arrow = new Polygon
             {
@@ -95,6 +105,18 @@ public partial class MainWindow
                 StrokeThickness = 1.5
             };
             canvas.Children.Add(arrow);
+        }
+        else if (style == CursorStyle.SystemHand)
+        {
+            var hand = new TextBlock { Text = "☝", FontFamily = new FontFamily("Segoe UI Symbol"), FontSize = 29, Foreground = Brush("Ink"), Width = 44, TextAlignment = TextAlignment.Center };
+            Canvas.SetTop(hand, -1); canvas.Children.Add(hand);
+        }
+        else if (style == CursorStyle.SystemText)
+        {
+            var beam = new Line { X1 = 22, X2 = 22, Y1 = 5, Y2 = 31, Stroke = Brush("Ink"), StrokeThickness = 2 };
+            canvas.Children.Add(beam);
+            canvas.Children.Add(new Line { X1 = 14, X2 = 30, Y1 = 6, Y2 = 6, Stroke = Brush("Ink"), StrokeThickness = 2 });
+            canvas.Children.Add(new Line { X1 = 14, X2 = 30, Y1 = 30, Y2 = 30, Stroke = Brush("Ink"), StrokeThickness = 2 });
         }
         else if (style == CursorStyle.Dot)
         {

@@ -4,12 +4,12 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 0.2.0 实现范围
+## 0.2.1 实现范围
 
 - 显示器、可见窗口、区域录制，暂停/恢复；独立系统声音、麦克风和摄像头素材；鼠标事件、热键标记、备忘录及辅助窗口排除。
 - 项目自动保存、备份恢复、最近项目、相对素材路径、缺失素材重新定位；只读导入 DogSC schema 23–27 并生成转换报告。
-- 实时预览、逐帧定位、缩略图/波形、分割、裁短、重排、加速、恢复剪辑、范围导出；多效果轨道、多选、吸附、悬浮预览、复制和属性粘贴、撤销重做。
-- 自动/手动缩放、独立光标及点击反馈；摄像头布局/动画、屏幕 3D 和聚焦虚化；贴图、区域柔化、画布裁切、样机、图片和循环视频背景、分组开场动画及场景预设。
+- 实时预览、逐帧定位、缩略图/波形、分割、裁短、重排、0.25× 起的慢放与加速、恢复剪辑、范围导出；多效果轨道、多选、吸附、悬浮预览、复制和属性粘贴、撤销重做。
+- 自动镜头弹簧跟随、手动缩放、自定义 Bezier 和共享弹簧参数；录制光标形态、速度倾斜及四种点击动画；摄像头布局/动画、屏幕 3D 和聚焦虚化；贴图、区域柔化、画布裁切、样机、图片和循环视频背景、三种原版开场及场景预设。
 - 共享 D3D11 场景渲染的预览和导出。MP4/M4A，原始、1080p、1440p、4K，30/60fps，编码器回退、取消和重试。
 
 功能代码、桌面交互测试、真实设备验证分别记录，不以入口存在代表全部验收。30分钟采集和视听同步已有本机实测，原版静态视觉仍有细节差异；实际限制见 [已知问题](docs/known-issues.md) 和 [迁移验收表](docs/parity-checklist.md)。
@@ -23,7 +23,7 @@ git submodule update --init --recursive
 pwsh -File scripts/build.ps1
 pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
-pwsh -File scripts/package.ps1 -Version 0.2.0
+pwsh -File scripts/package.ps1 -Version 0.2.1
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net8.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。
@@ -38,5 +38,6 @@ pwsh -File scripts/package.ps1 -Version 0.2.0
 - [功能映射](docs/feature-mapping.md) · [静态视觉依据](docs/visual-spec.md)
 - [采集验证](docs/capture-validation.md) · [媒体效果验证](docs/media-effects-validation.md)
 - [第三方许可](licenses/THIRD-PARTY-NOTICES.md)
+- [Windows 分支吸收与新增验证](docs/windows-port-integration.md)
 
 无遥测、账号、广告或云端媒体上传。本地验证包包含 Gyan FFmpeg GPLv3 构建；公开分发前须完成该构建全部依赖的对应源码与许可材料。Windows 10、ARM64、自动更新和真实 Mac 工程往返兼容未声明支持。

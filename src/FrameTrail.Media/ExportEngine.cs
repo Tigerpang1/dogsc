@@ -31,6 +31,7 @@ public sealed class ExportEngine
             var info = await MediaTools.ProbeAsync(sourcePath, cancellation);
             progress?.Report(new("准备音轨", 0, watch.Elapsed, null));
             var projectFile = options.ProjectFilePath is { Length: > 0 } ? Path.GetFullPath(options.ProjectFilePath) : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourcePath))!, "project.frametrail");
+            double? cameraAspectRatio = options.AudioOnly ? null : await SceneAssetLoader.ProbeCameraAspectRatioAsync(project, projectFile, cancellation);
             var audioTracks = project.AudioTracks.ToList();
             if (project.Camera is { Muted: false, Volume: > 0 } cameraAudio)
             {
@@ -41,27 +42,32 @@ public sealed class ExportEngine
                     IReadOnlyList<CameraSyncSegment> cameraSegments = cameraAudio.SyncSegments is { Count: > 0 } mappedCamera
                         ? mappedCamera
                         : [new CameraSyncSegment(cameraAudio.SourceStart, cameraAudio.TimelineStart, cameraAudio.Duration)];
-                    foreach (var segment in cameraSegments)
-                        audioTracks.Add(new AudioTrack { MediaPath = cameraAudio.MediaPath, SourceStart = segment.SourceStart, Duration = segment.Duration, OffsetSeconds = segment.TimelineStart, Volume = cameraAudio.Volume });
+                    audioTracks.Add(new AudioTrack
+                    {
+                        MediaPath = cameraAudio.MediaPath, SourceStart = cameraAudio.SourceStart, Duration = cameraAudio.Duration,
+                        OffsetSeconds = cameraAudio.TimelineStart, Volume = cameraAudio.Volume,
+                        SourceRate = cameraSegments[0].SourceRate, SyncSegments = cameraSegments.ToList(), Source = AudioTrackSource.Camera
+                    });
                 }
             }
-            var extraTracks = audioTracks.Where(x => !x.Muted && x.Volume > 0).ToArray();
+            var extraTracks = audioTracks.Where(track => MediaTools.HasAudibleAudioTrack(project.Timeline, track, project.Settings.MainAudioVolume, project.Settings.MainAudioMuted)).ToArray();
             var extraPaths = extraTracks.Select(x => FrameTrailProjectStore.ResolveAssetPath(projectFile, x.MediaPath)).ToArray();
-            var hasMainAudio = info.HasAudio && !project.Settings.MainAudioMuted && project.Settings.MainAudioVolume > 0;
+            var hasMainAudio = info.HasAudio && MediaTools.HasAudibleMainAudio(project.Timeline, project.Settings.MainAudioVolume, project.Settings.MainAudioMuted);
             if (hasMainAudio)
             {
-                await File.WriteAllTextAsync(audioFile, MediaTools.AudioFilter(project.Timeline, project.Settings.MainAudioVolume), cancellation);
+                await File.WriteAllTextAsync(audioFile, MediaTools.AudioFilter(project.Timeline, project.Settings.MainAudioVolume, project.Settings.MainAudioMuted), cancellation);
                 await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", sourcePath, "-filter_complex_script", audioFile, "-map", "[out]", "-vn", "-c:a", "aac", "-b:a", "192k", "-y", mainAudioPath], cancellation);
             }
-            if (extraTracks.Length > 0)
+            var hasExtraAudio = extraTracks.Length > 0;
+            if (hasExtraAudio)
             {
-                await File.WriteAllTextAsync(tracksAudioFile, MediaTools.AudioTrackFilter(project.Timeline, extraTracks), cancellation);
+                await File.WriteAllTextAsync(tracksAudioFile, MediaTools.AudioTrackFilter(project.Timeline, extraTracks, project.Settings.MainAudioVolume, project.Settings.MainAudioMuted), cancellation);
                 var trackArgs = new List<string> { "-v", "error" };
                 foreach (var path in extraPaths) trackArgs.AddRange(["-i", path]);
                 trackArgs.AddRange(["-filter_complex_script", tracksAudioFile, "-map", "[out]", "-vn", "-c:a", "aac", "-b:a", "192k", "-y", tracksAudioPath]);
                 await MediaTools.RunAsync(MediaTools.Ffmpeg, trackArgs, cancellation);
             }
-            var hasAudio = hasMainAudio || extraTracks.Length > 0;
+            var hasAudio = hasMainAudio || hasExtraAudio;
             if (hasMainAudio && extraTracks.Length > 0)
                 await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", mainAudioPath, "-i", tracksAudioPath, "-filter_complex", $"[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.98,apad=pad_dur={MediaTools.Number(project.Timeline.Duration)},atrim=duration={MediaTools.Number(project.Timeline.Duration)}[out]", "-map", "[out]", "-c:a", "aac", "-b:a", "192k", "-y", audioPath], cancellation);
             else if (hasMainAudio) File.Move(mainAudioPath, audioPath, true);
@@ -83,7 +89,11 @@ public sealed class ExportEngine
             var decoderErrors = decoder.StandardError.ReadToEndAsync();
             var args = new List<string> { "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", $"{options.Width}x{options.Height}", "-r", options.FrameRate.ToString(), "-i", "pipe:0" };
             if (hasAudio) args.AddRange(["-i", audioPath, "-map", "0:v", "-map", "1:a", "-c:a", "copy"]);
-            args.AddRange(["-c:v", chosenEncoder, "-pix_fmt", "yuv420p"]);
+            // RGB scene pixels use an explicit BT.709 limited-range YUV transform.
+            // Write matching tags so external players do not infer a different matrix.
+            args.AddRange(["-vf", "scale=in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p,setparams=range=limited:color_primaries=bt709:color_trc=iec61966-2-1:colorspace=bt709",
+                "-color_range", "tv", "-colorspace", "bt709", "-color_trc", "iec61966-2-1", "-color_primaries", "bt709",
+                "-c:v", chosenEncoder, "-pix_fmt", "yuv420p"]);
             if (chosenEncoder == "libx264") args.AddRange(["-preset", "fast", "-crf", "20"]);
             else args.AddRange(["-b:v", "16M"]);
             args.AddRange(["-t", MediaTools.Number(project.Timeline.Duration), "-movflags", "+faststart", "-y", temporary]);
@@ -93,7 +103,7 @@ public sealed class ExportEngine
             using var renderer = new GpuFrameRenderer(decodeWidth, decodeHeight, options.Width, options.Height);
             var input = new byte[checked(decodeWidth * decodeHeight * 4)]; var output = new byte[checked(options.Width * options.Height * 4)];
             var total = checked((int)Math.Ceiling(project.Timeline.Duration * options.FrameRate - 1e-7)); var frames = 0;
-            var frameWatch = Stopwatch.StartNew(); var evaluator = new PreparedFrameSceneEvaluator(project);
+            var frameWatch = Stopwatch.StartNew(); var evaluator = new PreparedFrameSceneEvaluator(project, cameraAspectRatio);
             using var assetLoader = new SceneAssetLoader(projectFile, options.Width, options.Height);
             while (frames < total)
             {

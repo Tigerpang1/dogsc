@@ -28,6 +28,7 @@ public sealed class ExportWindow : Window
     private readonly TextBlock previewDuration = new();
     private readonly TextBlock stageText = new();
     private readonly TextBlock timeText = new();
+    private readonly TextBlock estimate = new();
     private readonly ProgressBar progressBar = new();
     private readonly List<Button> resolutionChoices = new();
     private readonly List<Button> frameRateChoices = new();
@@ -87,11 +88,11 @@ public sealed class ExportWindow : Window
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(38) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
-        var icon = new EditorIcon { Kind = "export", Width = 25, Height = 25, Stroke = Brush("Ink"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(-2.5, 0, 0, 0) };
+        var icon = new EditorIcon { Kind = "export", Width = 19, Height = 19, Stroke = Brush("Ink"), VerticalAlignment = VerticalAlignment.Center, HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(-2.5, 0, 0, 0) };
         header.Children.Add(icon);
         var titleStack = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         titleStack.Children.Add(new TextBlock { Text = "导出作品", FontSize = 18, FontWeight = FontWeights.SemiBold });
-        titleStack.Children.Add(new TextBlock { Text = projectName, FontSize = 11, Foreground = Brush("Secondary"), Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis });
+        titleStack.Children.Add(new TextBlock { Text = projectName, FontSize = 12, Foreground = Brush("Secondary"), Margin = new Thickness(0, 2, 0, 0), TextTrimming = TextTrimming.CharacterEllipsis });
         Grid.SetColumn(titleStack, 1); header.Children.Add(titleStack);
         closeButton.Width = 36; closeButton.Height = 36; closeButton.Style = FindStyle("PlainButton"); closeButton.Padding = new Thickness(0);
         closeButton.Content = new Border { Width = 34, Height = 34, CornerRadius = new CornerRadius(17), Background = Brush("ControlSurface"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1), Child = new TextBlock { Text = "×", FontSize = 20, Foreground = Brush("Secondary"), HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, -2, 0, 0) } };
@@ -107,7 +108,7 @@ public sealed class ExportWindow : Window
         left.Children.Add(Label("文件名"));
         var nameRow = new Grid { Height = 44 };
         nameRow.ColumnDefinitions.Add(new ColumnDefinition()); nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); nameRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        fileName.Margin = new Thickness(0); fileName.Padding = new Thickness(13, 1, 4, 1); fileName.Height = 38; fileName.MinHeight = 0; fileName.VerticalContentAlignment = VerticalAlignment.Center; fileName.Background = Brushes.Transparent; fileName.FontSize = 16; fileName.TextChanged += (_, _) => RefreshPreview();
+        fileName.Margin = new Thickness(0); fileName.Padding = new Thickness(13, 1, 4, 1); fileName.Height = 44; fileName.MinHeight = 0; fileName.VerticalContentAlignment = VerticalAlignment.Center; fileName.Background = Brushes.Transparent; fileName.FontSize = 13; fileName.TextChanged += (_, _) => RefreshPreview();
         System.Windows.Automation.AutomationProperties.SetName(fileName, "导出文件名");
         nameRow.Children.Add(fileName);
         var nameShell = new Border { Background = Brush("Chrome"), BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1), CornerRadius = new CornerRadius(14), Padding = new Thickness(0, 0, 5, 0) };
@@ -140,7 +141,7 @@ public sealed class ExportWindow : Window
         var rates = new UniformGrid { Columns = 2, Height = 40 };
         AddChoice(rates, frameRateChoices, new[] { "30 FPS", "60 FPS" }, index => { frameRateIndex = index; UpdateChoiceStates(); RefreshPreview(); }, "ExportFrameRate");
         left.Children.Add(rates);
-        hardware.Content = "硬件编码"; hardware.IsChecked = true; hardware.Margin = new Thickness(0, 8, 0, 0); hardware.FontSize = 11; System.Windows.Automation.AutomationProperties.SetName(hardware, "优先使用硬件编码"); left.Children.Add(hardware);
+        hardware.Content = "硬件编码"; hardware.IsChecked = true; hardware.Margin = new Thickness(0, 8, 0, 0); hardware.FontSize = 11; System.Windows.Automation.AutomationProperties.SetName(hardware, "优先使用硬件编码"); hardware.Checked += (_, _) => RefreshPreview(); hardware.Unchecked += (_, _) => RefreshPreview(); left.Children.Add(hardware);
         Grid.SetColumn(left, 0); body.Children.Add(left);
 
         var rightBorder = new Border { BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(1, 0, 0, 0), Margin = new Thickness(0, 29, 0, 28), Padding = new Thickness(28, 0, 29, 0) };
@@ -175,7 +176,7 @@ public sealed class ExportWindow : Window
         Grid.SetRow(progressBar, 1); Grid.SetColumnSpan(progressBar, 2); footer.Children.Add(progressBar);
         var actions = new Grid { Height = 42, VerticalAlignment = VerticalAlignment.Top, Margin = new Thickness(27, 1, 27, 0) };
         actions.ColumnDefinitions.Add(new ColumnDefinition()); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); actions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var estimate = new TextBlock { Text = "导出时间与文件大小取决于素材和编码设置", Foreground = Brush("Secondary"), VerticalAlignment = VerticalAlignment.Center, FontSize = 11 };
+        estimate.Foreground = Brush("Secondary"); estimate.VerticalAlignment = VerticalAlignment.Center; estimate.FontSize = 11; estimate.TextWrapping = TextWrapping.Wrap;
         actions.Children.Add(estimate);
         cancelButton.Content = "取消"; cancelButton.Style = FindStyle("PlainButton"); cancelButton.Padding = new Thickness(0); cancelButton.MinWidth = 58; cancelButton.Height = 40; cancelButton.Click += (_, _) => CancelExport(); Grid.SetColumn(cancelButton, 1); actions.Children.Add(cancelButton);
         openFolderButton.Content = "打开文件夹"; openFolderButton.Visibility = Visibility.Collapsed; openFolderButton.Height = 40; openFolderButton.Click += (_, _) => OpenCompleted(false); Grid.SetColumn(openFolderButton, 2); actions.Children.Add(openFolderButton);
@@ -274,6 +275,46 @@ public sealed class ExportWindow : Window
         previewRate.Text = audioOnly ? "—" : (frameRateIndex == 1 ? "60 FPS" : "30 FPS");
         var duration = project.Timeline?.Duration ?? project.Media.Duration;
         previewDuration.Text = double.IsFinite(duration) && duration >= 0 ? TimeSpan.FromSeconds(duration).ToString(duration >= 3600 ? @"h\:mm\:ss" : @"m\:ss", CultureInfo.InvariantCulture) : "—";
+        estimate.Text = EstimateFileSize(duration);
+    }
+
+    private string EstimateFileSize(double duration)
+    {
+        if (!double.IsFinite(duration) || duration <= 0) return "预计大小：—";
+        if (audioOnly)
+        {
+            var bytes = duration * 192_000 / 8d;
+            return $"预计约 {FormatSize(bytes)}（AAC 192 kb/s）";
+        }
+
+        var (width, height) = GetSize();
+        var frameRate = frameRateIndex == 1 ? 60 : 30;
+        var audioBits = 192_000d;
+        double lowBitsPerSecond;
+        double highBitsPerSecond;
+        if (hardware.IsChecked == true)
+        {
+            // The current hardware path requests 16 Mb/s; actual encoders may vary or fall back.
+            lowBitsPerSecond = 12_800_000 + audioBits;
+            highBitsPerSecond = 19_200_000 + audioBits;
+        }
+        else
+        {
+            // CRF 20 is content-dependent. Use a broad pixel-rate range rather than a point estimate.
+            var pixelRate = (double)width * height * frameRate;
+            lowBitsPerSecond = pixelRate * .035 + audioBits;
+            highBitsPerSecond = pixelRate * .14 + audioBits;
+        }
+
+        var lowBytes = duration * lowBitsPerSecond / 8d;
+        var highBytes = duration * highBitsPerSecond / 8d;
+        return $"预计约 {FormatSize(lowBytes)}–{FormatSize(highBytes)}（含 AAC 192 kb/s，实际大小随画面变化）";
+    }
+
+    private static string FormatSize(double bytes)
+    {
+        const double megabyte = 1_000_000d;
+        return $"{bytes / megabyte:0.#} MB";
     }
 
     private (int Width, int Height) GetSize()
