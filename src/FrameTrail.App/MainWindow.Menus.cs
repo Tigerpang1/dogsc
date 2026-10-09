@@ -1,0 +1,695 @@
+using System.Diagnostics;
+using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Windows;
+using System.Windows.Controls;
+using Microsoft.VisualBasic.FileIO;
+using Microsoft.Win32;
+using FrameTrail.Capture;
+using FrameTrail.Media;
+
+namespace FrameTrail.App;
+
+public partial class MainWindow
+{
+    private static readonly JsonSerializerOptions MenuJson = new() { WriteIndented = true };
+    private static string PresetRoot => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "presets");
+
+    private void ProjectMenuClick(object sender, RoutedEventArgs e)
+    {
+        var menu = NewMenu();
+        AddMenu(menu, "打开 FrameTrail 项目…", async () => await PickProject());
+        AddMenu(menu, "导入视频…", async () => await ImportVideoFromMenu());
+        AddMenu(menu, "导入 DogSC 项目…", async () => await ImportDogScClick());
+        AddMenu(menu, "保存项目", () => { _ = Guard(() => { SaveProject(); return Task.CompletedTask; }); });
+        var recent = new MenuItem { Header = "最近项目" };
+        foreach (var path in RecentProjects.Read())
+        {
+            var item = new MenuItem { Header = Path.GetFileName(Path.GetDirectoryName(path)) + "  ·  " + path, ToolTip = path };
+            item.Click += async (_, _) => await Guard(async () => { await OpenProject(path); RecentProjects.Add(path); });
+            recent.Items.Add(item);
+        }
+        if (recent.Items.Count == 0) recent.Items.Add(new MenuItem { Header = "暂无最近项目", IsEnabled = false });
+        menu.Items.Add(recent);
+        menu.Items.Add(new Separator());
+        AddMenu(menu, "在资源管理器中查看项目…", () => RevealProjectFolder());
+        AddMenu(menu, "显示录制工具", () => ShowRecorderClick(this, new RoutedEventArgs()));
+        menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private static ContextMenu NewMenu() => new() { StaysOpen = false, Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom };
+    private static void AddMenu(ItemsControl menu, string title, Action action)
+    {
+        var item = new MenuItem { Header = title };
+        item.Click += (_, _) => action(); menu.Items.Add(item);
+    }
+    private static void AddMenu(ItemsControl menu, string title, Func<Task> action)
+    {
+        var item = new MenuItem { Header = title };
+        item.Click += async (_, _) => await action(); menu.Items.Add(item);
+    }
+
+    private async Task PickProject()
+    {
+        var dialog = new OpenFileDialog { Title = "打开 FrameTrail 项目", Filter = "FrameTrail 项目|*.frametrail|所有文件|*.*", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != true) return;
+        await Guard(async () => { await OpenProject(dialog.FileName); RecentProjects.Add(dialog.FileName); });
+    }
+
+    private async Task ImportVideoFromMenu()
+    {
+        var pick = new OpenFileDialog { Title = "导入视频并创建项目", Filter = "视频文件|*.mp4;*.mov;*.mkv;*.avi;*.webm", CheckFileExists = true };
+        if (pick.ShowDialog(this) != true) return;
+        await Guard(async () =>
+        {
+            var info = await MediaTools.ProbeAsync(pick.FileName);
+            if (info.Width <= 0 || info.Duration <= 0) throw new InvalidDataException("文件没有可用视频。");
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail", "Import-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
+            Directory.CreateDirectory(Path.Combine(dir, "media"));
+            var relative = "media/source" + Path.GetExtension(pick.FileName).ToLowerInvariant();
+            File.Copy(pick.FileName, Path.Combine(dir, relative));
+            var imported = MakeProject(relative, info); imported.DisplayName = Path.GetFileNameWithoutExtension(pick.FileName);
+            var file = Path.Combine(dir, "project.frametrail"); FrameTrailProjectStore.Save(file, imported);
+            await OpenProject(file); RecentProjects.Add(file);
+            Status.Text = "已复制素材并建立项目：" + dir;
+        });
+    }
+
+    private async Task ImportDogScClick()
+    {
+        var dialog = new OpenFolderDialog { Title = "选择 .dogscproject 项目文件夹", Multiselect = false };
+        if (dialog.ShowDialog(this) != true) return;
+        await Guard(async () =>
+        {
+            var source = Path.GetFullPath(dialog.FolderName);
+            var manifest = Path.Combine(source, "project.json");
+            if (!Directory.Exists(source) || !Path.GetFileName(source).EndsWith(".dogscproject", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("请选择以 .dogscproject 结尾的 DogSC 项目文件夹。");
+            if (!File.Exists(manifest)) throw new FileNotFoundException("项目文件夹缺少 project.json。", manifest);
+            using var doc = JsonDocument.Parse(await File.ReadAllBytesAsync(manifest));
+            var screenPath = doc.RootElement.GetProperty("media").GetProperty("screen").GetProperty("relativePath").GetString();
+            if (string.IsNullOrWhiteSpace(screenPath) || Path.IsPathRooted(screenPath) || screenPath.Contains(':'))
+                throw new InvalidDataException("DogSC 项目没有有效的相对屏幕素材路径。");
+            var sourceMedia = Path.GetFullPath(Path.Combine(source, screenPath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar)));
+            var prefix = Path.TrimEndingDirectorySeparator(source) + Path.DirectorySeparatorChar;
+            if (!sourceMedia.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !File.Exists(sourceMedia))
+                throw new InvalidDataException("DogSC 主素材路径越出项目目录或文件不存在。");
+            for (var walk = sourceMedia; walk != source && walk.StartsWith(prefix, StringComparison.OrdinalIgnoreCase); walk = Path.GetDirectoryName(walk)!)
+                if ((File.GetAttributes(walk) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("DogSC 主素材路径经过链接或重解析点，已停止导入。");
+            var info = await MediaTools.ProbeAsync(sourceMedia);
+            if (info.Width <= 0 || info.Duration <= 0) throw new InvalidDataException("DogSC 主素材没有可读取的视频流。");
+            var root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail", "Imported");
+            Directory.CreateDirectory(root);
+            var stem = SafeProjectStem(Path.GetFileNameWithoutExtension(source));
+            var destination = Path.Combine(root, stem + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".frametrail");
+            var imported = DogScProjectImporter.Import(source, destination, new MediaAsset { Width = info.Width, Height = info.Height, Duration = info.Duration });
+            await OpenProject(imported.ProjectFilePath);
+            RecentProjects.Add(imported.ProjectFilePath);
+            Status.Text = "已导入 DogSC 项目副本；原项目未修改。未映射字段请查看 dogsc-import-report.json。";
+            if (imported.Report.Warnings.Count > 0)
+                MessageBox.Show(this, "项目已导入，部分设置未映射：\n\n" + string.Join("\n", imported.Report.Warnings.Take(12)) + (imported.Report.Warnings.Count > 12 ? "\n…详见导入报告。" : ""), "DogSC 导入提示", MessageBoxButton.OK, MessageBoxImage.Information);
+        });
+    }
+
+    private static string SafeProjectStem(string value)
+    {
+        var invalid = Path.GetInvalidFileNameChars().ToHashSet();
+        var name = new string(value.Select(c => invalid.Contains(c) ? '-' : c).ToArray()).Trim().TrimEnd('.');
+        return string.IsNullOrWhiteSpace(name) ? "Imported" : name;
+    }
+
+    private void RevealProjectFolder()
+    {
+        var folder = projectFile is null ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail") : Path.GetDirectoryName(projectFile)!;
+        Directory.CreateDirectory(folder);
+        Process.Start(new ProcessStartInfo(folder) { UseShellExecute = true });
+    }
+
+    private void RenameProjectClick(object sender, RoutedEventArgs e)
+    {
+        if (project is null || projectFile is null) { Status.Text = "请先打开或录制一个项目。"; return; }
+        var current = project.DisplayName ?? Path.GetFileName(Path.GetDirectoryName(projectFile)) ?? "未命名项目";
+        var name = PromptText(this, "重命名项目", "项目名称", current);
+        if (name is null) return;
+        name = name.Trim();
+        if (name.Length is 0 or > 240) { MessageBox.Show(this, "项目名称长度应为 1–240 个字符。", "无法重命名", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        try { project.DisplayName = name; SaveProject(); ProjectTitle.Text = name; }
+        catch (Exception ex) { MessageBox.Show(this, ex.Message, "保存失败", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void DeleteProjectClick(object sender, RoutedEventArgs e)
+    {
+        if (project is null || projectFile is null) { Status.Text = "当前没有打开的项目。"; return; }
+        var answer = MessageBox.Show(this, "只会把当前 .frametrail 项目文件移入回收站。项目文件夹中的原始视频、音频和其他素材都会保留。是否继续？", "移除项目文件", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes) return;
+        try
+        {
+            SaveProject();
+            FileSystem.DeleteFile(projectFile, UIOption.OnlyErrorDialogs, RecycleOption.SendToRecycleBin);
+            project = null; projectFile = null; history = null; timelineAssets = null; selectedEffect = null;
+            Clips.ItemsSource = null; Markers.ItemsSource = null; TimelineView.Project = null; TimelineView.Refresh();
+            EmptyState.Visibility = Visibility.Visible; ProjectTitle.Text = "未命名项目"; TimelineInfo.Text = ""; Status.Text = "项目文件已移入回收站，原始素材仍保留在磁盘。";
+            BuildInspector();
+        }
+        catch (Exception ex) { MessageBox.Show(this, "移除失败：" + ex.Message, "项目文件未移动", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private static string? PromptText(Window owner, string title, string label, string initialValue)
+    {
+        var dialog = new Window { Title = title, Owner = owner, Width = 390, Height = 172, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, Background = owner.Background, Foreground = owner.Foreground };
+        var root = new DockPanel { Margin = new Thickness(20) };
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var ok = new Button { Content = "确定", IsDefault = true, MinWidth = 78, Margin = new Thickness(5, 10, 0, 0), Style = owner.TryFindResource("PrimaryButton") as Style };
+        var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 78, Margin = new Thickness(5, 10, 0, 0) };
+        buttons.Children.Add(cancel); buttons.Children.Add(ok); DockPanel.SetDock(buttons, Dock.Bottom); root.Children.Add(buttons);
+        var stack = new StackPanel(); stack.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 2, 0, 4) });
+        var input = new TextBox { Text = initialValue, Padding = new Thickness(9, 7, 9, 7) }; stack.Children.Add(input); root.Children.Add(stack); dialog.Content = root;
+        ok.Click += (_, _) => { dialog.DialogResult = true; dialog.Close(); }; dialog.Loaded += (_, _) => { input.Focus(); input.SelectAll(); };
+        return dialog.ShowDialog() == true ? input.Text : null;
+    }
+
+    private void MarkerMenuClick(object sender, RoutedEventArgs e)
+    {
+        var menu = NewMenu();
+        AddMenu(menu, "在播放头添加标记…", () => AddMarkerAtPlayhead());
+        if (project is { Markers.Count: > 0 })
+        {
+            menu.Items.Add(new Separator());
+            foreach (var marker in project.Markers.OrderBy(m => m.SourceTime))
+            {
+                var parent = new MenuItem { Header = $"跳转到 {marker.SourceTime:0.00}s · {marker.Label}" };
+                parent.Click += (_, _) => { if (project?.Timeline.MapSourceToOutput(marker.SourceTime) is { } t) { Playhead.Value = t; _ = Guard(() => RenderPreview(t)); } else Status.Text = "此标记位于已剪除的素材区间，当前时间线无法跳转。"; };
+                var delete = new MenuItem { Header = "删除此标记" }; delete.Click += (_, _) => ApplyEdit(p => p.Markers.RemoveAll(x => x.Id == marker.Id));
+                parent.Items.Add(delete); menu.Items.Add(parent);
+            }
+        }
+        if (project is null) menu.Items.Insert(0, new MenuItem { Header = "请先打开项目", IsEnabled = false });
+        menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Top; menu.IsOpen = true;
+    }
+
+    private void AddMarkerAtPlayhead()
+    {
+        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        var label = PromptText(this, "添加标记", "标记名称", $"标记 {project.Markers.Count + 1}");
+        if (label is null) return;
+        ApplyEdit(p => p.Markers.Add(new RecordingMarker(Guid.NewGuid(), SourceNow, label.Trim().Length == 0 ? "标记" : label.Trim())));
+    }
+
+    private void AspectClick(object sender, RoutedEventArgs e)
+    {
+        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        var menu = NewMenu();
+        foreach (var item in new[] { ("16:9", 16, 9), ("4:3", 4, 3), ("9:16", 9, 16), ("1:1", 1, 1), ("3:4", 3, 4), ("2.39:1", 239, 100) })
+        {
+            var entry = new MenuItem { Header = item.Item1, IsCheckable = true, IsChecked = (long)project.Settings.CanvasWidth * item.Item3 == (long)project.Settings.CanvasHeight * item.Item2 };
+            entry.Click += (_, _) => SetAspect(item.Item2, item.Item3); menu.Items.Add(entry);
+        }
+        var custom = new MenuItem { Header = "自定义比例…" }; custom.Click += (_, _) =>
+        {
+            var value = PromptText(this, "自定义画布比例", "输入宽:高，例如 1920:1080", $"{project.Settings.CanvasWidth}:{project.Settings.CanvasHeight}");
+            if (value is null) return;
+            var parts = value.Split(':');
+            if (parts.Length != 2 || !int.TryParse(parts[0], out var w) || !int.TryParse(parts[1], out var h) || w is < 2 or > 7680 || h is < 2 or > 4320) { MessageBox.Show(this, "请输入范围内的整数比例，例如 1920:1080。", "比例无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            SetAspect(w, h);
+        };
+        menu.Items.Add(new Separator()); menu.Items.Add(custom); menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private void SetAspect(int width, int height)
+    {
+        ApplyEdit(p =>
+        {
+            p.Settings.CanvasWidth = width; p.Settings.CanvasHeight = height;
+            p.Settings.Canvas ??= new CanvasSettings(); p.Settings.Canvas.AspectWidth = width; p.Settings.Canvas.AspectHeight = height;
+        });
+        var gcd = Gcd(width, height); AspectLabel.Text = $"{width / gcd}:{height / gcd}";
+    }
+
+    private void AddElementClick(object sender, RoutedEventArgs e)
+    {
+        var menu = NewMenu();
+        AddMenu(menu, "添加运镜片段", () => AddMotionClip());
+        AddMenu(menu, "添加贴图…", () => AddOverlayClick(this, new RoutedEventArgs()));
+        AddMenu(menu, "添加模糊遮罩", () => AddBlurClip());
+        menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private void PresetClick(object sender, RoutedEventArgs e)
+    {
+        var menu = NewMenu();
+        AddMenu(menu, "简洁浅色", () => ApplyBuiltinPreset("简洁浅色", "#F4F6F6", ScreenFrameKind.None, .08, .02));
+        AddMenu(menu, "深色窗口", () => ApplyBuiltinPreset("深色窗口", "#202124", ScreenFrameKind.WindowDark, .08, .025));
+        AddMenu(menu, "清爽浏览器", () => ApplyBuiltinPreset("清爽浏览器", "#EAF0F2", ScreenFrameKind.BrowserLight, .07, .025));
+        menu.Items.Add(new Separator());
+        var custom = LoadPresetFiles();
+        foreach (var entry in custom)
+        {
+            var item = new MenuItem { Header = entry.Name };
+            item.Click += (_, _) => ApplyCustomPreset(entry.Path); menu.Items.Add(item);
+            var apply = new MenuItem { Header = "应用此预设" }; apply.Click += (_, _) => ApplyCustomPreset(entry.Path); item.Items.Add(apply);
+            var rename = new MenuItem { Header = "重命名本机预设…" }; rename.Click += (_, _) => RenameCustomPreset(entry.Path); item.Items.Add(rename);
+            var overwrite = new MenuItem { Header = "用当前样式覆盖…" }; overwrite.Click += (_, _) => OverwriteCustomPreset(entry.Path); item.Items.Add(overwrite);
+            var remove = new MenuItem { Header = "删除本机预设" }; remove.Click += (_, _) => DeleteCustomPreset(entry.Path); item.Items.Add(remove);
+        }
+        AddMenu(menu, "将当前样式保存为本机预设…", () => SaveCustomPreset());
+        menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private void ApplyBuiltinPreset(string name, string color, ScreenFrameKind frame, double padding, double radius)
+    {
+        if (project is null) { Status.Text = "请先打开项目。"; return; }
+        ApplyEdit(p => { p.Settings.Background = color; p.Settings.Padding = padding; p.Settings.CornerRadius = radius; p.Settings.Shadow = .28; p.Settings.BackgroundStyle = new BackgroundSettings { Color = color }; p.Settings.Canvas ??= new CanvasSettings(); p.Settings.Canvas.Frame = frame; });
+        Status.Text = "已应用场景预设：" + name;
+    }
+
+    private sealed record PresetEntry(string Name, string Path);
+    private sealed class SavedScenePreset { public string Name { get; set; } = ""; public FrameTrailSettings Settings { get; set; } = new(); }
+    private static IReadOnlyList<PresetEntry> LoadPresetFiles()
+    {
+        if (!Directory.Exists(PresetRoot)) return [];
+        var list = new List<PresetEntry>();
+        foreach (var path in Directory.EnumerateFiles(PresetRoot, "preset.json", System.IO.SearchOption.AllDirectories))
+            try { var data = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(path)); if (data is not null && !string.IsNullOrWhiteSpace(data.Name)) list.Add(new(data.Name, path)); } catch { }
+        return list.OrderBy(x => x.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+    }
+
+    private void SaveCustomPreset()
+    {
+        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        var name = PromptText(this, "保存场景预设", "预设名称", project.DisplayName ?? "我的样式");
+        if (name is null) return; name = name.Trim();
+        if (name.Length is 0 or > 100) { MessageBox.Show(this, "预设名称长度应为 1–100 个字符。", "无法保存", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+        string? temporaryDirectory = null;
+        try
+        {
+            Directory.CreateDirectory(PresetRoot);
+            var id = Guid.NewGuid().ToString("N");
+            var presetDirectory = Path.Combine(PresetRoot, id);
+            temporaryDirectory = Path.Combine(PresetRoot, ".tmp-" + id);
+            Directory.CreateDirectory(temporaryDirectory);
+            var settings = CapturePresetSettings(temporaryDirectory);
+            File.WriteAllText(Path.Combine(temporaryDirectory, "preset.json"), JsonSerializer.Serialize(new SavedScenePreset { Name = name, Settings = settings }, MenuJson));
+            Directory.Move(temporaryDirectory, presetDirectory); temporaryDirectory = null;
+            Status.Text = "已保存本机预设：" + name;
+        }
+        catch (Exception ex) { MessageBox.Show(this, "保存预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally { if (temporaryDirectory is not null) TryDeleteOwnedDirectory(temporaryDirectory); }
+    }
+
+    private FrameTrailSettings CapturePresetSettings(string destinationDirectory)
+    {
+        if (project is null || projectFile is null) throw new InvalidOperationException("请先打开项目。");
+        var settings = JsonSerializer.Deserialize<FrameTrailSettings>(JsonSerializer.Serialize(project.Settings))!;
+        if (settings.BackgroundStyle is { } background)
+        {
+            string? imagePath = background.ImagePath;
+            string? videoPath = background.VideoPath;
+            if (background.Kind == BackgroundKind.Image && !string.IsNullOrWhiteSpace(imagePath))
+                imagePath = CopyProjectAssetToPreset(imagePath, destinationDirectory, "background-image");
+            if (background.Kind == BackgroundKind.Video && !string.IsNullOrWhiteSpace(videoPath))
+                videoPath = CopyProjectAssetToPreset(videoPath, destinationDirectory, "background-video");
+            settings.BackgroundStyle = background with { ImagePath = imagePath, VideoPath = videoPath };
+        }
+        return settings;
+    }
+
+    private string CopyProjectAssetToPreset(string relativePath, string destinationDirectory, string prefix)
+    {
+        if (projectFile is null) throw new InvalidOperationException("请先打开项目。");
+        var source = FrameTrailProjectStore.ResolveAssetPath(projectFile, relativePath);
+        if (!File.Exists(source)) throw new FileNotFoundException("当前背景素材不存在。", source);
+        RejectReparsePath(Path.GetDirectoryName(projectFile)!, source);
+        var assetName = prefix + "-" + Guid.NewGuid().ToString("N") + Path.GetExtension(source).ToLowerInvariant();
+        File.Copy(source, Path.Combine(destinationDirectory, assetName));
+        return assetName;
+    }
+
+    private void RenameCustomPreset(string presetFile)
+    {
+        try
+        {
+            var safeFile = ValidatePresetFile(presetFile);
+            var preset = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(safeFile)) ?? throw new InvalidDataException("预设文件为空。");
+            var name = PromptText(this, "重命名本机预设", "预设名称", preset.Name)?.Trim();
+            if (name is null) return;
+            if (name.Length is 0 or > 100) throw new InvalidDataException("预设名称长度应为 1–100 个字符。");
+            preset.Name = name;
+            var temporaryFile = safeFile + ".tmp-" + Guid.NewGuid().ToString("N");
+            try { File.WriteAllText(temporaryFile, JsonSerializer.Serialize(preset, MenuJson)); File.Move(temporaryFile, safeFile, true); }
+            finally { if (File.Exists(temporaryFile)) File.Delete(temporaryFile); }
+            Status.Text = "已重命名本机预设：" + name;
+        }
+        catch (Exception ex) { MessageBox.Show(this, "重命名预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private void OverwriteCustomPreset(string presetFile)
+    {
+        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        if (MessageBox.Show(this, "将用当前项目的样式替换此预设。已有预设图片会在新版本安全写入后再清理；如果写入失败，会恢复原预设。是否继续？", "覆盖本机预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        string? temporaryDirectory = null;
+        string? backupDirectory = null;
+        var swapped = false;
+        try
+        {
+            var safeFile = ValidatePresetFile(presetFile);
+            var directory = Path.GetDirectoryName(safeFile)!;
+            var existing = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(safeFile)) ?? throw new InvalidDataException("预设文件为空。");
+            var id = Guid.NewGuid().ToString("N");
+            temporaryDirectory = Path.Combine(PresetRoot, ".tmp-" + id);
+            backupDirectory = Path.Combine(PresetRoot, ".backup-" + id);
+            Directory.CreateDirectory(temporaryDirectory);
+            CopyPresetAssetsSafely(directory, temporaryDirectory);
+            var settings = CapturePresetSettings(temporaryDirectory);
+            File.WriteAllText(Path.Combine(temporaryDirectory, "preset.json"), JsonSerializer.Serialize(new SavedScenePreset { Name = existing.Name, Settings = settings }, MenuJson));
+            Directory.Move(directory, backupDirectory);
+            try { Directory.Move(temporaryDirectory, directory); temporaryDirectory = null; swapped = true; }
+            catch { Directory.Move(backupDirectory, directory); backupDirectory = null; throw; }
+            Status.Text = "已用当前样式覆盖本机预设：" + existing.Name;
+        }
+        catch (Exception ex) { MessageBox.Show(this, "覆盖预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally
+        {
+            if (temporaryDirectory is not null) TryDeleteOwnedDirectory(temporaryDirectory);
+            if (swapped && backupDirectory is not null) TryDeleteOwnedDirectory(backupDirectory);
+        }
+    }
+
+    private static void TryDeleteOwnedDirectory(string path)
+    {
+        try { if (Directory.Exists(path)) Directory.Delete(path, true); } catch { }
+    }
+
+    private static string ValidatePresetFile(string presetFile)
+    {
+        var root = Path.GetFullPath(PresetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var full = Path.GetFullPath(presetFile);
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !string.Equals(Path.GetFileName(full), "preset.json", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("预设文件不在 FrameTrail 本机预设目录中。");
+        RejectReparsePath(PresetRoot, full);
+        return full;
+    }
+
+    private static void CopyPresetAssetsSafely(string sourceDirectory, string destinationDirectory)
+    {
+        RejectReparsePath(sourceDirectory, sourceDirectory);
+        var pending = new Stack<string>();
+        pending.Push(sourceDirectory);
+        while (pending.Count > 0)
+        {
+            var current = pending.Pop();
+            foreach (var directory in Directory.EnumerateDirectories(current))
+            {
+                RejectReparsePath(sourceDirectory, directory);
+                var relative = Path.GetRelativePath(sourceDirectory, directory);
+                Directory.CreateDirectory(Path.Combine(destinationDirectory, relative));
+                pending.Push(directory);
+            }
+            foreach (var file in Directory.EnumerateFiles(current))
+            {
+                RejectReparsePath(sourceDirectory, file);
+                if (string.Equals(Path.GetFileName(file), "preset.json", StringComparison.OrdinalIgnoreCase)) continue;
+                var relative = Path.GetRelativePath(sourceDirectory, file);
+                var target = Path.Combine(destinationDirectory, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                File.Copy(file, target, true);
+            }
+        }
+    }
+
+    private void ApplyCustomPreset(string presetFile)
+    {
+        if (project is null || projectFile is null) { Status.Text = "请先打开项目。"; return; }
+        try
+        {
+            var preset = JsonSerializer.Deserialize<SavedScenePreset>(File.ReadAllText(presetFile)) ?? throw new InvalidDataException("预设文件为空。");
+            var settings = JsonSerializer.Deserialize<FrameTrailSettings>(JsonSerializer.Serialize(preset.Settings))!;
+            if (settings.BackgroundStyle is { } background)
+            {
+                string? imagePath = background.ImagePath;
+                string? videoPath = background.VideoPath;
+                var presetDirectory = Path.GetFullPath(Path.GetDirectoryName(presetFile)!);
+                if (background.Kind == BackgroundKind.Image && !string.IsNullOrWhiteSpace(imagePath))
+                    imagePath = CopyPresetAssetToProject(presetDirectory, imagePath, "preset-image");
+                if (background.Kind == BackgroundKind.Video && !string.IsNullOrWhiteSpace(videoPath))
+                    videoPath = CopyPresetAssetToProject(presetDirectory, videoPath, "preset-video");
+                settings.BackgroundStyle = background with { ImagePath = imagePath, VideoPath = videoPath };
+            }
+            ApplyEdit(p => p.Settings = settings); Status.Text = "已应用本机预设：" + preset.Name;
+        }
+        catch (Exception ex) { MessageBox.Show(this, "应用预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private string CopyPresetAssetToProject(string presetDirectory, string assetPath, string prefix)
+    {
+        if (projectFile is null) throw new InvalidOperationException("请先打开项目。");
+        var source = Path.GetFullPath(Path.Combine(presetDirectory, assetPath));
+        var prefixPath = Path.TrimEndingDirectorySeparator(presetDirectory) + Path.DirectorySeparatorChar;
+        if (!source.StartsWith(prefixPath, StringComparison.OrdinalIgnoreCase) || !File.Exists(source))
+            throw new InvalidDataException("预设背景素材缺失或路径越界。");
+        RejectReparsePath(presetDirectory, source);
+        var relative = "assets/" + prefix + "-" + Guid.NewGuid().ToString("N") + Path.GetExtension(source).ToLowerInvariant();
+        var target = FrameTrailProjectStore.ResolveAssetPath(projectFile, relative);
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        File.Copy(source, target);
+        return relative;
+    }
+
+    private void DeleteCustomPreset(string presetFile)
+    {
+        if (MessageBox.Show(this, "删除这个本机预设及其预设图片？不会更改项目素材。", "删除预设", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+        try
+        {
+            var root = Path.GetFullPath(PresetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var folder = Path.GetFullPath(Path.GetDirectoryName(presetFile)!);
+            if (!folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) || folder == Path.TrimEndingDirectorySeparator(PresetRoot)) throw new InvalidDataException("预设目录不在 FrameTrail 本机预设路径内。");
+            RejectReparsePath(PresetRoot, presetFile);
+            Directory.Delete(folder, true); Status.Text = "已删除本机预设。";
+        }
+        catch (Exception ex) { MessageBox.Show(this, "删除预设失败：" + ex.Message, "场景预设", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private static void RejectReparsePath(string root, string path)
+    {
+        var fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        var fullPath = Path.GetFullPath(path);
+        if ((File.GetAttributes(fullRoot) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("素材根目录是链接或重解析点，已停止访问。");
+        var relative = Path.GetRelativePath(fullRoot, fullPath);
+        if (Path.IsPathRooted(relative) || relative == ".." || relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)) throw new InvalidDataException("素材路径越出所属目录。");
+        var current = fullRoot;
+        foreach (var part in relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+        {
+            current = Path.Combine(current, part);
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new InvalidDataException("拒绝读取经过链接或重解析点的预设素材。");
+        }
+    }
+
+    private void SettingsClick(object sender, RoutedEventArgs e)
+    {
+        var menu = NewMenu();
+        AddMenu(menu, "录制与界面设置…", () => ShowUserPreferences());
+        AddMenu(menu, "录制与权限帮助", () => ShowPermissionHelp(false));
+        menu.Items.Add(new Separator());
+        AddMenu(menu, "关于 FrameTrail", () =>
+        {
+            var version = typeof(MainWindow).Assembly.GetName().Version;
+            var versionText = version is null ? "未知" : $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
+            MessageBox.Show(this, $"FrameTrail {versionText}\nWindows 屏幕录制与视频编辑工具\n\n本项目以 DogSC 上游 MIT 版本为迁移基线，并使用 FrameTrail 自有名称与图标。", "关于", MessageBoxButton.OK, MessageBoxImage.Information);
+        });
+        AddMenu(menu, "版本与手动更新说明", () => OpenReleaseNotes());
+        AddMenu(menu, "源码与许可证", () => OpenLocalPath(Path.Combine(AppContext.BaseDirectory, "licenses")));
+        AddMenu(menu, "反馈与问题报告", () => MessageBox.Show(this,
+            "当前版本未配置在线更新或公开反馈服务。请通过获取此安装包时使用的发行渠道联系维护者。\n\n反馈时建议附上 FrameTrail 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
+            "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
+        AddMenu(menu, "键盘快捷键", () => MessageBox.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\nS　分割所选片段\n← / →　逐帧移动\nCtrl+Alt+M　录制中添加标记", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
+        AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
+        AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
+        menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private void OpenReleaseNotes()
+    {
+        var documentation = Path.Combine(AppContext.BaseDirectory, "docs", "build-and-release.md");
+        if (File.Exists(documentation))
+        {
+            Process.Start(new ProcessStartInfo(documentation) { UseShellExecute = true });
+            return;
+        }
+        MessageBox.Show(this,
+            "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 FrameTrail 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
+            "手动更新", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private sealed class UserPreferences
+    {
+        public string? RecordingFolder { get; set; }
+        public int FrameRate { get; set; } = 60;
+        public int PreviewResolution { get; set; } = 1440;
+        public int PreviewFrameRate { get; set; } = 30;
+        public bool ExcludeEditorDuringRecording { get; set; } = true;
+        public bool OriginalResolution { get; set; }
+        public bool RecordSystemSound { get; set; } = true;
+        public bool RecordMicrophone { get; set; }
+        public bool RecordCamera { get; set; }
+        public string? MicrophoneId { get; set; }
+        public string? CameraId { get; set; }
+        public bool DarkTheme { get; set; }
+        public bool FirstRunHelpShown { get; set; }
+    }
+
+    private static string PreferencesFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "settings.json");
+
+    /// <summary>在 WindowLoaded 完成设备枚举后调用，使用户设置在新启动时生效。</summary>
+    private void ApplyUserPreferencesOnStartup(bool showFirstRunHelp = true)
+    {
+        var settings = ReadUserPreferences();
+        ApplyUserPreferences(settings);
+        if (showFirstRunHelp && !settings.FirstRunHelpShown)
+        {
+            ShowPermissionHelp(true);
+            settings.FirstRunHelpShown = true;
+            SaveUserPreferences(settings);
+        }
+    }
+
+    private static UserPreferences ReadUserPreferences()
+    {
+        try { return JsonSerializer.Deserialize<UserPreferences>(File.ReadAllText(PreferencesFile)) ?? new(); }
+        catch { return new(); }
+    }
+
+    private static void SaveUserPreferences(UserPreferences settings)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(PreferencesFile)!);
+        var temp = PreferencesFile + ".tmp-" + Guid.NewGuid().ToString("N");
+        try
+        {
+            File.WriteAllText(temp, JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+            File.Move(temp, PreferencesFile, true);
+        }
+        finally { if (File.Exists(temp)) File.Delete(temp); }
+    }
+
+    private void ApplyUserPreferences(UserPreferences settings)
+    {
+        preferredRecordingRoot = !string.IsNullOrWhiteSpace(settings.RecordingFolder) && Directory.Exists(settings.RecordingFolder)
+            ? Path.GetFullPath(settings.RecordingFolder) : null;
+        CaptureFps.SelectedIndex = settings.FrameRate == 30 ? 0 : 1;
+        previewResolution = settings.PreviewResolution is 960 or 1440 or 1920 ? settings.PreviewResolution : 1440;
+        previewFrameRate = settings.PreviewFrameRate == 60 ? 60 : 30;
+        excludeEditorDuringRecording = settings.ExcludeEditorDuringRecording;
+        CaptureResolution.SelectedIndex = settings.OriginalResolution ? 1 : 0;
+        SystemSound.IsChecked = settings.RecordSystemSound;
+        Microphone.IsChecked = settings.RecordMicrophone;
+        RecordCamera.IsChecked = settings.RecordCamera;
+        SelectDevice(MicDevices, settings.MicrophoneId);
+        SelectDevice(CameraDevices, settings.CameraId);
+        if (darkTheme != settings.DarkTheme) ThemeClick(this, new RoutedEventArgs());
+        if (project is not null)
+        {
+            if (playing) StopPlayback();
+            _ = Guard(() => RenderPreview(Playhead.Value));
+        }
+    }
+
+    private static void SelectDevice(ComboBox combo, string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id) || combo.ItemsSource is not System.Collections.IEnumerable items) return;
+        foreach (var item in items)
+            if (item is AudioDeviceInfo audio && string.Equals(audio.Id, id, StringComparison.Ordinal)) { combo.SelectedItem = item; return; }
+            else if (item is CameraInfo camera && string.Equals(camera.Id, id, StringComparison.Ordinal)) { combo.SelectedItem = item; return; }
+    }
+
+    private void ShowUserPreferences()
+    {
+        var current = ReadUserPreferences();
+        var root = new DockPanel { Margin = new Thickness(22) };
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 82, Margin = new Thickness(4, 12, 0, 0) };
+        var save = new Button { Content = "保存设置", IsDefault = true, MinWidth = 100, Margin = new Thickness(4, 12, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
+        actions.Children.Add(cancel); actions.Children.Add(save); DockPanel.SetDock(actions, Dock.Bottom); root.Children.Add(actions);
+        var content = new StackPanel();
+        content.Children.Add(new TextBlock { Text = "默认录制设置", FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 8) });
+        var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail") };
+        var browse = new Button { Content = "选择目录…", HorizontalAlignment = HorizontalAlignment.Left };
+        browse.Click += (_, _) => { var picker = new OpenFolderDialog { Title = "选择默认录制保存目录", FolderName = Directory.Exists(folder.Text) ? folder.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) }; if (picker.ShowDialog(this) == true) folder.Text = picker.FolderName; };
+        content.Children.Add(new TextBlock { Text = "录制保存目录", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 6, 0, 0) });
+        content.Children.Add(folder); content.Children.Add(browse);
+        var frameRate = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.FrameRate == 30 ? 30 : 60 };
+        var resolution = new ComboBox { ItemsSource = new[] { "最高 1080p", "原始分辨率" }, SelectedIndex = current.OriginalResolution ? 1 : 0 };
+        content.Children.Add(new TextBlock { Text = "帧率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 10, 0, 0) }); content.Children.Add(frameRate);
+        content.Children.Add(new TextBlock { Text = "分辨率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 5, 0, 0) }); content.Children.Add(resolution);
+        var previewWidth = new ComboBox { ItemsSource = new[] { 960, 1440, 1920 }, SelectedItem = current.PreviewResolution is 960 or 1440 or 1920 ? current.PreviewResolution : 1440 };
+        var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30 };
+        System.Windows.Automation.AutomationProperties.SetName(previewWidth, "预览分辨率");
+        System.Windows.Automation.AutomationProperties.SetName(previewFps, "预览帧率");
+        content.Children.Add(new TextBlock { Text = "静帧与实时预览宽度", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 10, 0, 0) }); content.Children.Add(previewWidth);
+        content.Children.Add(new TextBlock { Text = "实时预览帧率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 5, 0, 0) }); content.Children.Add(previewFps);
+        var system = new CheckBox { Content = "录制系统声音", IsChecked = current.RecordSystemSound };
+        var microphone = new CheckBox { Content = "录制麦克风", IsChecked = current.RecordMicrophone };
+        var camera = new CheckBox { Content = "录制摄像头", IsChecked = current.RecordCamera };
+        var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme };
+        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。" };
+        content.Children.Add(system); content.Children.Add(microphone); content.Children.Add(camera); content.Children.Add(dark);
+        content.Children.Add(excludeEditor);
+        content.Children.Add(new TextBlock { Text = "保存后会立即更新录制面板和预览质量，并在下次启动时恢复。较大的预览尺寸会增加显存占用；麦克风和摄像头设备在录制面板中选择。", TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 9, 0, 0) });
+        root.Children.Add(content);
+        var dialog = new Window { Title = "录制与界面设置", Owner = this, Width = 470, Height = 690, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, Background = Background, Foreground = Foreground, Content = root };
+        save.Click += (_, _) =>
+        {
+            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60)) { MessageBox.Show(dialog, "请选择 30 或 60 FPS。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            var path = folder.Text.Trim();
+            if (path.Length == 0) { MessageBox.Show(dialog, "请指定默认录制保存目录。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            try
+            {
+                path = Path.GetFullPath(path); Directory.CreateDirectory(path);
+                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60)) { MessageBox.Show(dialog, "请选择有效的预览分辨率和帧率。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+                var updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
+                SaveUserPreferences(updated); ApplyUserPreferences(updated); dialog.DialogResult = true;
+            }
+            catch (Exception ex) { MessageBox.Show(dialog, "无法保存设置：" + ex.Message, "设置", MessageBoxButton.OK, MessageBoxImage.Error); }
+        };
+        dialog.ShowDialog();
+    }
+
+    private void ShowPermissionHelp(bool firstRun)
+    {
+        var root = new DockPanel { Margin = new Thickness(24) };
+        var close = new Button { Content = "我知道了", IsDefault = true, MinWidth = 100, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 16, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
+        DockPanel.SetDock(close, Dock.Bottom); root.Children.Add(close);
+        var text = new TextBlock
+        {
+            Text = "首次录制前，请检查以下项目：\n\n• 屏幕：选择显示器、窗口或区域。Windows 可能会显示系统捕获提示；请在系统提示中允许本次捕获。\n\n• 麦克风与摄像头：在录制面板选择设备。若设备不可用，请到 Windows“设置 → 隐私和安全性 → 麦克风 / 摄像头”，允许桌面应用访问。\n\n• 系统声音：启用“系统声音”后将录制默认播放设备的回环音频。\n\n• 保存位置：确认目标磁盘有足够空间。录制保护会在主进程私有内存超过 3 GiB、采集子进程超过 2 GiB 或剩余磁盘空间低于 300 MiB 时停止录制；素材保留在项目目录。\n\n这些说明不会授予系统权限；权限仍由 Windows 控制。",
+            TextWrapping = TextWrapping.Wrap, LineHeight = 22
+        };
+        root.Children.Add(new ScrollViewer { Content = text, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+        var dialog = new Window { Title = firstRun ? "录制权限与准备" : "录制与权限帮助", Owner = this, Width = 560, Height = 470, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize, MinWidth = 480, MinHeight = 360, ShowInTaskbar = false, Background = Background, Foreground = Foreground, Content = root };
+        close.Click += (_, _) => dialog.DialogResult = true;
+        dialog.ShowDialog();
+    }
+
+    private static void OpenLocalPath(string path) { Directory.CreateDirectory(path); Process.Start(new ProcessStartInfo(path) { UseShellExecute = true }); }
+}
+
+/// <summary>本机最近项目记录，损坏或已移除的路径会在读取时过滤。</summary>
+public static class RecentProjects
+{
+    private static readonly string FilePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "recent-projects.json");
+    public static IReadOnlyList<string> Read()
+    {
+        try
+        {
+            var paths = JsonSerializer.Deserialize<List<string>>(File.ReadAllText(FilePath)) ?? [];
+            return paths.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).Take(12).ToArray();
+        }
+        catch { return []; }
+    }
+    public static void Add(string path)
+    {
+        var diagnosticFlags = new[] { "--visual-states", "--editor-smoke", "--recovery-smoke", "--playback-smoke", "--smoke", "--workflow-smoke" };
+        if (Environment.GetCommandLineArgs().Any(arg => diagnosticFlags.Contains(arg, StringComparer.OrdinalIgnoreCase))) return;
+        var full = Path.GetFullPath(path); var list = Read().Where(x => !string.Equals(x, full, StringComparison.OrdinalIgnoreCase)).ToList();
+        list.Insert(0, full); Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
+        File.WriteAllText(FilePath, JsonSerializer.Serialize(list.Take(12), new JsonSerializerOptions { WriteIndented = true }));
+    }
+}

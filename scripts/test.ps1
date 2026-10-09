@@ -2,7 +2,9 @@
 param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [switch]$IncludeCaptureProbe
+    [switch]$IncludeCaptureProbe,
+    [switch]$IncludeMediaProbe,
+    [switch]$IncludeIntegration
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,16 @@ Push-Location $repoRoot
 try {
     & dotnet run --project $coreTests --configuration $Configuration
     if ($LASTEXITCODE -ne 0) { throw "Core 测试程序失败，退出码 $LASTEXITCODE" }
+    & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.DogScImport.Tests/FrameTrail.DogScImport.Tests.csproj') --configuration $Configuration
+    if ($LASTEXITCODE -ne 0) { throw "DogSC 只读导入测试失败，退出码 $LASTEXITCODE" }
+    if ($IncludeMediaProbe) {
+        & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration
+        if ($LASTEXITCODE -ne 0) { throw "共享GPU/媒体测试失败，退出码 $LASTEXITCODE" }
+    }
+    if ($IncludeIntegration) {
+        & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration -- --sync
+        if ($LASTEXITCODE -ne 0) { throw "合成媒体集成测试失败，退出码 $LASTEXITCODE" }
+    }
 
     if ($IncludeCaptureProbe) {
         if (-not (Test-Path -LiteralPath $captureProbe -PathType Leaf)) {

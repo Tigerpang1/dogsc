@@ -26,8 +26,12 @@ public partial class MainWindow : Window
     private CancellationTokenSource? seekCancellation, operationCancellation;
     private readonly SemaphoreSlim previewGate = new(1,1);
     private GpuFrameRenderer? previewRenderer;
+    private SceneAssetLoader? previewAssets;
+    private string? previewAssetsProject;
     private (int SW,int SH,int OW,int OH) previewSize;
     private FrameTrailProject? evaluatedProject;
+    private FrameScene? displayedPreviewScene;
+    private FrameTrailProject? displayedPreviewProject;
     private PreparedFrameSceneEvaluator? previewEvaluator;
     private TimelineAssetData? timelineAssets;
     private CancellationTokenSource? assetsCancellation;
@@ -39,8 +43,8 @@ public partial class MainWindow : Window
     private readonly List<(long Tick, string Label)> recordingMarkers = [];
     private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
-    private long recordingPrivateBaseline;
     private bool protectiveStop;
+    private bool recordingFinalizing;
     private long recordingStart;
     private record TargetItem(string Name, CaptureTarget Target);
     private record ClipItem(Guid Id, string Title, string Detail, BitmapSource? Thumbnail);
@@ -48,21 +52,22 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
-        InitializeComponent();
+        InitializeComponent(); InitializeEditorShell();
         Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.Close(); recordingGuard.Stop(); };
         recordingGuard.Tick += async (_, _) =>
         {
-            if(capture.State!=CaptureState.Recording || protectiveStop)return;
+            if(capture.State is not (CaptureState.Recording or CaptureState.Paused) || protectiveStop||recordingFinalizing)return;
             using var process=Process.GetCurrentProcess(); process.Refresh();
-            var elapsed=(Stopwatch.GetTimestamp()-recordingStart)/(double)Stopwatch.Frequency;
-            string? reason=elapsed>=60 ? "技术预览当前单次录制上限为 60 秒；长录制内存问题尚未修复。" : process.PrivateMemorySize64-recordingPrivateBaseline>512L*1024*1024 ? "录制进程内存增长达到本次验证设置的保护阈值。" : null;
+            string? reason=process.PrivateMemorySize64>3L*1024*1024*1024||capture.CurrentCapturePrivateBytes>2L*1024*1024*1024 ? "录制进程达到内存保护阈值，请降低录制分辨率后重试。" : null;
             if(recordingFolder!=null && new DriveInfo(Path.GetPathRoot(recordingFolder)!).AvailableFreeSpace<300L*1024*1024)reason="录制盘剩余空间低于 300MiB。";
             if(reason==null)return; protectiveStop=true;recordingGuard.Stop();await Guard(async()=>{await StopRecording();Status.Text="已保护性结束并保留素材："+reason;});protectiveStop=false;
         };
         capture.ErrorOccurred += (_, error) => Dispatcher.BeginInvoke(() => { Status.Text = "录制提示：" + error.Message; App.Log(error.Exception ?? new Exception(error.Message)); });
+        trackCapture.ErrorOccurred += (_,error)=>Dispatcher.BeginInvoke(async()=>{App.Log(error.Exception??new Exception(error.Message));if(!recordingFinalizing&&capture.State is CaptureState.Recording or CaptureState.Paused)await Guard(StopRecording);Status.Text="独立轨道录制中断，已保留可读素材："+error.Message;});
+        capture.RecordingCompleted += result=>Dispatcher.BeginInvoke(async()=>{if(recordingFinalizing||recordingFolder==null)return;recordingFinalizing=true;try{await Guard(()=>CompleteRecording(result));}finally{recordingFinalizing=false;}});
         capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(() =>
         {
-            if (state.State == CaptureState.Recording) recordingStart = state.StopwatchTicks;
+            if (state.State == CaptureState.Recording && recordingStart==0) recordingStart = state.StopwatchTicks;
             if (state.State == CaptureState.Faulted) { recordingGuard.Stop(); RecordButton.Content = "●  重新录制"; RecordButton.IsEnabled = true; recordingBar?.Close(); recordingBar = null; }
         });
         playbackTimer.Tick += (_, _) => { if (!playing) return; refreshing = true; Playhead.Value = Math.Min(Player.Position.TotalSeconds, Playhead.Maximum); refreshing = false; UpdateTime(); };
@@ -70,33 +75,34 @@ public partial class MainWindow : Window
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
         await Guard(RefreshDevices);
+        ApplyUserPreferencesOnStartup(showFirstRunHelp: !Environment.GetCommandLineArgs().Any(a=>a.StartsWith("--")));
         var handle = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
         if (!NativeWindows.RegisterHotKey(handle, 17, 0x0001 | 0x0002 | 0x4000, 0x4D)) Status.Text = "Ctrl+Alt+M 已被其他应用占用；仍可使用录制条标记按钮。";
         var args = Environment.GetCommandLineArgs();
         var open = Array.IndexOf(args, "--open");
         if (open >= 0 && args.Length > open + 1) await Guard(() => OpenProject(args[open + 1]));
+        var editorSmoke=Array.IndexOf(args,"--editor-smoke");if(editorSmoke>=0&&args.Length>editorSmoke+1){await VerifyEditorRegression(args[editorSmoke+1]);closeReady=true;Close();return;}
+        var recoverySmoke=Array.IndexOf(args,"--recovery-smoke");if(recoverySmoke>=0&&args.Length>recoverySmoke+2){try{var recovered=await RecoverReadableRecording(args[recoverySmoke+1]);var p=FrameTrailProjectStore.Load(recovered);await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=true,Project=recovered,AudioTracks=p.AudioTracks.Count,Markers=p.Markers.Count,PointerEvents=p.PointerEvents.Count}));}catch(Exception ex){await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=false,Error=ex.ToString()}));}closeReady=true;Close();return;}
+        var playbackSmoke=Array.IndexOf(args,"--playback-smoke");if(playbackSmoke>=0&&args.Length>playbackSmoke+1){await VerifyRealtimePlayback(args[playbackSmoke+1]);closeReady=true;Close();return;}
+        var visuals=Array.IndexOf(args,"--visual-states");
+        if(visuals>=0&&args.Length>visuals+1){await Guard(()=>CaptureVisualStates(args[visuals+1]));closeReady=true;Close();return;}
         var workflow = Array.IndexOf(args, "--workflow-smoke");
         if (workflow >= 0 && args.Length > workflow + 1)
         {
             diagnosticRecordingRoot = Path.GetFullPath(args[workflow + 1]); Directory.CreateDirectory(diagnosticRecordingRoot);
             try
             {
-                SystemSound.IsChecked=true; await ToggleRecording();
+                using var inputStimulus=args.Contains("--with-input-stimulus")?new WorkflowInputStimulus():null;SystemSound.IsChecked=true; await ToggleRecording();
                 await Task.Delay(1200); AddMarker();
-                if(args.Contains("--wait-safety"))
-                {
-                    var safetyWatch=Stopwatch.StartNew();
-                    while((capture.State is CaptureState.Recording or CaptureState.Stopping)||project==null)
-                    { if(safetyWatch.Elapsed.TotalSeconds>80)throw new TimeoutException("保护停录未在预期时间完成。"); await Task.Delay(250); }
-                }
-                else { await Task.Delay(2300); await StopRecording(); }
-                var originalDuration=project!.Timeline.Duration;
+                if(args.Contains("--with-pause")){await ToggleRecordingPause();await Task.Delay(1100);await ToggleRecordingPause();}
+                if(inputStimulus!=null)await inputStimulus.ExerciseAsync();var secondsIndex=Array.IndexOf(args,"--record-seconds");var recordSeconds=secondsIndex>=0&&secondsIndex+1<args.Length?double.Parse(args[secondsIndex+1],CultureInfo.InvariantCulture):3.5;if(!double.IsFinite(recordSeconds)||recordSeconds<1.2||recordSeconds>3600)throw new ArgumentOutOfRangeException("--record-seconds");await Task.Delay(TimeSpan.FromSeconds(recordSeconds-1.2));await StopRecording();
+                var originalDuration=project!.Timeline.Duration;if(inputStimulus!=null&&(project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick)<2||project.ZoomClips.Count==0))throw new InvalidOperationException("真实点击未保存到指针轨道或未生成自动运镜。");
                 Edit(p => { var split=p.Timeline.Split(p.Timeline.Segments[0].Id,originalDuration/2); p.Timeline.SetPlaybackRate(split.Right.Id,2); p.Timeline.Reorder(split.Right.Id,0); });
                 await OpenProject(projectFile!);
                 await RunExport(Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4"),new(1280,720,30,true),false);
                 await RenderPreview(project!.Timeline.Duration/3);
-                await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=true, Project=projectFile, OriginalDuration=originalDuration, EditedDuration=project.Timeline.Duration, PointerEvents=project.PointerEvents.Count, Markers=project.Markers.Count, Export=Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4") },new JsonSerializerOptions { WriteIndented=true }));
+                await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=true, Project=projectFile, OriginalDuration=originalDuration, EditedDuration=project.Timeline.Duration, PointerEvents=project.PointerEvents.Count, Markers=project.Markers.Count, Clicks=project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick), AutoZoomClips=project.ZoomClips.Count(x=>x.Automatic), StimulusClicks=inputStimulus?.ReceivedClicks, Export=Path.Combine(diagnosticRecordingRoot,"desktop-edited.mp4") },new JsonSerializerOptions { WriteIndented=true }));
                 SaveSnapshot(Path.Combine(diagnosticRecordingRoot,"editor-project.png"));
             }
             catch(Exception ex) { App.Log(ex); await File.WriteAllTextAsync(Path.Combine(diagnosticRecordingRoot,"workflow-result.json"),JsonSerializer.Serialize(new { Passed=false,Error=ex.ToString() })); }
@@ -126,15 +132,17 @@ public partial class MainWindow : Window
     private async Task RefreshDevices()
     {
         if (!IsLoaded) return;
+        var oldMicrophone=(MicDevices.SelectedItem as AudioDeviceInfo)?.Id;var oldCamera=(CameraDevices.SelectedItem as CameraInfo)?.Id;
         var list = new List<TargetItem>();
         if (CaptureKind.SelectedIndex == 1)
             list.AddRange((await capture.EnumerateWindowsAsync()).Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
         else list.AddRange((await capture.EnumerateDisplaysAsync()).Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
         Targets.ItemsSource = list; Targets.SelectedIndex = 0;
-        MicDevices.ItemsSource = (await capture.EnumerateAudioDevicesAsync()).Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedIndex = 0;
+        MicDevices.ItemsSource = (await trackCapture.EnumerateAudioDevicesAsync()).Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
+        CameraDevices.ItemsSource = await trackCapture.EnumerateCamerasAsync(); CameraDevices.SelectedItem=CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault(x=>x.Id==oldCamera)??CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault();
         RegionButton.Visibility = CaptureKind.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
     }
-    private async void CaptureKindChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded) await Guard(RefreshDevices); }
+    private async void CaptureKindChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded&&!changingRecorderMode) await Guard(RefreshDevices); }
     private async void RefreshDevicesClick(object sender, RoutedEventArgs e) => await Guard(RefreshDevices);
     private void SelectRegionClick(object sender, RoutedEventArgs e)
     {
@@ -144,27 +152,28 @@ public partial class MainWindow : Window
     private async void RecordClick(object sender, RoutedEventArgs e) => await Guard(ToggleRecording);
     private async Task ToggleRecording()
     {
-        if (capture.State == CaptureState.Recording) { await StopRecording(); return; }
+        if (capture.State is CaptureState.Recording or CaptureState.Paused) { await StopRecording(); return; }
         if (Targets.SelectedItem is not TargetItem item) throw new InvalidOperationException("请选择录制来源。");
         var target = item.Target;
+        if(excludeEditorDuringRecording&&target.WindowHandle==new WindowInteropHelper(this).Handle)throw new InvalidOperationException("编辑器正设置为从录制中排除；请在设置中关闭此选项后录制它。");
         if (CaptureKind.SelectedIndex == 2) target = new(CaptureTargetKind.Region, item.Target.Id, region ?? throw new InvalidOperationException("请先框选录制区域。"));
-        recordingFolder = Path.Combine(diagnosticRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
+        recordingFolder = Path.Combine(diagnosticRecordingRoot ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), DateTime.Now.ToString("yyyyMMdd-HHmmss") + "-" + Guid.NewGuid().ToString("N")[..6]);
         Directory.CreateDirectory(Path.Combine(recordingFolder, "media"));
         var output = Path.Combine(recordingFolder, "media", "screen.mp4");
         if(new DriveInfo(Path.GetPathRoot(output)!).AvailableFreeSpace<500L*1024*1024)throw new IOException("录制盘剩余空间低于 500MiB，请释放空间后重试。");
         var bounds=target.Bounds; int? captureWidth=null,captureHeight=null;
         if(CaptureResolution.SelectedIndex==0 && bounds!=null)
         { var scale=Math.Min(1,Math.Min(1920d/bounds.Width,1080d/bounds.Height));captureWidth=Math.Max(2,(int)(bounds.Width*scale)/2*2);captureHeight=Math.Max(2,(int)(bounds.Height*scale)/2*2); }
-        var request = new RecordingRequest(output, target, new VideoOptions(FrameRate: CaptureFps.SelectedIndex == 1 ? 60 : 30, Width:captureWidth,Height:captureHeight), new AudioOptions(SystemSound.IsChecked == true, RecordMicrophone: Microphone.IsChecked == true, MicrophoneDeviceId: (MicDevices.SelectedItem as AudioDeviceInfo)?.Id), new InputTrackingOptions(OutputPath: Path.Combine(recordingFolder, "pointer.jsonl")));
+        var request = new RecordingRequest(output, target, new VideoOptions(FrameRate: CaptureFps.SelectedIndex == 1 ? 60 : 30, Width:captureWidth,Height:captureHeight), new AudioOptions(), new InputTrackingOptions(OutputPath: Path.Combine(recordingFolder, "pointer.jsonl")));
         await File.WriteAllTextAsync(Path.Combine(recordingFolder, "recording-recovery.json"), JsonSerializer.Serialize(new { request.OutputPath, TargetKind = request.Target.Kind.ToString(), request.Target.Id, request.Target.Bounds, WindowHandle = request.Target.WindowHandle.ToInt64(), request.Video, request.Audio }, new JsonSerializerOptions { WriteIndented = true }));
         recordingMarkers.Clear(); RecordButton.IsEnabled = false; Status.Text = "正在启动原生采集…";
         try
         {
-            using(var process=Process.GetCurrentProcess()) recordingPrivateBaseline=process.PrivateMemorySize64;
-            await capture.StartAsync(request); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording)); recordingBar.Show();
+            if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
+            recordingStart=0; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording), async()=>await Guard(ToggleRecordingPause)); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
-        finally { RecordButton.IsEnabled = true; }
+        finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
     }
     private void AddMarker()
     {
@@ -175,11 +184,17 @@ public partial class MainWindow : Window
     }
     private async Task StopRecording()
     {
+        if(recordingFinalizing)return;recordingFinalizing=true;
+        try{var result=await capture.StopAsync();await CompleteRecording(result);}finally{recordingFinalizing=false;}
+    }
+    private async Task CompleteRecording(RecordingResult result)
+    {
         recordingGuard.Stop();
+        NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0);
         RecordButton.IsEnabled = false;
         try
         {
-            var result = await capture.StopAsync(); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "●  开始录制（≤60 秒）";
+            var extraTracks=await StopAdditionalTracks(); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "开始录制";
             await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "capture-result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
             var info = await MediaTools.ProbeAsync(result.OutputPath);
             var created = MakeProject("media/screen.mp4", info);
@@ -189,24 +204,26 @@ public partial class MainWindow : Window
                 {
                     if (string.IsNullOrWhiteSpace(line)) continue;
                     var ev = JsonSerializer.Deserialize<InputEvent>(line, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }); if (ev == null) continue;
-                    var time = (ev.StopwatchTicks - result.StartStopwatchTicks) / (double)result.StopwatchFrequency;
+                    if(result.PausedIntervals?.Any(x=>ev.StopwatchTicks>=x.PauseStartStopwatchTicks&&ev.StopwatchTicks<x.ResumeStopwatchTicks)==true)continue;
+                    var time = MediaTime(ev.StopwatchTicks,result);
                     if (time < 0 || time > info.Duration || ev.Kind is not (InputEventKind.Move or InputEventKind.MouseDown)) continue;
                     var kind = ev.Kind == InputEventKind.MouseDown ? ev.MouseButton == FrameTrail.Capture.MouseButton.Right ? PointerEventKind.RightClick : PointerEventKind.LeftClick : PointerEventKind.Move;
                     created.PointerEvents.Add(new(time, new(ev.NormalizedX, ev.NormalizedY), kind));
                 }
             }
-            created.Markers = recordingMarkers.Select(x => new RecordingMarker(Guid.NewGuid(), Math.Clamp((x.Tick - result.StartStopwatchTicks)/(double)result.StopwatchFrequency, 0, info.Duration), x.Label)).ToList();
+            created.Markers = recordingMarkers.Select(x => new RecordingMarker(Guid.NewGuid(), Math.Clamp(MediaTime(x.Tick,result), 0, info.Duration), x.Label)).ToList();
+            await AttachRecordedTracks(created,result,extraTracks);
             created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
             var path = Path.Combine(recordingFolder!, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
             var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
-            await OpenProject(path); Status.Text = $"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
+            await OpenProject(path); Status.Text = (recordingTrackWarnings.Count>0?$"录制已保留，有 {recordingTrackWarnings.Count} 项素材警告，详情见 recording-warnings.txt。 ":"")+$"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
         }
         finally { RecordButton.IsEnabled = true; }
     }
     private static FrameTrailProject MakeProject(string media, MediaInfo info) => new()
     {
-        MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration },
-        Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = new() { Background = "#253B45", CanvasWidth = info.Width, CanvasHeight = info.Height }
+        MediaPath = media, Media = new() { Width = info.Width, Height = info.Height, Duration = info.Duration,FrameRate=info.FrameRate>0?info.FrameRate:30 },
+        Timeline = new() { Segments = [new() { SourceDuration = info.Duration }] }, Settings = new() { Background = "#F7F7F5", CanvasWidth = info.Width, CanvasHeight = info.Height,Padding=.055,CornerRadius=.012 }
     };
     private async void OpenProjectClick(object sender, RoutedEventArgs e) => await Guard(async () => { var dialog = new OpenFileDialog { Filter = "FrameTrail 项目|*.frametrail|项目备份|*.frametrail.bak" }; if (dialog.ShowDialog(this) == true) await OpenProject(dialog.FileName); });
     private async Task OpenProject(string path)
@@ -224,11 +241,13 @@ public partial class MainWindow : Window
         {
             var dialog = new OpenFileDialog { Title = "素材缺失：请选择原视频，副本将保存到项目目录", Filter = "视频|*.mp4;*.mov;*.mkv;*.avi" };
             if (dialog.ShowDialog(this) != true) throw new FileNotFoundException("项目素材缺失，未打开项目。", media);
-            var newRelative = "media/relocated-" + Guid.NewGuid().ToString("N") + Path.GetExtension(dialog.FileName); media = Path.Combine(Path.GetDirectoryName(path)!, newRelative); Directory.CreateDirectory(Path.GetDirectoryName(media)!); File.Copy(dialog.FileName, media); opened.MediaPath = newRelative;
-            var info = await MediaTools.ProbeAsync(media); if (info.Duration + .05 < opened.Timeline.Segments.Max(x => x.SourceEnd)) throw new InvalidDataException("重新定位的视频过短，无法匹配时间线。");
+            var info = await MediaTools.ProbeAsync(dialog.FileName); if (info.Width<1||info.Duration + .05 < opened.Timeline.Segments.Max(x => x.SourceEnd)) throw new InvalidDataException("重新定位的文件缺少视频或时长过短，无法匹配时间线。");await MediaTools.DecodeFrameAsync(dialog.FileName,0,16,16,CancellationToken.None);
+            var newRelative = "media/relocated-" + Guid.NewGuid().ToString("N") + Path.GetExtension(dialog.FileName); media = FrameTrailProjectStore.ResolveAssetPath(path,newRelative); Directory.CreateDirectory(Path.GetDirectoryName(media)!); File.Copy(dialog.FileName, media); opened.MediaPath = newRelative;opened.Media=new(){Width=info.Width,Height=info.Height,Duration=info.Duration};
             FrameTrailProjectStore.Save(path, opened);
         }
-        project = opened; projectFile = path; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; _=LoadTimelineAssets(media,opened); await RenderPreview(0);
+        var sourceInfo=await MediaTools.ProbeAsync(media);if(sourceInfo.Width<1||sourceInfo.Duration<=0)throw new InvalidDataException("项目的主素材没有可用视频帧。");opened.Media.FrameRate=sourceInfo.FrameRate>0?sourceInfo.FrameRate:30;
+        await RelocateMissingAuxiliaryAssets(opened,path);await LoadAuxiliaryDurations(opened,path);
+        project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
     }
     private async void ImportClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
@@ -251,9 +270,9 @@ public partial class MainWindow : Window
         Playhead.Maximum = project.Timeline.Duration; Playhead.Value = Math.Min(Playhead.Value, Playhead.Maximum);
         Markers.ItemsSource = project.Markers.Select(x => new MarkerItem(x.Id, x.SourceTime, x.Label)).ToArray();
         PaddingSlider.Value = project.Settings.Padding; RadiusSlider.Value = project.Settings.CornerRadius; ShadowSlider.Value = project.Settings.Shadow; BackgroundColor.Text = project.Settings.Background; ShowCursor.IsChecked = project.Settings.CursorVisible; MouseOffset.Text = (project.MouseClock.OffsetSeconds*1000).ToString("0.###", CultureInfo.CurrentCulture);
-        EmptyState.Visibility = Visibility.Collapsed; ProjectTitle.Text = Path.GetFileName(Path.GetDirectoryName(projectFile));
+        EmptyState.Visibility = Visibility.Collapsed; ProjectTitle.Text = project.DisplayName ?? Path.GetFileName(Path.GetDirectoryName(projectFile));
         TimelineInfo.Text = $"{project.Timeline.Segments.Count} 个片段 · {project.ZoomClips.Count} 段运镜 · {project.PointerEvents.Count} 条鼠标事件 · 编辑后自动保存";
-        refreshing = false; UpdateTime(); DrawWaveform();
+        refreshing = false; UpdateTime(); DrawWaveform(); RefreshEditorShell();
     }
     private async Task LoadTimelineAssets(string path,FrameTrailProject opened)
     {
@@ -283,7 +302,7 @@ public partial class MainWindow : Window
     }
     private void Edit(Action<FrameTrailProject> edit)
     {
-        if (project is null || history is null) return; StopPlayback(); var next = Clone(project); edit(next); next.Timeline.Validate();
+        if (project is null || history is null) return; StopPlayback(); var next = Clone(project); edit(next); foreach(var motion in next.ScreenMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration);foreach(var motion in next.CameraMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration); next.Timeline.Validate();
         FrameTrailProjectStore.Save(projectFile!, next); history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value));
     }
     private TimelineSegment Selected(FrameTrailProject p) => p.Timeline.Segments.FirstOrDefault(x => x.Id == (Clips.SelectedItem as ClipItem)?.Id) ?? throw new InvalidOperationException("请选择一个片段。");
@@ -311,14 +330,13 @@ public partial class MainWindow : Window
     private async void CalibrateClick(object sender, RoutedEventArgs e) => await Guard(() => { var value = double.Parse(MouseOffset.Text, CultureInfo.CurrentCulture); if (!double.IsFinite(value) || Math.Abs(value)>10000) throw new ArgumentException("时间校准范围为 ±10000 毫秒。"); Edit(p => { p.MouseClock = p.MouseClock with { OffsetSeconds = value/1000 }; if (p.ZoomClips.All(x => x.Automatic)) p.ZoomClips = AutoZoomPlanner.Plan(p.PointerEvents.Select(x=>x with { Time=p.MouseClock.ToSourceTime(x.Time) })); }); return Task.CompletedTask; });
     private void PreviewFocusClick(object sender, MouseButtonEventArgs e)
     {
-        if (project == null || ManualFocus.IsChecked != true || PreviewImage.Source is null) return;
+        if (project == null || playing || inspectorTab!="zoom"||motionTab!="zoom"||ManualFocus.IsChecked != true || PreviewImage.Source is null) return;
         var point = e.GetPosition(PreviewImage); var imageAspect = PreviewImage.Source.Width/PreviewImage.Source.Height; var w = PreviewImage.ActualWidth; var h = w/imageAspect; if (h>PreviewImage.ActualHeight) { h=PreviewImage.ActualHeight; w=h*imageAspect; }
         var nx = (point.X-(PreviewImage.ActualWidth-w)/2)/w; var ny = (point.Y-(PreviewImage.ActualHeight-h)/2)/h;
-        var scene = FrameSceneEvaluator.Evaluate(project,Playhead.Value); var pad = scene.Padding;
-        // Preview already displays the current crop; transform the selected point back into source coordinates.
-        var fit = Math.Min(w*(1-2*pad)/project.Media.Width,h*(1-2*pad)/project.Media.Height); var screenW = project.Media.Width*fit/w; var screenH = project.Media.Height*fit/h;
-        var focus = new NormalizedPoint(scene.CropOrigin.X + Math.Clamp((nx-(1-screenW)/2)/screenW,0,1)*scene.CropSize.X, scene.CropOrigin.Y + Math.Clamp((ny-(1-screenH)/2)/screenH,0,1)*scene.CropSize.Y);
-        Edit(p => { var start = p.Timeline.MapOutputToSource(Playhead.Value); p.ZoomClips.Add(new() { Start=start,End=start+1.5,Focus=focus,Scale=new[]{1.3,1.6,2}[ZoomScale.SelectedIndex],EnterDuration=.5,ExitDuration=.5 }); });
+        if(displayedPreviewScene is not {} scene||!ReferenceEquals(displayedPreviewProject,project)||!GpuFrameRenderer.TryMapCanvasPointToSource(scene,previewSize.SW,previewSize.SH,previewSize.OW,previewSize.OH,new(nx,ny),out var focus))return;
+        var canvasCrop=project.Settings.Canvas?.Crop??NormalizedRect.Full;focus=new(Math.Clamp((focus.X-canvasCrop.X)/canvasCrop.Width,0,1),Math.Clamp((focus.Y-canvasCrop.Y)/canvasCrop.Height,0,1));
+        Edit(p => { var selected=selectedEffect?.Kind=="zoom"?p.ZoomClips.FirstOrDefault(z=>z.Id==selectedEffect.Id):null;if(selected!=null){selected.Focus=focus;selected.Automatic=false;}else{var start = Math.Min(p.Timeline.MapOutputToSource(Playhead.Value),Math.Max(0,p.Media.Duration-.05));var zoom=new ZoomClip {Start=start,End=Math.Min(p.Media.Duration,start+1.5),Focus=focus,Scale=new[]{1.3,1.6,2}[ZoomScale.SelectedIndex],EnterDuration=.5,ExitDuration=.5};p.ZoomClips.Add(zoom);selectedEffect=new("zoom",zoom.Id);}});
+        e.Handled=true;
     }
     private void PlayheadChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
@@ -331,7 +349,7 @@ public partial class MainWindow : Window
         }
         StopPlayback(); UpdateTime(); _ = Guard(() => RenderPreview(Playhead.Value));
     }
-    private void UpdateTime() => TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.fff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.fff}";
+    private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
     private async Task RenderPreview(double time)
     {
         if (project == null || projectFile == null) return; seekCancellation?.Cancel(); seekCancellation = new(); var token = seekCancellation.Token;
@@ -341,35 +359,33 @@ public partial class MainWindow : Window
             await Task.Delay(90,token);
             if (!ReferenceEquals(evaluatedProject,snapshot)) { previewEvaluator=new PreparedFrameSceneEvaluator(snapshot); evaluatedProject=snapshot; }
             var scene = previewEvaluator!.Evaluate(Math.Clamp(time,0,snapshot.Timeline.Duration));
-            var inputWidth = Math.Min(960,(int)snapshot.Media.Width); var inputHeight = Math.Max(2,(int)(snapshot.Media.Height*inputWidth/snapshot.Media.Width));
-            var width = 960; var height = Math.Max(2,(int)Math.Round(width*(double)snapshot.Settings.CanvasHeight/snapshot.Settings.CanvasWidth));
+            if(selectedEffect?.Kind=="zoom"&&!playing&&inspectorTab=="zoom"&&snapshot.ZoomClips.Any(x=>x.Id==selectedEffect.Id))scene=previewEvaluator.EvaluateTargetForZoom(selectedEffect.Id,Math.Clamp(time,0,snapshot.Timeline.Duration));
+            if(selectedEffect?.Kind=="motion" && !playing && inspectorTab=="zoom" && snapshot.ScreenMotions.Any(x=>x.Id==selectedEffect.Id))scene=scene with{ScreenMotion=previewEvaluator.EvaluateTargetForMotion(selectedEffect.Id)};
+            var inputWidth = Math.Min(previewResolution,(int)snapshot.Media.Width); var inputHeight = Math.Max(2,(int)(snapshot.Media.Height*inputWidth/snapshot.Media.Width));
+            var width = previewResolution; var height = Math.Max(2,(int)Math.Round(width*(double)snapshot.Settings.CanvasHeight/snapshot.Settings.CanvasWidth));
             var buffer = await MediaTools.DecodeFrameAsync(path,Math.Min(scene.SourceTime,Math.Max(0,snapshot.Media.Duration-1d/30)),inputWidth,inputHeight,token);
             await previewGate.WaitAsync(token); BitmapSource image;
             try
             {
-                image = await Task.Run(() => { token.ThrowIfCancellationRequested(); var size=(inputWidth,inputHeight,width,height); if(previewRenderer==null || previewSize!=size) { previewRenderer?.Dispose(); previewRenderer=new(inputWidth,inputHeight,width,height); previewSize=size; } var output = new byte[width*height*4]; previewRenderer.Render(buffer,scene,output); var bmp = BitmapSource.Create(width,height,96,96,PixelFormats.Bgra32,null,output,width*4); bmp.Freeze(); return bmp; },token);
+                var size=(inputWidth,inputHeight,width,height);
+                if(previewAssets==null||previewAssetsProject!=projectFile||previewSize!=size){previewAssets?.Dispose();previewAssets=new(projectFile!,width,height);previewAssetsProject=projectFile;}
+                var layers=await previewAssets.LoadAsync(scene,token);
+                image = await Task.Run(() => { token.ThrowIfCancellationRequested(); if(previewRenderer==null || previewSize!=size) { previewRenderer?.Dispose(); previewRenderer=new(inputWidth,inputHeight,width,height); previewSize=size; } var output = new byte[width*height*4]; previewRenderer.Render(buffer,scene,output,layers); var bmp = BitmapSource.Create(width,height,96,96,PixelFormats.Bgra32,null,output,width*4); bmp.Freeze(); return bmp; },token);
             }
             finally { previewGate.Release(); }
-            token.ThrowIfCancellationRequested(); PreviewImage.Source = image; PreviewImage.Visibility = Visibility.Visible;
+            token.ThrowIfCancellationRequested(); PreviewImage.Source = image;displayedPreviewScene=scene;displayedPreviewProject=snapshot; PreviewImage.Visibility = Visibility.Visible; RefreshPreviewSelection();
         }
         catch (OperationCanceledException) { }
         catch (Exception) when (token.IsCancellationRequested) { }
     }
-    private void PreviousFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Max(0,Playhead.Value-1d/30);
-    private void NextFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Min(Playhead.Maximum,Playhead.Value+1d/30);
+    private void PreviousFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Max(0,Playhead.Value-1d/(project?.Media.FrameRate??30));
+    private void NextFrame(object sender, RoutedEventArgs e) => Playhead.Value = Math.Min(Playhead.Maximum,Playhead.Value+1d/(project?.Media.FrameRate??30));
     private void InvalidateProxy() { StopPlayback(); if (proxyPath != null && File.Exists(proxyPath)) { Player.Close(); try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; }
-    private void StopPlayback() { playing=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content="▶ 播放"; }
+    private void StopPlayback() { playbackCancellation?.Cancel(); playing=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; }
     private async void PlayClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
         if (playing) { StopPlayback(); await RenderPreview(Playhead.Value); return; } if (project == null || projectFile == null || operationCancellation != null) return;
-        if (proxyPath == null || !File.Exists(proxyPath))
-        {
-            var dir=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"FrameTrail","cache"); Directory.CreateDirectory(dir); var candidate=Path.Combine(dir,Guid.NewGuid()+".mp4");
-            var width=960; var height=Math.Max(2,(int)(960d*project.Settings.CanvasHeight/project.Settings.CanvasWidth)/2*2); var previewProject=project;
-            await RunExport(candidate,new(width,height,30,true),true);
-            if(!ReferenceEquals(previewProject,project)) { File.Delete(candidate); Status.Text="项目已改变，请重新生成预览。"; return; } proxyPath=candidate;
-        }
-        Player.Source=new Uri(proxyPath); Player.Position=TimeSpan.FromSeconds(Playhead.Value >= Playhead.Maximum-.03 ? 0 : Playhead.Value); Player.Visibility=Visibility.Visible; PreviewImage.Visibility=Visibility.Collapsed; Player.Play(); playing=true; PlayButton.Content="Ⅱ 暂停"; playbackTimer.Start();
+        await StartRealtimePlayback();
     });
     private void PlaybackEnded(object sender,RoutedEventArgs e) { StopPlayback(); Playhead.Value=Playhead.Maximum; }
     private ExportOptions Options(bool audio) { var w=Resolution.SelectedIndex switch {0=>(int)(project?.Media.Width??1920),2=>2560,3=>3840,_=>1920}; var h=Resolution.SelectedIndex==0?(int)(project?.Media.Height??1080):(int)Math.Round(w*(double)(project?.Settings.CanvasHeight??1080)/(project?.Settings.CanvasWidth??1920)); return new(w/2*2,Math.Max(2,h/2*2),ExportFps.SelectedIndex==1?60:30,HardwareEncoder.IsChecked==true,audio); }
@@ -377,19 +393,18 @@ public partial class MainWindow : Window
     private async void ExportAudioClick(object sender,RoutedEventArgs e) => await Guard(() => ChooseExport(true));
     private async Task ChooseExport(bool audio)
     {
-        if (project==null || operationCancellation!=null) return; var dialog=new SaveFileDialog { Filter=audio?"M4A 音频|*.m4a":"MP4 视频|*.mp4",FileName=audio?"FrameTrail-audio.m4a":"FrameTrail-export.mp4" };
-        if (dialog.ShowDialog(this)!=true) return; await RunExport(dialog.FileName,Options(audio),false);
-        if (MessageBox.Show(this,"导出完成。打开所在文件夹？","FrameTrail",MessageBoxButton.YesNo,MessageBoxImage.Information)==MessageBoxResult.Yes) Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList={"/select,",dialog.FileName},UseShellExecute=true });
+        if (project==null || projectFile==null || operationCancellation!=null) return; StopPlayback();var snapshot=ExportSnapshot();var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
+        var dialog=new ExportWindow(snapshot,PreviewImage.Source,ProjectTitle.Text,(path,options,progress,token)=>Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options with{ProjectFilePath=file},progress,token))){Owner=this};dialog.ShowDialog();await Task.CompletedTask;
     }
-    private async Task RunExport(string path,ExportOptions options,bool preview)
+    private async Task RunExport(string path,ExportOptions options,bool preview,CancellationToken cancellation=default)
     {
         if (project==null || projectFile==null) return; if (operationCancellation!=null) throw new InvalidOperationException("已有媒体处理任务运行。");
-        StopPlayback(); seekCancellation?.Cancel(); operationCancellation=new(); CancelButton.Visibility=Visibility.Visible; Progress.Visibility=Visibility.Visible; ExportButton.IsEnabled=false; PlayButton.IsEnabled=false;
-        var snapshot=Clone(project); var source=FrameTrailProjectStore.ResolveMediaPath(projectFile,snapshot);
+        if(!preview)StopPlayback(); seekCancellation?.Cancel(); operationCancellation=CancellationTokenSource.CreateLinkedTokenSource(cancellation); CancelButton.Visibility=Visibility.Visible; Progress.Visibility=Visibility.Visible; ExportButton.IsEnabled=false; PlayButton.IsEnabled=false;
+        var file=projectFile;var snapshot=Clone(project); var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
         try
         {
             var report=new Progress<ExportProgress>(p=>{ Progress.Value=p.Fraction; Status.Text=$"{(preview?"准备有声预览 · ":"")}{p.Stage} · 已用 {p.Elapsed:mm\\:ss}"+(p.Remaining.HasValue?$" · 预计剩余 {p.Remaining:mm\\:ss}":""); });
-            var result=await Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options,report,operationCancellation.Token)); Status.Text=$"完成 · {result.Encoder} · {result.Renderer} · {result.Elapsed.TotalSeconds:0.0}s";
+            var result=await Task.Run(()=>new ExportEngine().ExportAsync(snapshot,source,path,options with{ProjectFilePath=file},report,operationCancellation.Token)); Status.Text=$"完成 · {result.Encoder} · {result.Renderer} · {result.Elapsed.TotalSeconds:0.0}s";
         }
         finally { operationCancellation.Dispose(); operationCancellation=null; CancelButton.Visibility=Visibility.Collapsed; Progress.Visibility=Visibility.Collapsed; ExportButton.IsEnabled=true; PlayButton.IsEnabled=true; }
     }
@@ -399,15 +414,7 @@ public partial class MainWindow : Window
     {
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),"FrameTrail");
         var dialog=new OpenFileDialog { Title="选择未完成录制目录里的 recording-recovery.json",Filter="未完成录制记录|recording-recovery.json",InitialDirectory=root };
-        if(dialog.ShowDialog(this)!=true)return; var folder=Path.GetDirectoryName(dialog.FileName)!; var media=Path.Combine(folder,"media","screen.mp4");
-        if(!File.Exists(media))throw new FileNotFoundException("录制中断前未生成视频，无法恢复画面。鼠标日志仍保留在该目录。",media);
-        MediaInfo info;
-        try { info=await MediaTools.ProbeAsync(media); }
-        catch(Exception ex) { throw new InvalidDataException("此录制的视频封装未完成，当前版本不能修复。原始文件与鼠标日志已保留："+folder,ex); }
-        if(info.Duration<=0||info.Width==0)throw new InvalidDataException("素材没有完整可读的视频帧，无法恢复项目。");
-        var path=Path.Combine(folder,"recovered-"+DateTime.Now.ToString("yyyyMMdd-HHmmss")+".frametrail");
-        var recovered=MakeProject("media/screen.mp4",info); FrameTrailProjectStore.Save(path,recovered); await OpenProject(path);
-        Status.Text="已恢复可读视频。中断会话的指针首帧时间未验证，鼠标原始日志保留供后续恢复。";
+        if(dialog.ShowDialog(this)!=true)return;var path=await RecoverReadableRecording(Path.GetDirectoryName(dialog.FileName)!);await OpenProject(path);Status.Text="已恢复可读素材，恢复说明保存在项目旁的 .recovery.txt 文件。";
     });
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
@@ -415,13 +422,16 @@ public partial class MainWindow : Window
         if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.S) { SaveProject(); e.Handled=true; }
         else if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.Z) { UndoClick(this,new()); e.Handled=true; }
         else if (Keyboard.Modifiers==ModifierKeys.Control && e.Key==Key.Y) { RedoClick(this,new()); e.Handled=true; }
-        else if (Keyboard.Modifiers==ModifierKeys.None) { if(e.Key==Key.Space) PlayClick(this,new()); else if(e.Key==Key.S) SplitClick(this,new()); else if(e.Key==Key.Left) PreviousFrame(this,new()); else if(e.Key==Key.Right) NextFrame(this,new()); else return; e.Handled=true; }
+        else if(Keyboard.Modifiers==ModifierKeys.Control&&e.Key==Key.C){CopyEffect();e.Handled=true;}
+        else if((Keyboard.Modifiers==ModifierKeys.Control||Keyboard.Modifiers==(ModifierKeys.Control|ModifierKeys.Shift))&&e.Key==Key.V){PasteEffect(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift));e.Handled=true;}
+        else if(Keyboard.Modifiers==ModifierKeys.None&&e.Key==Key.Delete){DeleteSelectionClick(this,new());e.Handled=true;}
+        else if (Keyboard.Modifiers==ModifierKeys.None) { if(e.Key==Key.Space) PlayClick(this,new()); else if(e.Key==Key.I) SetExportRange(true); else if(e.Key==Key.O) SetExportRange(false); else if(e.Key==Key.S) SplitClick(this,new()); else if(e.Key==Key.Left) PreviousFrame(this,new()); else if(e.Key==Key.Right) NextFrame(this,new()); else return; e.Handled=true; }
     }
     private async void WindowClosing(object? sender,CancelEventArgs e)
     {
         if(closeReady) return; e.Cancel=true;
-        if(capture.State is CaptureState.Recording or CaptureState.Starting) { MessageBox.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
+        if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { MessageBox.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
         if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，请稍后关闭。"; return; }
-        await Guard(async()=>{ SaveProject(); seekCancellation?.Cancel(); StopPlayback(); Player.Close(); NativeWindows.UnregisterHotKey(new WindowInteropHelper(this).Handle,17); await capture.DisposeAsync(); closeReady=true; Application.Current.Shutdown(); });
+        await Guard(async()=>{ SaveProject(); seekCancellation?.Cancel(); StopPlayback(); Player.Close(); NativeWindows.UnregisterHotKey(new WindowInteropHelper(this).Handle,17); await capture.DisposeAsync();await trackCapture.DisposeAsync();previewAssets?.Dispose();previewRenderer?.Dispose(); closeReady=true; Application.Current.Shutdown(); });
     }
 }

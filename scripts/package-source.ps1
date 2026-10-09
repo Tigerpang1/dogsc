@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.2.0',
     [string]$UpstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 )
 
@@ -17,6 +17,7 @@ if ($LASTEXITCODE -ne 0) { throw "DogSC 上游基线不存在：$UpstreamBaseSha
 $statusLines = @(& git -C $repoRoot status --porcelain 2>$null)
 if ($LASTEXITCODE -ne 0) { throw '无法读取仓库工作区状态。' }
 $worktreeState = if ($statusLines.Count -eq 0) { 'clean' } else { 'dirty' }
+if ($worktreeState -ne 'clean') { throw '源码包只归档已提交代码；请先提交当前变更，避免遗漏未提交实现。' }
 
 $null = New-Item -ItemType Directory -Path $releaseRoot -Force
 $tempRoot = Join-Path $env:TEMP "FrameTrail-source-$PID-$([guid]::NewGuid().ToString('N'))"

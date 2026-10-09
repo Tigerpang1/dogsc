@@ -1,11 +1,11 @@
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.2.0"
 #endif
 #ifndef AppExeName
   #define AppExeName "FrameTrail.exe"
 #endif
 #ifndef ReleaseDir
-  #define ReleaseDir "..\artifacts\release\FrameTrail-0.1.0-win-x64"
+  #define ReleaseDir "..\artifacts\release\FrameTrail-0.2.0-win-x64"
 #endif
 
 [Setup]
@@ -17,8 +17,9 @@ DefaultDirName={localappdata}\Programs\FrameTrail
 DefaultGroupName=FrameTrail
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesAllowed=x64
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesAllowed=x64os
+ArchitecturesInstallIn64BitMode=x64os
+MinVersion=10.0.22000
 UninstallDisplayName=FrameTrail
 UninstallDisplayIcon={app}\{#AppExeName}
 OutputDir=..\artifacts\release
@@ -41,12 +42,12 @@ Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: 
 [Files]
 Source: "{#ReleaseDir}\BUILD-INFO.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\VC-RUNTIME-REQUIREMENT.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#ReleaseDir}\RECORDING-LIMIT.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ReleaseDir}\samples\*"; DestDir: "{app}\samples"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{autoprograms}\FrameTrail"; Filename: "{app}\{#AppExeName}"

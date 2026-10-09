@@ -6,3 +6,5 @@ tools/ffmpeg/
 *.user
 *.tmp
 *.log
+**/__pycache__/
+*.pyc

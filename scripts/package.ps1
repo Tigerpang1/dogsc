@@ -3,7 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.1.0',
+    [string]$Version = '0.2.0',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'FrameTrail.exe',
     [switch]$WithoutFfmpeg,
@@ -91,11 +91,16 @@ $docsSource = Join-Path $repoRoot 'docs'
 if (-not (Test-Path -LiteralPath $docsSource -PathType Container)) { throw "文档目录缺失：$docsSource" }
 Copy-Item -LiteralPath $docsSource -Destination $publishRoot -Recurse -Force
 
-$recordingLimitNotice = @'
-当前预览版本限制：每次录制最长 60 秒。
-这是原生录制缓冲区的保护限制；请在录制前保存可恢复信息并按时结束录制。
-'@
-$recordingLimitNotice | Set-Content -LiteralPath (Join-Path $publishRoot 'RECORDING-LIMIT.txt') -Encoding utf8
+$sampleSource = Join-Path $repoRoot 'artifacts/sample/FrameTrail-Demo'
+if (-not (Test-Path -LiteralPath (Join-Path $sampleSource 'FrameTrail-Demo.frametrail') -PathType Leaf)) {
+    & (Join-Path $PSScriptRoot 'create-sample.ps1') -OutputDirectory $sampleSource
+    if ($LASTEXITCODE -ne 0) { throw '原创样例生成失败。' }
+}
+$sampleOutput = Join-Path $publishRoot 'samples'
+$null = New-Item -ItemType Directory -Path $sampleOutput -Force
+$sampleDestination = Join-Path $sampleOutput 'FrameTrail-Demo'
+$null = New-Item -ItemType Directory -Path $sampleDestination -Force
+Get-ChildItem -LiteralPath $sampleSource -File | Where-Object { $_.Extension -ne '.bak' } | Copy-Item -Destination $sampleDestination -Force
 
 $gitHead = $null
 $sourceKind = $null
