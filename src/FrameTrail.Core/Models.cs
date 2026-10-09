@@ -104,6 +104,7 @@ public sealed class FrameTrailProject
     public string Format { get; init; } = "FrameTrailProject";
     public int FormatVersion { get; init; } = 1;
     public Guid ProjectId { get; init; } = Guid.NewGuid();
+    public string? DisplayName { get; set; }
     public string MediaPath { get; set; } = "";
     public MediaAsset Media { get; set; } = new();
     public ProjectTimeline Timeline { get; set; } = new();
@@ -111,6 +112,12 @@ public sealed class FrameTrailProject
     public List<RecordingMarker> Markers { get; set; } = [];
     public MouseClockCalibration MouseClock { get; set; } = new();
     public List<ZoomClip> ZoomClips { get; set; } = [];
+    public List<ScreenMotionClip> ScreenMotions { get; set; } = [];
+    public List<OverlayClip> Overlays { get; set; } = [];
+    public List<BlurClip> BlurClips { get; set; } = [];
+    public CameraTrack? Camera { get; set; }
+    public List<CameraMotionClip> CameraMotions { get; set; } = [];
+    public List<AudioTrack> AudioTracks { get; set; } = [];
     public FrameTrailSettings Settings { get; set; } = new();
 }
 
@@ -119,6 +126,7 @@ public sealed record MediaAsset
     public double Width { get; set; }
     public double Height { get; set; }
     public double Duration { get; set; }
+    public double FrameRate { get; set; } = 30;
 }
 public sealed record RecordingMarker(Guid Id, double SourceTime, string Label);
 
@@ -132,6 +140,40 @@ public sealed record FrameTrailSettings
     public double Shadow { get; set; } = .3;
     public bool CursorVisible { get; set; } = true;
     public bool AutoZoom { get; set; } = true;
+    public double MainAudioVolume { get; set; } = 1;
+    public bool MainAudioMuted { get; set; }
+    public OpeningSettings? Opening { get; set; }
+    public CanvasSettings? Canvas { get; set; }
+    public BackgroundSettings? BackgroundStyle { get; set; }
+    public CursorSettings? Cursor { get; set; }
 }
 
-public sealed record FrameScene(double OutputTime, double SourceTime, NormalizedPoint CropOrigin, NormalizedPoint CropSize, double Zoom, NormalizedPoint? Cursor, double ClickStrength, string Background, double Padding, double CornerRadius, int CanvasWidth, int CanvasHeight, double Shadow);
+public sealed record FrameScene(
+    double OutputTime,
+    double SourceTime,
+    NormalizedPoint CropOrigin,
+    NormalizedPoint CropSize,
+    double Zoom,
+    NormalizedPoint? Cursor,
+    double ClickStrength,
+    string Background,
+    double Padding,
+    double CornerRadius,
+    int CanvasWidth,
+    int CanvasHeight,
+    double Shadow,
+    CanvasSettings? Canvas = null,
+    BackgroundSettings? BackgroundStyle = null,
+    CursorSettings? CursorAppearance = null,
+    ScreenMotionState? ScreenMotion = null,
+    FocusEffect? Focus = null,
+    double FocusProgress = 0,
+    FrameCameraScene? Camera = null,
+    IReadOnlyList<FrameOverlayScene>? Overlays = null,
+    IReadOnlyList<FrameBlurScene>? BlurRegions = null,
+    IReadOnlyList<CameraMotionClip>? CameraMotions = null,
+    int SourceWidth = 0,
+    int SourceHeight = 0,
+    FrameOpeningState? Opening = null,
+    FrameOpeningState? CameraOpening = null,
+    FrameOpeningState? OverlayOpening = null);

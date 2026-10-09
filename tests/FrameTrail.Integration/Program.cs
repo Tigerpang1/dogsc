@@ -181,8 +181,10 @@ try
     result.AudioExport = new ExportCheck(audioResult.Path, audioResult.Encoder, audioResult.Renderer,
         audioResult.FrameCount, ToProbe(audioProbe));
 
-    result.SceneComparisons = await ComparePreviewAndExportAsync(loaded, resolvedMedia, mp4Path, outputWidth, outputHeight);
-    if (result.SceneComparisons.Count < 3 || result.SceneComparisons.Any(x => x.PsnrDb < 25 || x.MeanAbsoluteError > 18))
+    result.SceneComparisons = await ComparePreviewAndExportAsync(loaded, resolvedMedia, projectFile, mp4Path, outputWidth, outputHeight);
+    // At 320x180 the chroma-subsampled H.264 export can vary by about one dB on small cursor/text edges.
+    // Keep a strict pixel-error bound alongside the compression-aware PSNR floor.
+    if (result.SceneComparisons.Count < 3 || result.SceneComparisons.Any(x => x.PsnrDb < 23.5 || x.MeanAbsoluteError > 8))
         throw new InvalidDataException("预览与导出帧构图比较未达到压缩容差。" );
 
     var performanceProject = new FrameTrailProject
@@ -241,26 +243,24 @@ static async Task<string> CreateSyntheticMediaAsync(string outputRoot)
     return path;
 }
 
-static async Task<List<SceneComparison>> ComparePreviewAndExportAsync(FrameTrailProject project, string sourcePath, string exportPath, int width, int height)
+static async Task<List<SceneComparison>> ComparePreviewAndExportAsync(FrameTrailProject project, string sourcePath, string projectFilePath, string exportPath, int width, int height)
 {
     var evaluator = new PreparedFrameSceneEvaluator(project);
     var samples = new[] { 16d / 30, 22d / 30, 67d / 30, 76d / 30 };
     var output = new List<SceneComparison>();
-    var decodeWidth = Math.Min(project.Media.Width, width);
-    var decodeHeight = Math.Max(2, (int)Math.Round(project.Media.Height * decodeWidth / project.Media.Width));
-    using var renderer = new GpuFrameRenderer((int)decodeWidth, (int)decodeHeight, width, height);
+    await using var preview = await PreviewPlaybackSession.CreateAsync(project, sourcePath, projectFilePath, width, height, 30);
+    var expected = new byte[checked(width * height * 4)];
     foreach (var time in samples.Where(t => t < project.Timeline.Duration))
     {
         var scene = evaluator.Evaluate(time);
-        var raw = await MediaTools.DecodeFrameAsync(sourcePath, scene.SourceTime, (int)decodeWidth, (int)decodeHeight, CancellationToken.None);
-        var expected = new byte[checked(width * height * 4)];
-        renderer.Render(raw, scene, expected);
+        var previewFrame = await preview.ReadFrameAsync(time, expected);
         var actual = await DecodeOutputFrameAsync(exportPath, time, width, height);
         double squared = 0, absolute = 0; long count = 0;
         for (var i = 0; i < expected.Length; i += 4)
         for (var c = 0; c < 3; c++) { var delta = expected[i + c] - actual[i + c]; squared += delta * delta; absolute += Math.Abs(delta); count++; }
         var mse = squared / count;
-        output.Add(new(time, scene.SourceTime, scene.Zoom, mse == 0 ? 99 : 10 * Math.Log10(255d * 255 / mse), absolute / count));
+        if (Math.Abs(previewFrame.SourceTime - scene.SourceTime) > 1e-6) throw new InvalidDataException("预览与场景求值的源时间不同步。");
+        output.Add(new(time, previewFrame.SourceTime, scene.Zoom, mse == 0 ? 99 : 10 * Math.Log10(255d * 255 / mse), absolute / count));
     }
     return output;
 }

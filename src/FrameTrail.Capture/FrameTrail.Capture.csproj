@@ -11,12 +11,14 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
     <PackageReference Include="ScreenRecorderLib" Version="$(ScreenRecorderLibVersion)" ExcludeAssets="build;buildTransitive" />
     <Reference Include="ScreenRecorderLib">
       <HintPath>$(NuGetPackageRoot)screenrecorderlib\$(ScreenRecorderLibVersion)\build\x64\ScreenRecorderLib.dll</HintPath>
       <Private>true</Private>
     </Reference>
     <None Update="ScreenRecorderLib.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="NAudio.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

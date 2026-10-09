@@ -73,9 +73,10 @@ public static class MediaTools
         filters.Add(string.Concat(Enumerable.Range(0,n).Select(i => $"[v{i}]")) + (n > 1 ? $"concat=n={n}:v=1:a=0," : "") + $"fps={fps},scale={width}:{height}:flags=bilinear,format=bgra[out]");
         return string.Join(';', filters);
     }
-    public static string AudioFilter(ProjectTimeline timeline)
+    public static string AudioFilter(ProjectTimeline timeline, double volume = 1)
     {
-        timeline.Validate(); var filters = new List<string>(); var n = timeline.Segments.Count;
+        timeline.Validate(); if (!double.IsFinite(volume) || volume is < 0 or > 4) throw new ArgumentOutOfRangeException(nameof(volume));
+        var filters = new List<string>(); var n = timeline.Segments.Count;
         if (n > 1) filters.Add($"[0:a]asplit={n}" + string.Concat(Enumerable.Range(0,n).Select(i => $"[s{i}]")));
         for (var i=0;i<n;i++)
         {
@@ -83,9 +84,58 @@ public static class MediaTools
             while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
             while (rate < .5) { tempo.Add("atempo=0.5"); rate *= 2; }
             tempo.Add("atempo=" + Number(rate));
-            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{string.Join(',',tempo)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
+            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{string.Join(',',tempo)},volume={Number(volume)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
         }
         filters.Add(string.Concat(Enumerable.Range(0,n).Select(i => $"[a{i}]")) + (n > 1 ? $"concat=n={n}:v=0:a=1" : "anull") + "[out]");
+        return string.Join(';', filters);
+    }
+    public static string AudioTrackFilter(ProjectTimeline timeline, IReadOnlyList<AudioTrack> tracks)
+    {
+        timeline.Validate(); tracks = tracks.Where(x => !x.Muted && x.Volume > 0).ToArray();
+        var filters = new List<string>(); var outputStarts = new double[timeline.Segments.Count]; var elapsed = 0d;
+        for (var i = 0; i < timeline.Segments.Count; i++) { outputStarts[i] = elapsed; elapsed += timeline.Segments[i].OutputDuration; }
+        var outputLabels = new List<string>(); var labelNumber = 0;
+        for (var trackIndex = 0; trackIndex < tracks.Count; trackIndex++)
+        {
+            var track = tracks[trackIndex];
+            var samples = new List<(int Segment, double AssetStart, double AssetEnd, double OutputStart, double Rate)>();
+            for (var segmentIndex = 0; segmentIndex < timeline.Segments.Count; segmentIndex++)
+            {
+                var segment = timeline.Segments[segmentIndex];
+                var sourceStart = Math.Max(segment.SourceStart, track.OffsetSeconds);
+                var sourceEnd = Math.Min(segment.SourceEnd, track.OffsetSeconds + track.Duration);
+                if (sourceEnd <= sourceStart) continue;
+                var assetStart = track.SourceStart + sourceStart - track.OffsetSeconds;
+                var assetEnd = track.SourceStart + sourceEnd - track.OffsetSeconds;
+                var outputStart = outputStarts[segmentIndex] + (sourceStart - segment.SourceStart) / segment.PlaybackRate;
+                samples.Add((segmentIndex, assetStart, assetEnd, outputStart, segment.PlaybackRate));
+            }
+            if (samples.Count == 0) continue;
+            var input = trackIndex;
+            var prefixes = new string[samples.Count];
+            if (samples.Count > 1)
+            {
+                filters.Add($"[{input}:a]asplit={samples.Count}" + string.Concat(Enumerable.Range(0, samples.Count).Select(i => $"[t{trackIndex}s{i}]")));
+                for (var i = 0; i < prefixes.Length; i++) prefixes[i] = $"t{trackIndex}s{i}";
+            }
+            for (var sampleIndex = 0; sampleIndex < samples.Count; sampleIndex++)
+            {
+                var sample = samples[sampleIndex];
+                var duration = (sample.AssetEnd - sample.AssetStart) / sample.Rate;
+                var delayMs = Math.Max(0, (int)Math.Round(sample.OutputStart * 1000));
+                var rate = sample.Rate; var tempo = new List<string>();
+                while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
+                while (rate < .5) { tempo.Add("atempo=0.5"); rate /= .5; }
+                tempo.Add("atempo=" + Number(rate));
+                var source = samples.Count == 1 ? $"{input}:a" : prefixes[sampleIndex];
+                var label = $"track{labelNumber++}";
+                filters.Add($"[{source}]atrim=start={Number(sample.AssetStart)}:end={Number(sample.AssetEnd)},asetpts=PTS-STARTPTS,{string.Join(',', tempo)},volume={Number(track.Volume)},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,adelay={delayMs}:all=1,apad=pad_dur={Number(elapsed)},atrim=duration={Number(elapsed)},asetpts=N/SR/TB[{label}]");
+                outputLabels.Add(label);
+            }
+        }
+        if (outputLabels.Count == 0) throw new InvalidOperationException("没有可用的独立音轨片段。");
+        var inputs = string.Concat(outputLabels.Select(x => $"[{x}]"));
+        filters.Add(inputs + (outputLabels.Count == 1 ? "anull" : $"amix=inputs={outputLabels.Count}:duration=longest:normalize=0") + $",apad=pad_dur={Number(elapsed)},atrim=duration={Number(elapsed)},asetpts=N/SR/TB[out]");
         return string.Join(';', filters);
     }
     public static async Task<byte[]> DecodeFrameAsync(string path, double sourceTime, int width, int height, CancellationToken cancellation)

@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace FrameTrail.Media;
 
-public sealed record ExportOptions(int Width = 1920, int Height = 1080, int FrameRate = 30, bool HardwarePreferred = true, bool AudioOnly = false);
+public sealed record ExportOptions(int Width = 1920, int Height = 1080, int FrameRate = 30, bool HardwarePreferred = true, bool AudioOnly = false, string? ProjectFilePath = null);
 public sealed record ExportProgress(string Stage, double Fraction, TimeSpan Elapsed, TimeSpan? Remaining);
 public sealed record ExportResult(string Path, string Encoder, string Renderer, int FrameCount, TimeSpan Elapsed);
 
@@ -20,19 +20,53 @@ public sealed class ExportEngine
         var stem = ".frametrail-" + Guid.NewGuid().ToString("N");
         var temporary = Path.Combine(folder, stem + (options.AudioOnly ? ".m4a" : ".mp4"));
         var audioPath = Path.Combine(folder, stem + "-audio.m4a");
+        var mainAudioPath = Path.Combine(folder, stem + "-main-audio.m4a");
+        var tracksAudioPath = Path.Combine(folder, stem + "-tracks-audio.m4a");
         var timelineFile = Path.Combine(folder, stem + "-video.txt");
         var audioFile = Path.Combine(folder, stem + "-audio.txt");
+        var tracksAudioFile = Path.Combine(folder, stem + "-tracks-audio.txt");
         Process? decoder = null; Process? encoder = null;
         try
         {
             var info = await MediaTools.ProbeAsync(sourcePath, cancellation);
             progress?.Report(new("准备音轨", 0, watch.Elapsed, null));
-            if (info.HasAudio)
+            var projectFile = options.ProjectFilePath is { Length: > 0 } ? Path.GetFullPath(options.ProjectFilePath) : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(sourcePath))!, "project.frametrail");
+            var audioTracks = project.AudioTracks.ToList();
+            if (project.Camera is { Muted: false, Volume: > 0 } cameraAudio)
             {
-                await File.WriteAllTextAsync(audioFile, MediaTools.AudioFilter(project.Timeline), cancellation);
-                await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", sourcePath, "-filter_complex_script", audioFile, "-map", "[out]", "-vn", "-c:a", "aac", "-b:a", "192k", "-y", audioPath], cancellation);
+                var cameraPath = FrameTrailProjectStore.ResolveAssetPath(projectFile, cameraAudio.MediaPath);
+                var cameraInfo = await MediaTools.ProbeAsync(cameraPath, cancellation);
+                if (cameraInfo.HasAudio)
+                {
+                    IReadOnlyList<CameraSyncSegment> cameraSegments = cameraAudio.SyncSegments is { Count: > 0 } mappedCamera
+                        ? mappedCamera
+                        : [new CameraSyncSegment(cameraAudio.SourceStart, cameraAudio.TimelineStart, cameraAudio.Duration)];
+                    foreach (var segment in cameraSegments)
+                        audioTracks.Add(new AudioTrack { MediaPath = cameraAudio.MediaPath, SourceStart = segment.SourceStart, Duration = segment.Duration, OffsetSeconds = segment.TimelineStart, Volume = cameraAudio.Volume });
+                }
             }
-            else if (options.AudioOnly) throw new InvalidOperationException("此素材没有音轨，无法导出 M4A。");
+            var extraTracks = audioTracks.Where(x => !x.Muted && x.Volume > 0).ToArray();
+            var extraPaths = extraTracks.Select(x => FrameTrailProjectStore.ResolveAssetPath(projectFile, x.MediaPath)).ToArray();
+            var hasMainAudio = info.HasAudio && !project.Settings.MainAudioMuted && project.Settings.MainAudioVolume > 0;
+            if (hasMainAudio)
+            {
+                await File.WriteAllTextAsync(audioFile, MediaTools.AudioFilter(project.Timeline, project.Settings.MainAudioVolume), cancellation);
+                await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", sourcePath, "-filter_complex_script", audioFile, "-map", "[out]", "-vn", "-c:a", "aac", "-b:a", "192k", "-y", mainAudioPath], cancellation);
+            }
+            if (extraTracks.Length > 0)
+            {
+                await File.WriteAllTextAsync(tracksAudioFile, MediaTools.AudioTrackFilter(project.Timeline, extraTracks), cancellation);
+                var trackArgs = new List<string> { "-v", "error" };
+                foreach (var path in extraPaths) trackArgs.AddRange(["-i", path]);
+                trackArgs.AddRange(["-filter_complex_script", tracksAudioFile, "-map", "[out]", "-vn", "-c:a", "aac", "-b:a", "192k", "-y", tracksAudioPath]);
+                await MediaTools.RunAsync(MediaTools.Ffmpeg, trackArgs, cancellation);
+            }
+            var hasAudio = hasMainAudio || extraTracks.Length > 0;
+            if (hasMainAudio && extraTracks.Length > 0)
+                await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", "-i", mainAudioPath, "-i", tracksAudioPath, "-filter_complex", $"[0:a][1:a]amix=inputs=2:duration=longest:normalize=0,alimiter=limit=0.98,apad=pad_dur={MediaTools.Number(project.Timeline.Duration)},atrim=duration={MediaTools.Number(project.Timeline.Duration)}[out]", "-map", "[out]", "-c:a", "aac", "-b:a", "192k", "-y", audioPath], cancellation);
+            else if (hasMainAudio) File.Move(mainAudioPath, audioPath, true);
+            else if (extraTracks.Length > 0) File.Move(tracksAudioPath, audioPath, true);
+            else if (options.AudioOnly) throw new InvalidOperationException("项目没有可导出的音轨。");
             if (options.AudioOnly)
             {
                 File.Move(audioPath, temporary); await Verify(temporary, project.Timeline.Duration, options.FrameRate, cancellation);
@@ -48,7 +82,7 @@ public sealed class ExportEngine
             decoder = MediaTools.Start(MediaTools.Ffmpeg, decArgs, output: true);
             var decoderErrors = decoder.StandardError.ReadToEndAsync();
             var args = new List<string> { "-v", "error", "-f", "rawvideo", "-pix_fmt", "bgra", "-s", $"{options.Width}x{options.Height}", "-r", options.FrameRate.ToString(), "-i", "pipe:0" };
-            if (info.HasAudio) args.AddRange(["-i", audioPath, "-map", "0:v", "-map", "1:a", "-c:a", "copy"]);
+            if (hasAudio) args.AddRange(["-i", audioPath, "-map", "0:v", "-map", "1:a", "-c:a", "copy"]);
             args.AddRange(["-c:v", chosenEncoder, "-pix_fmt", "yuv420p"]);
             if (chosenEncoder == "libx264") args.AddRange(["-preset", "fast", "-crf", "20"]);
             else args.AddRange(["-b:v", "16M"]);
@@ -60,6 +94,7 @@ public sealed class ExportEngine
             var input = new byte[checked(decodeWidth * decodeHeight * 4)]; var output = new byte[checked(options.Width * options.Height * 4)];
             var total = checked((int)Math.Ceiling(project.Timeline.Duration * options.FrameRate - 1e-7)); var frames = 0;
             var frameWatch = Stopwatch.StartNew(); var evaluator = new PreparedFrameSceneEvaluator(project);
+            using var assetLoader = new SceneAssetLoader(projectFile, options.Width, options.Height);
             while (frames < total)
             {
                 cancellation.ThrowIfCancellationRequested();
@@ -74,7 +109,8 @@ public sealed class ExportEngine
                     if (read != 0 || frames == 0 || total - frames > 1) throw new IOException("视频解码提前结束：" + decodeError);
                 }
                 var scene = evaluator.Evaluate(Math.Min(frames / (double)options.FrameRate, project.Timeline.Duration));
-                renderer.Render(input, scene, output);
+                var layers = await assetLoader.LoadAsync(scene, cancellation);
+                renderer.Render(input, scene, output, layers);
                 await encoder.StandardInput.BaseStream.WriteAsync(output, cancellation); frames++;
                 if (frames % 5 == 0 || frames == total)
                 {
@@ -99,7 +135,7 @@ public sealed class ExportEngine
         finally
         {
             if (decoder != null) { await MediaTools.StopAsync(decoder); decoder.Dispose(); } if (encoder != null) { await MediaTools.StopAsync(encoder); encoder.Dispose(); }
-            foreach (var file in new[] { temporary, audioPath, timelineFile, audioFile }) if (File.Exists(file)) File.Delete(file);
+            foreach (var file in new[] { temporary, audioPath, mainAudioPath, tracksAudioPath, timelineFile, audioFile, tracksAudioFile }) if (File.Exists(file)) File.Delete(file);
         }
     }
     private static async Task Verify(string path, double expected, int fps, CancellationToken token)

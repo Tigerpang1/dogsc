@@ -14,6 +14,8 @@ internal sealed class InputSampler : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly StreamWriter? _writer;
     private Task? _worker;
+    private int _paused;
+    private int _resetState;
     private readonly HashSet<int> _down = [];
     private static readonly (int Code, string Name)[] Modifiers = [(0x10, "Shift"), (0x11, "Control"), (0x12, "Alt"), (0x5B, "Windows"), (0x5C, "Windows")];
     private static readonly (int Code, MouseButton Button)[] Buttons = [(0x01, MouseButton.Left), (0x02, MouseButton.Right), (0x04, MouseButton.Middle), (0x05, MouseButton.X1), (0x06, MouseButton.X2)];
@@ -31,6 +33,8 @@ internal sealed class InputSampler : IAsyncDisposable
     }
     internal string? OutputPath { get; }
     internal void Start() => _worker = Task.Run(RunAsync);
+    internal void Pause() => Interlocked.Exchange(ref _paused, 1);
+    internal void Resume() { Interlocked.Exchange(ref _resetState, 1); Interlocked.Exchange(ref _paused, 0); }
     private async Task RunAsync()
     {
         var delay = TimeSpan.FromSeconds(1d / _rate);
@@ -39,6 +43,16 @@ internal sealed class InputSampler : IAsyncDisposable
         {
             while (!_stop.IsCancellationRequested)
             {
+                if (Volatile.Read(ref _paused) != 0)
+                {
+                    await Task.Delay(delay, _stop.Token).ConfigureAwait(false);
+                    continue;
+                }
+                if (Interlocked.Exchange(ref _resetState, 0) != 0)
+                {
+                    _down.Clear();
+                    oldPoint = new WindowsNative.Point { X = int.MinValue, Y = int.MinValue };
+                }
                 WindowsNative.GetPhysicalCursorPos(out var point);
                 var bounds = _boundsProvider();
                 if (point.X != oldPoint.X || point.Y != oldPoint.Y)

@@ -4,7 +4,17 @@ using FrameTrail.Capture;
 
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Length > 0 && args[0] == "--pattern-window-standalone")
+{
+    PatternWindowHost.RunStandalone(args);
+    return;
+}
 var probeOptions = ProbeOptions.Parse(args);
+if (probeOptions.SyncStimulus || probeOptions.SyncCapture || probeOptions.SyncPlayback || probeOptions.TargetTest || probeOptions.TrackTest || probeOptions.PauseCycle || probeOptions.MultiPauseCycle || probeOptions.KillRecoveryTest || probeOptions.EnumerateInputs || probeOptions.LongLoopback || probeOptions.AnimateWindow)
+{
+    await CaptureScenarios.RunAsync(probeOptions);
+    return;
+}
 if (probeOptions.Metrics) { await LongCaptureRunner.RunAsync(probeOptions); return; }
 var output = probeOptions.OutputPath ?? Path.Combine(Path.GetTempPath(), $"frametrail-probe-{DateTime.Now:yyyyMMdd-HHmmss}.mp4");
 var inputPath = Path.ChangeExtension(output, ".input.jsonl");
@@ -24,7 +34,7 @@ capture.StateChanged += (_, e) =>
 capture.ErrorOccurred += (_, e) => Console.Error.WriteLine($"Capture error: {e.Message} {e.Exception}");
 var invocationTicks = Stopwatch.GetTimestamp();
 await capture.StartAsync(new RecordingRequest(output, new CaptureTarget(CaptureTargetKind.Display, display.Id),
-    new VideoOptions(FrameRate: probeOptions.FrameRate, Width: probeOptions.Width, Height: probeOptions.Height, EncoderPreference: EncoderPreference.Automatic),
+    new VideoOptions(FrameRate: probeOptions.FrameRate, Width: probeOptions.Width, Height: probeOptions.Height, EncoderPreference: EncoderPreference.Automatic, FixedFrameRate: probeOptions.FixedFrameRate),
     new AudioOptions(), new InputTrackingOptions(Enabled: true, SampleRate: 60, OutputPath: inputPath)));
 var startReturnedTicks = Stopwatch.GetTimestamp();
 Console.WriteLine($"StartAsync returned after {(startReturnedTicks - invocationTicks) * 1000d / Stopwatch.Frequency:F3} ms");
@@ -37,6 +47,8 @@ Console.WriteLine($"Input events: {result.InputEventsPath} ({(result.InputEvents
 Console.WriteLine($"Recording state event offset from StartAsync invocation: {(statusStarted - invocationTicks) * 1000d / Stopwatch.Frequency:F3} ms");
 Console.WriteLine($"StartAsync return offset from invocation: {(startReturnedTicks - invocationTicks) * 1000d / Stopwatch.Frequency:F3} ms");
 Console.WriteLine($"Recording status event offset from Record-call baseline: {(statusStarted - result.StartStopwatchTicks) * 1000d / Stopwatch.Frequency:F3} ms");
+Console.WriteLine($"First frame callback: number={result.FirstFrameNumber?.ToString() ?? "unknown"}; monotonic offset from Record-call baseline={(result.FirstFrameObservedStopwatchTicks is long firstFrameTicks ? (firstFrameTicks - result.StartStopwatchTicks) * 1000d / Stopwatch.Frequency : double.NaN):F3} ms; native wall-clock timestamp ms={result.FirstFrameSystemTimestampUnixMilliseconds?.ToString() ?? "unknown"}");
+Console.WriteLine($"Progress-derived frame-zero estimate offset from Record-call baseline={(result.ProgressEstimatedFirstFrameStopwatchTicks is long progressEstimate ? (progressEstimate - result.StartStopwatchTicks) * 1000d / Stopwatch.Frequency : double.NaN):F3} ms; print-anchor delta from progress estimate={(result.FirstFrameObservedStopwatchTicks is long observed && result.ProgressEstimatedFirstFrameStopwatchTicks is long progress ? (observed - progress) * 1000d / Stopwatch.Frequency : double.NaN):F3} ms");
 Console.WriteLine($"Result API start to Stop call ticks: {(result.StopStopwatchTicks - result.StartStopwatchTicks) * 1000d / Stopwatch.Frequency:F3} ms");
 Console.WriteLine($"Encoder: {result.EncoderName}, mode={result.EncoderMode}; output={result.Width}x{result.Height}@{result.FrameRate}");
 Console.WriteLine("Warnings:");

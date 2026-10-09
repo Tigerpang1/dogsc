@@ -30,7 +30,8 @@ internal static class LongCaptureRunner
         };
         capture.ErrorOccurred += (_, e) => Console.Error.WriteLine($"{DateTimeOffset.UtcNow:O} CaptureError={e.Message}; exception={e.Exception}");
         var video = new VideoOptions(FrameRate: options.FrameRate, Width: options.Width, Height: options.Height,
-            EncoderPreference: options.Software ? EncoderPreference.Software : EncoderPreference.Automatic, Quality: 75);
+            EncoderPreference: options.Software ? EncoderPreference.Software : EncoderPreference.Automatic, Quality: 75,
+            FixedFrameRate: options.FixedFrameRate);
         var audio = loopback is null ? new AudioOptions() : new AudioOptions(RecordSystemAudio: true, SystemAudioDeviceId: loopback.Id);
         var input = new InputTrackingOptions(Enabled: true, SampleRate: Math.Clamp(options.FrameRate, 1, 120),
             OutputPath: Path.ChangeExtension(output, ".input.jsonl"));
