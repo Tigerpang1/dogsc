@@ -14,6 +14,8 @@
 
 `scripts/package-source.ps1` 只归档干净 HEAD，并追加固定 DogSC 源码基线。`scripts/validate-source-package.ps1 -SourceZip <ZIP>` 将归档解压到工作区以外的 TEMP UUID 目录，检查无 `.git`、验证元数据，再运行 Core/导入器测试、App Release build 和 `package.ps1 -WithoutFfmpeg -SkipInstaller`。它检查打包元数据确实使用 `source archive` 回退，而不是误找到外层仓库。
 
+2026-10-09 09:04:34–09:05:00 UTC 的源码归档预验已通过：Core/导入器测试、App Release 构建及重新打包三步退出码均为 0，验证了工作区外解压、无 `.git` 及 source archive 元数据回退。
+
 源码归档的实际验收状态由 `artifacts/validation/package-0.2.0/source-validation.json` 决定；该报告必须为 `status: passed` 才视为此项通过。日志与解压副本会保留，未通过不会自动标记成功。
 
 ## 发行边界

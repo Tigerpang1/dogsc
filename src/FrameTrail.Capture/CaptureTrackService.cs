@@ -181,9 +181,9 @@ public sealed class CaptureTrackService : ICaptureTrackService
         await session.Gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            if (session.State is not (CaptureTrackState.Recording or CaptureTrackState.Paused) &&
-                !(session.AudioCapture is not null && session.State == CaptureTrackState.Faulted))
+            if (!CaptureFailurePolicy.CanStopTrack(session.State))
                 throw new InvalidOperationException("The capture track is not active.");
+            var backendFailure = session.FailureException;
             var stopTicks = Stopwatch.GetTimestamp();
             lock (session.AudioWriteGate)
             {
@@ -224,8 +224,36 @@ public sealed class CaptureTrackService : ICaptureTrackService
             }
             else
             {
-                await Task.Run(session.Recorder.Stop, cancellationToken).ConfigureAwait(false);
-                await session.Finished.Task.WaitAsync(TimeSpan.FromSeconds(30), cancellationToken).ConfigureAwait(false);
+                try { await Task.Run(session.Recorder.Stop, cancellationToken).ConfigureAwait(false); }
+                catch (Exception stopException)
+                {
+                    backendFailure ??= session.FailureException;
+                    if (backendFailure is null) throw;
+                    session.Warnings.Add("Camera recorder stop reported an error after backend failure: " + stopException.Message);
+                }
+                backendFailure ??= session.FailureException;
+                try
+                {
+                    if (backendFailure is null)
+                    {
+                        var finished = session.Finished.Task;
+                        var failure = session.FailureSignal.Task;
+                        var timeout = Task.Delay(TimeSpan.FromSeconds(30));
+                        var winner = await Task.WhenAny(finished, failure, timeout).ConfigureAwait(false);
+                        if (winner == timeout) throw new TimeoutException("The camera recorder did not report completion within 30 seconds.");
+                        if (winner == failure) backendFailure = await failure.ConfigureAwait(false);
+                        else await finished.ConfigureAwait(false);
+                    }
+                    if (backendFailure is not null)
+                        await session.Finished.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+                }
+                catch when (backendFailure is not null && CaptureFailurePolicy.HasNonEmptyCandidate(session.OutputPath))
+                {
+                    session.Warnings.Add("The capture backend failed; a non-empty partial output was retained for media validation.");
+                }
+                if (backendFailure is not null && !CaptureFailurePolicy.HasNonEmptyCandidate(session.OutputPath))
+                    throw new InvalidOperationException("Camera capture failed before producing a non-empty output: " + backendFailure.Message, backendFailure);
+                if (backendFailure is not null) session.Warnings.Add("Camera capture failure: " + backendFailure.Message);
                 session.Recorder.Dispose();
             }
             _sessions.TryRemove(trackId, out _);
@@ -240,6 +268,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
             try { session.AudioCapture?.Dispose(); } catch { }
             try { session.WaveFileWriter?.Dispose(); } catch { }
             try { session.Recorder?.Dispose(); } catch { }
+            _sessions.TryRemove(trackId, out _);
             SetState(session, CaptureTrackState.Faulted, ex.Message);
             throw;
         }
@@ -256,7 +285,14 @@ public sealed class CaptureTrackService : ICaptureTrackService
         session.Recorder.OnRecordingFailed += (_, args) =>
         {
             var ex = new InvalidOperationException(args.Error);
-            session.Started.TrySetException(ex); session.Finished.TrySetException(ex);
+            session.FailureException = ex;
+            session.FailureSignal.TrySetResult(ex);
+            if (session.State == CaptureTrackState.Starting)
+            {
+                session.Started.TrySetException(ex);
+                session.Finished.TrySetException(ex);
+            }
+            else session.Warnings.Add("Capture backend failure: " + args.Error);
             ErrorOccurred?.Invoke(this, new CaptureError(args.Error, ex));
             SetState(session, CaptureTrackState.Faulted, args.Error);
         };
@@ -516,8 +552,10 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal CancellationTokenSource? AudioPumpCancellation { get; set; }
         internal Task? AudioPumpTask { get; set; }
         internal TaskCompletionSource<bool> AudioStopped { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource<Exception> FailureSignal { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal volatile bool AudioRecordingStopped;
         internal Exception? AudioFailure { get; set; }
+        internal Exception? FailureException { get; set; }
         internal volatile bool AudioPaused;
         internal CaptureTrackHandle? Handle { get; set; }
         internal CaptureTrackState State { get; set; }

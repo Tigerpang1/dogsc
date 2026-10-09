@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Interop;
@@ -20,7 +21,12 @@ if (args.Length < 2)
 var appPath = Path.GetFullPath(args[0]);
 var sourceProject = Path.GetFullPath(args[1]);
 var reportPath = Path.GetFullPath(args.Length > 2 ? args[2] : Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-smoke.json"));
-var testRoot = args.Contains("--effects-only")
+var progressPath = Path.ChangeExtension(reportPath, ".progress.log");
+File.WriteAllText(progressPath, $"UIA 开始 {DateTimeOffset.Now:O}{Environment.NewLine}");
+SmokeProgress.Path = progressPath;
+var testRoot = args.Contains("--relink-only")
+    ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-relink-fixture-audit-" + Guid.NewGuid().ToString("N"))
+    : args.Contains("--effects-only")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-effect-fixture-audit-" + Guid.NewGuid().ToString("N"))
     : Path.Combine(Path.GetTempPath(), "frametrail-ui-smoke-" + Guid.NewGuid().ToString("N"));
 var projectCopy = Path.Combine(testRoot, Path.GetFileName(Path.GetDirectoryName(sourceProject)) ?? "project");
@@ -35,27 +41,46 @@ var userDataSnapshots = new Dictionary<string, byte[]?>
 };
 var results = new List<StepResult>();
 Process? app = null;
+void AddResult(StepResult result)
+{
+    results.Add(result);
+    SmokeProgress.Append(result);
+}
 try
 {
     if (!File.Exists(appPath)) throw new FileNotFoundException("找不到 FrameTrail 应用程序。", appPath);
     if (!File.Exists(sourceProject)) throw new FileNotFoundException("找不到测试项目。", sourceProject);
     Directory.CreateDirectory(testRoot);
     CopyDirectory(Path.GetDirectoryName(sourceProject)!, projectCopy);
+    if (args.Contains("--relink-only"))
+    {
+        RunRelinkOnly(appPath, sourceProject, projectCopyFile, results);
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
     PrepareFeatureFixture(projectCopyFile);
-    if (args.Contains("--effects-only")) PrepareUncutEffectTimeline(projectCopyFile);
+    if (args.Contains("--effects-only") || args.Contains("--full-uncut-effects"))
+        PrepareUncutEffectTimeline(projectCopyFile);
 
     app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } })
         ?? throw new InvalidOperationException("无法启动 FrameTrail。");
     var window = WaitForWindow(app, TimeSpan.FromSeconds(35));
-    results.Add(new("应用启动并加载项目", window is not null, window is null ? "未找到该进程的主窗口。" : "已通过进程窗口句柄读取 UI Automation 树。"));
+    AddResult(new("应用启动并加载项目", window is not null, window is null ? "未找到该进程的主窗口。" : "已通过进程窗口句柄读取 UI Automation 树。"));
     if (window is null) throw new TimeoutException("FrameTrail 主窗口未出现。");
     NativeMethods.SetWindowPos((IntPtr)window.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004);
     var projectTitle = WaitForProjectTitle(window, TimeSpan.FromSeconds(20));
     var projectLoaded = projectTitle is not null && projectTitle.Current.Name != "未命名项目";
-    results.Add(new("命令行项目确实已打开", projectLoaded, projectLoaded ? projectTitle!.Current.Name : "标题仍为未命名项目；本轮后续交互结果只作界面诊断，不计功能通过。"));
+    AddResult(new("命令行项目确实已打开", projectLoaded, projectLoaded ? projectTitle!.Current.Name : "标题仍为未命名项目；本轮后续交互结果只作界面诊断，不计功能通过。"));
     if (args.Contains("--effects-only"))
     {
         RunEffectUiTests(window, projectCopyFile, args, results);
+        app.CloseMainWindow();
+        if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+        app.Dispose(); app = null;
+        return results.All(x => x.Passed) ? 0 : 1;
+    }
+    if (args.Contains("--new-panels-only"))
+    {
+        RunNewPanelUiTests(window, app, appPath, projectCopyFile, results);
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
@@ -74,7 +99,7 @@ try
         var openedScreen = screenButton is not null && TryClickPhysical(screenButton);
         var shot = Path.ChangeExtension(reportPath, ".motion.png");
         if (openedScreen) CaptureWindow(window, shot);
-        results.Add(new("运镜 3D 面板视觉截图", openedScreen && File.Exists(shot), $"运镜={openedMotion}，屏幕3D={openedScreen}，截图={shot}。"));
+        AddResult(new("运镜 3D 面板视觉截图", openedScreen && File.Exists(shot), $"运镜={openedMotion}，屏幕3D={openedScreen}，截图={shot}。"));
         app.CloseMainWindow();
         if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
         app.Dispose(); app = null;
@@ -111,7 +136,7 @@ try
     }
     var screenshotPath = Path.ChangeExtension(reportPath, ".png");
     CaptureWindow(window, screenshotPath);
-    results.Add(new("主窗口实际截图已保存", File.Exists(screenshotPath), screenshotPath));
+    AddResult(new("主窗口实际截图已保存", File.Exists(screenshotPath), screenshotPath));
 
     var cameraTab = FindRailButton(window, "摄像头");
     var cameraOpened = cameraTab is not null && TryClickPhysical(cameraTab);
@@ -119,10 +144,10 @@ try
     var cameraCombos = cameraOpened ? FindInspectorCombos(window) : [];
     var circleSelected = circleCard is not null && TryClickPhysical(circleCard);
     var cameraSaved = circleSelected && WaitForJsonString(projectCopyFile, ["camera", "shape"], "circle", TimeSpan.FromSeconds(5));
-    results.Add(new("摄像头面板可编辑并保存形状", cameraSaved, cameraSaved ? "通过圆形卡片将摄像头形状写入项目副本。" : $"面板={cameraOpened}，旧式下拉数={cameraCombos.Length}，圆形卡片={circleCard is not null}，点击={circleSelected}，已保存形状={ReadJsonString(projectCopyFile, "camera", "shape")}，控件=[{DescribeInspector(window)}]"));
+    AddResult(new("摄像头面板可编辑并保存形状", cameraSaved, cameraSaved ? "通过圆形卡片将摄像头形状写入项目副本。" : $"面板={cameraOpened}，旧式下拉数={cameraCombos.Length}，圆形卡片={circleCard is not null}，点击={circleSelected}，已保存形状={ReadJsonString(projectCopyFile, "camera", "shape")}，控件=[{DescribeInspector(window)}]"));
     var cameraDragDetail = "摄像头设置未完成，跳过画布拖动。";
     var cameraDrag = cameraSaved && TryDragCameraOnCanvas(window, projectCopyFile, out cameraDragDetail);
-    results.Add(new("预览画布拖动摄像头并持久化位置", cameraDrag, cameraSaved ? cameraDragDetail : "摄像头设置未完成，跳过画布拖动。"));
+    AddResult(new("预览画布拖动摄像头并持久化位置", cameraDrag, cameraSaved ? cameraDragDetail : "摄像头设置未完成，跳过画布拖动。"));
 
     TestCustomPresetLifecycle(window, app.Id, projectCopyFile, results);
     window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
@@ -138,7 +163,7 @@ try
     var gridCard = patternSourceSelected ? FindButtonByHint(window, "细网格") : null;
     var patternSelected = gridCard is not null && TryClickPhysical(gridCard);
     var backgroundSaved = patternSelected && WaitForJsonString(projectCopyFile, ["settings", "backgroundStyle", "kind"], "pattern", TimeSpan.FromSeconds(5));
-    results.Add(new("背景面板可编辑并保存图案", backgroundSaved, backgroundSaved ? "依次选择图案与细网格卡片，项目已保存。" : $"画面页={frameOpened}，背景按钮存在={backgroundTab is not null}，名称={backgroundTab?.Current.Name}，点击={backgroundClicked}，图案卡片={patternCard is not null}，细网格卡片={gridCard is not null}，旧式下拉数={backgroundCombos.Length}，类型={ReadJsonString(projectCopyFile, "settings", "backgroundStyle", "kind")}，控件=[{DescribeInspector(window)}]"));
+    AddResult(new("背景面板可编辑并保存图案", backgroundSaved, backgroundSaved ? "依次选择图案与细网格卡片，项目已保存。" : $"画面页={frameOpened}，背景按钮存在={backgroundTab is not null}，名称={backgroundTab?.Current.Name}，点击={backgroundClicked}，图案卡片={patternCard is not null}，细网格卡片={gridCard is not null}，旧式下拉数={backgroundCombos.Length}，类型={ReadJsonString(projectCopyFile, "settings", "backgroundStyle", "kind")}，控件=[{DescribeInspector(window)}]"));
 
     var mockupTab = FindRightPanelButton(window, "样机");
     var mockupTabOpened = mockupTab is not null && TryClickPhysical(mockupTab);
@@ -155,7 +180,7 @@ try
     var radiusSet = radiusSlider is not null && SetRangeValue(radiusSlider, 26)
         && WaitForJsonNumber(projectCopyFile, ["settings", "canvas", "frameOuterRadius"], 26, TimeSpan.FromSeconds(5));
     var mockupSaved = mockupTabOpened && windowFrameSelected && frameScaleSet && toolbarSet && radiusSet;
-    results.Add(new("样机卡片与框体参数可保存", mockupSaved, mockupSaved ? "选择浅色窗口卡片并设置框体比例1.12、顶栏高度1.08、外圆角26，三项均写入项目。" : $"样机页={mockupTabOpened}，卡片={windowFrameSelected}，比例={frameScaleSet}，顶栏={toolbarSet}，外圆角={radiusSet}，值=({ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameScale"])},{ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameToolbarScale"])},{ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameOuterRadius"])})。"));
+    AddResult(new("样机卡片与框体参数可保存", mockupSaved, mockupSaved ? "选择浅色窗口卡片并设置框体比例1.12、顶栏高度1.08、外圆角26，三项均写入项目。" : $"样机页={mockupTabOpened}，卡片={windowFrameSelected}，比例={frameScaleSet}，顶栏={toolbarSet}，外圆角={radiusSet}，值=({ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameScale"])},{ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameToolbarScale"])},{ReadJsonNumber(projectCopyFile, ["settings", "canvas", "frameOuterRadius"])})。"));
 
     var cursorTab = FindRailButton(window, "光标");
     var cursorOpened = cursorTab is not null && TryClickPhysical(cursorTab);
@@ -163,29 +188,32 @@ try
     var ringCard = cursorOpened ? FindButtonByHint(window, "圆环") : null;
     var ringSelected = ringCard is not null && TryClickPhysical(ringCard);
     var cursorSaved = ringSelected && WaitForJsonString(projectCopyFile, ["settings", "cursor", "style"], "ring", TimeSpan.FromSeconds(5));
-    results.Add(new("光标面板可编辑并保存样式", cursorSaved, cursorSaved ? "通过圆环卡片将光标样式写入项目副本。" : $"面板={cursorOpened}，旧式下拉数={cursorCombos.Length}，圆环卡片={ringCard is not null}，点击={ringSelected}，样式={ReadJsonString(projectCopyFile, "settings", "cursor", "style")}，控件=[{DescribeInspector(window)}]"));
+    AddResult(new("光标面板可编辑并保存样式", cursorSaved, cursorSaved ? "通过圆环卡片将光标样式写入项目副本。" : $"面板={cursorOpened}，旧式下拉数={cursorCombos.Length}，圆环卡片={ringCard is not null}，点击={ringSelected}，样式={ReadJsonString(projectCopyFile, "settings", "cursor", "style")}，控件=[{DescribeInspector(window)}]"));
     var smoothingCombo = cursorSaved ? WaitForComboByName(window, "移动平滑", TimeSpan.FromSeconds(3)) : null;
     var smoothingSelected = smoothingCombo is not null && SelectComboOption(smoothingCombo, "灵敏", app.Id, 2);
     var smoothingSaved = smoothingSelected && WaitForJsonString(projectCopyFile, ["settings", "pointerSmoothing"], "rapid", TimeSpan.FromSeconds(5));
-    results.Add(new("光标移动平滑设置持久化", smoothingSaved, smoothingSaved ? "在光标面板将移动平滑设为灵敏，项目 JSON 保存为 rapid。" : $"控件={smoothingCombo is not null}，选择={smoothingSelected}，项目值={ReadJsonString(projectCopyFile, "settings", "pointerSmoothing")}。"));
+    AddResult(new("光标移动平滑设置持久化", smoothingSaved, smoothingSaved ? "在光标面板将移动平滑设为灵敏，项目 JSON 保存为 rapid。" : $"控件={smoothingCombo is not null}，选择={smoothingSelected}，项目值={ReadJsonString(projectCopyFile, "settings", "pointerSmoothing")}。"));
     var alignmentDisclosure = cursorSaved ? FindNamed(window, "时间对齐") : null;
     var alignmentExpanded = alignmentDisclosure is not null && TryExpand(alignmentDisclosure);
     var offsetControl = alignmentExpanded ? WaitForControlName(window, ControlType.Slider, "光标时间偏移", TimeSpan.FromSeconds(3)) : null;
     var offsetChanged = offsetControl is not null && SetRangeValue(offsetControl, 10);
     var offsetSaved = offsetChanged && WaitForJsonNumber(projectCopyFile, ["mouseClock", "offsetSeconds"], .01, TimeSpan.FromSeconds(5));
     var offsetControlRemains = offsetSaved && WaitForControlName(window, ControlType.Slider, "光标时间偏移", TimeSpan.FromSeconds(2)) is not null;
-    results.Add(new("展开光标时间对齐并保存偏移", offsetSaved && offsetControlRemains, offsetSaved && offsetControlRemains ? "展开折叠分组后将光标时间偏移设为 10 ms；Inspector 重建后分组仍展开，项目 JSON 保存为 0.01 秒。" : $"分组={alignmentExpanded}，控件={Describe(offsetControl)}，重建后仍可见={offsetControlRemains}，JSON偏移={ReadJsonNumber(projectCopyFile, ["mouseClock", "offsetSeconds"])}"));
+    AddResult(new("展开光标时间对齐并保存偏移", offsetSaved && offsetControlRemains, offsetSaved && offsetControlRemains ? "展开折叠分组后将光标时间偏移设为 10 ms；Inspector 重建后分组仍展开，项目 JSON 保存为 0.01 秒。" : $"分组={alignmentExpanded}，控件={Describe(offsetControl)}，重建后仍可见={offsetControlRemains}，JSON偏移={ReadJsonNumber(projectCopyFile, ["mouseClock", "offsetSeconds"])}"));
 
     var openingTab = FindRailButton(window, "开场");
     var openingOpened = openingTab is not null && TryClickPhysical(openingTab);
     var openingCombos = openingOpened ? FindInspectorCombos(window) : [];
     var openingEnabled = openingOpened ? FindCheckboxContaining(window, "启用全局开场") : null;
-    var openingToggleChanged = openingEnabled is not null && TryToggle(openingEnabled)
+    var openingWasEnabled = ReadJsonBoolean(projectCopyFile, "settings", "opening", "enabled") == true;
+    var openingToggleClicked = openingEnabled is not null
+        && (openingWasEnabled || TryClickPhysical(openingEnabled, preferAutomationInvoke: false));
+    var openingToggleChanged = openingToggleClicked
         && WaitForJsonBoolean(projectCopyFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5));
     var zoomOpeningCard = openingToggleChanged ? FindButtonByHint(window, "放大入场") : null;
     var openingPresetSelected = zoomOpeningCard is not null && TryClickPhysical(zoomOpeningCard);
     var openingSaved = openingPresetSelected && openingToggleChanged && WaitForJsonBoolean(projectCopyFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5)) && WaitForJsonString(projectCopyFile, ["settings", "opening", "preset"], "zoomUp", TimeSpan.FromSeconds(5));
-    results.Add(new("开场面板可编辑并保存动画", openingSaved, openingSaved ? "启用全局开场后选择放大入场卡片并写入项目副本。" : $"面板={openingOpened}，下拉数={openingCombos.Length}，预设={openingPresetSelected}，开关={openingToggleChanged}，enabled={ReadJsonBoolean(projectCopyFile, "settings", "opening", "enabled")}, preset={ReadJsonString(projectCopyFile, "settings", "opening", "preset")}，控件=[{DescribeInspector(window)}]"));
+    AddResult(new("开场面板可编辑并保存动画", openingSaved, openingSaved ? "启用全局开场后选择放大入场卡片并写入项目副本。" : $"面板={openingOpened}，下拉数={openingCombos.Length}，预设={openingPresetSelected}，开关={openingToggleChanged}，enabled={ReadJsonBoolean(projectCopyFile, "settings", "opening", "enabled")}, preset={ReadJsonString(projectCopyFile, "settings", "opening", "preset")}，控件=[{DescribeInspector(window)}]"));
 
     var motionTabButton = FindRailButton(window, "运镜");
     var motionPanel = motionTabButton is not null && TryClickPhysical(motionTabButton);
@@ -196,37 +224,48 @@ try
     var addElementOpened = screen3DOpened && addElement is not null && TryInvoke(addElement);
     var addMotionMenuItem = addElementOpened ? WaitForName("添加运镜片段", app.Id, TimeSpan.FromSeconds(3)) : null;
     var motionAdded = addMotionMenuItem is not null && TryInvoke(addMotionMenuItem) && WaitForArrayCount(projectCopyFile, "screenMotions", Math.Max(0, oldMotionCount) + 1, TimeSpan.FromSeconds(6));
-    results.Add(new("屏幕 3D 面板创建并保存片段", motionAdded, motionAdded ? "由画布添加元素菜单创建的屏幕 3D 片段已写入项目副本。" : $"运镜面板={motionPanel}，3D页={screen3DOpened}，添加元素菜单={addElementOpened}，创建命令={addMotionMenuItem is not null}，原数量={oldMotionCount}，当前数量={ReadArrayCount(projectCopyFile, "screenMotions")}"));
+    var motionUndo = false; var motionRedo = false; var motionCleanup = false;
+    if (motionAdded)
+    {
+        FocusWindow(window); SendKey(0x5A, true);
+        motionUndo = WaitForArrayCount(projectCopyFile, "screenMotions", oldMotionCount, TimeSpan.FromSeconds(5));
+        SendKey(0x59, true);
+        motionRedo = WaitForArrayCount(projectCopyFile, "screenMotions", oldMotionCount + 1, TimeSpan.FromSeconds(5));
+        SendKey(0x5A, true);
+        motionCleanup = WaitForArrayCount(projectCopyFile, "screenMotions", oldMotionCount, TimeSpan.FromSeconds(5));
+    }
+    AddResult(new("屏幕 3D 片段创建、撤销、重做", motionAdded && motionUndo && motionRedo && motionCleanup,
+        $"创建={motionAdded}，撤销={motionUndo}，重做={motionRedo}，清理后数量={ReadArrayCount(projectCopyFile, "screenMotions")}；原数量={oldMotionCount}"));
 
     var projectMenuButton = FindButtonByHint(window, "项目");
     var projectMenuOpened = projectMenuButton is not null && TryInvoke(projectMenuButton);
     var dogScMenuItem = projectMenuOpened ? WaitForName("导入 DogSC 项目…", app.Id, TimeSpan.FromSeconds(3)) : null;
-    results.Add(new("项目菜单及 DogSC 导入入口可访问", dogScMenuItem is not null, dogScMenuItem is null ? "未能从 UIA 菜单找到 DogSC 导入入口。" : "打开项目菜单后发现 DogSC 导入命令。"));
+    AddResult(new("项目菜单及 DogSC 导入入口可访问", dogScMenuItem is not null, dogScMenuItem is null ? "未能从 UIA 菜单找到 DogSC 导入入口。" : "打开项目菜单后发现 DogSC 导入命令。"));
     if (projectMenuOpened) SendKey(0x1B, false);
 
     var aspectLabel = FindById(window, "AspectLabel");
     var aspectButton = aspectLabel is null ? null : AncestorOfType(aspectLabel, ControlType.Button);
-    results.Add(new("画布比例菜单可访问", aspectButton is not null, Describe(aspectLabel)));
+    AddResult(new("画布比例菜单可访问", aspectButton is not null, Describe(aspectLabel)));
     var before = ReadDimensions(projectCopyFile);
     if (aspectButton is not null && TryInvoke(aspectButton))
     {
         var ratio = WaitForName("9:16", app.Id, TimeSpan.FromSeconds(4));
         var selected = ratio is not null && TryInvoke(ratio);
         var changed = selected && WaitForDimensions(projectCopyFile, 9, 16, TimeSpan.FromSeconds(8));
-        results.Add(new("比例菜单调整并自动保存", changed, changed ? "画布设置已写入项目副本。" : "未能在 UIA 菜单中选择 9:16 或检测到项目文件更新。"));
+        AddResult(new("比例菜单调整并自动保存", changed, changed ? "画布设置已写入项目副本。" : "未能在 UIA 菜单中选择 9:16 或检测到项目文件更新。"));
 
         if (selected)
         {
             FocusWindow(window);
             SendKey(0x5A, true); // Ctrl+Z
             var undo = WaitForDimensions(projectCopyFile, before.Width, before.Height, TimeSpan.FromSeconds(6));
-            results.Add(new("撤销比例设置", undo, undo ? "Ctrl+Z 恢复了原画布尺寸。" : "撤销后项目尺寸未恢复。"));
+            AddResult(new("撤销比例设置", undo, undo ? "Ctrl+Z 恢复了原画布尺寸。" : "撤销后项目尺寸未恢复。"));
             SendKey(0x59, true); // Ctrl+Y
             var redo = WaitForDimensions(projectCopyFile, 9, 16, TimeSpan.FromSeconds(6));
-            results.Add(new("重做比例设置", redo, redo ? "Ctrl+Y 重新应用了画布比例。" : "重做后项目尺寸未更新。"));
+            AddResult(new("重做比例设置", redo, redo ? "Ctrl+Y 重新应用了画布比例。" : "重做后项目尺寸未更新。"));
         }
     }
-    else results.Add(new("比例菜单调整并自动保存", false, "无法通过 UI Automation 打开画布比例菜单。"));
+    else AddResult(new("比例菜单调整并自动保存", false, "无法通过 UI Automation 打开画布比例菜单。"));
 
     var presetButton = FindButtonByHint(window, "场景预设");
     var presetOpened = presetButton is not null && TryClickPhysical(presetButton);
@@ -235,12 +274,12 @@ try
     var presetInvoked = darkPreset is not null && TryInvoke(darkPreset);
     var presetApplied = presetInvoked && WaitForBackground(projectCopyFile, "#202124", TimeSpan.FromSeconds(6));
     var finalBackground = ReadBackground(projectCopyFile);
-    results.Add(new("场景预设菜单可应用", presetApplied, presetApplied ? "已应用内建深色窗口样式。" : $"按钮名={presetButton?.Current.Name}，物理点击={presetOpened}，找到菜单项={darkPreset is not null}，触发={presetInvoked}，原背景={initialBackground}，当前背景={finalBackground}；进程节点=[{string.Join(" | ", FindProcessNames(app.Id).Where(x => x.Contains("深色") || x.Contains("预设") || x.Contains("简洁") || x.Contains("浏览器")).Take(12))}]"));
+    AddResult(new("场景预设菜单可应用", presetApplied, presetApplied ? "已应用内建深色窗口样式。" : $"按钮名={presetButton?.Current.Name}，物理点击={presetOpened}，找到菜单项={darkPreset is not null}，触发={presetInvoked}，原背景={initialBackground}，当前背景={finalBackground}；进程节点=[{string.Join(" | ", FindProcessNames(app.Id).Where(x => x.Contains("深色") || x.Contains("预设") || x.Contains("简洁") || x.Contains("浏览器")).Take(12))}]"));
     if (presetApplied)
     {
         FocusWindow(window); SendKey(0x5A, true);
         var presetUndo = WaitForBackground(projectCopyFile, initialBackground, TimeSpan.FromSeconds(5));
-        results.Add(new("预设操作支持撤销", presetUndo, presetUndo ? "撤销恢复了预设前的背景颜色。" : "撤销没有恢复原背景颜色。"));
+        AddResult(new("预设操作支持撤销", presetUndo, presetUndo ? "撤销恢复了预设前的背景颜色。" : "撤销没有恢复原背景颜色。"));
         SendKey(0x59, true);
     }
 
@@ -249,25 +288,30 @@ try
     var blurItem = addMenuOpened ? WaitForName("添加模糊遮罩", app.Id, TimeSpan.FromSeconds(3)) : null;
     var oldBlurCount = ReadArrayCount(projectCopyFile, "blurClips");
     var blurAdded = blurItem is not null && TryInvoke(blurItem) && WaitForArrayCount(projectCopyFile, "blurClips", oldBlurCount + 1, TimeSpan.FromSeconds(6));
-    results.Add(new("添加元素菜单创建遮罩轨道", blurAdded, blurAdded ? "已从菜单创建模糊遮罩并写入项目。" : "遮罩命令未创建可保存的遮罩片段。"));
+    AddResult(new("添加元素菜单创建遮罩轨道", blurAdded, blurAdded ? "已从菜单创建模糊遮罩并写入项目。" : "遮罩命令未创建可保存的遮罩片段。"));
     if (blurAdded)
     {
         FocusWindow(window); SendKey(0x5A, true);
         var blurUndo = WaitForArrayCount(projectCopyFile, "blurClips", oldBlurCount, TimeSpan.FromSeconds(5));
-        results.Add(new("遮罩轨道支持撤销", blurUndo, blurUndo ? "撤销移除了刚创建的遮罩片段。" : "撤销没有移除新遮罩片段。"));
+        AddResult(new("遮罩轨道支持撤销", blurUndo, blurUndo ? "撤销移除了刚创建的遮罩片段。" : "撤销没有移除新遮罩片段。"));
         SendKey(0x59, true);
+        var blurRedo = WaitForArrayCount(projectCopyFile, "blurClips", oldBlurCount + 1, TimeSpan.FromSeconds(5));
+        SendKey(0x5A, true);
+        var blurCleanup = WaitForArrayCount(projectCopyFile, "blurClips", oldBlurCount, TimeSpan.FromSeconds(5));
+        AddStep(results, new("遮罩片段重做后恢复测试夹具", blurRedo && blurCleanup,
+            $"重做={blurRedo}，最终数量={ReadArrayCount(projectCopyFile, "blurClips")}，原数量={oldBlurCount}"));
     }
 
     var timeline = FindById(window, "TimelineView");
     var timelineDetail = "未找到 TimelineView。";
     var timelineGesture = timeline is not null && TryMoveFirstZoom(timeline, window, projectCopyFile, app.Id, out timelineDetail);
-    results.Add(new("时间线多轨片段拖动", timelineGesture, timeline is null ? "未找到 TimelineView。" : timelineGesture ? "拖动缩放片段后，片段源时间已更新。" : timelineDetail));
+    AddResult(new("时间线多轨片段拖动", timelineGesture, timeline is null ? "未找到 TimelineView。" : timelineGesture ? "拖动缩放片段后，片段源时间已更新。" : timelineDetail));
     var effectPasteDetail = "未找到 TimelineView。";
     var effectPastePassed = timeline is not null && TryPasteZoomAttributes(timeline, window, projectCopyFile, out effectPasteDetail);
-    results.Add(new("效果属性复制粘贴保留目标时间", effectPastePassed, effectPasteDetail));
+    AddResult(new("效果属性复制粘贴保留目标时间", effectPastePassed, effectPasteDetail));
     var groupDeleteDetail = "未找到 TimelineView。";
     var groupDeletePassed = timeline is not null && TryDeleteZoomGroup(timeline, window, projectCopyFile, out groupDeleteDetail);
-    results.Add(new("时间线多选后成组删除并撤销", groupDeletePassed, groupDeleteDetail));
+    AddResult(new("时间线多选后成组删除并撤销", groupDeletePassed, groupDeleteDetail));
 
     foreach (var effect in new[]
     {
@@ -279,18 +323,18 @@ try
     {
         var detail = timeline is null ? "未找到时间线。" : "";
         var passed = timeline is not null && TryCopyPasteEffectType(timeline, window, projectCopyFile, effect.Item1, effect.Item3, out detail);
-        results.Add(new($"{effect.Item2}完整复制与属性粘贴", passed, detail));
+        AddResult(new($"{effect.Item2}完整复制与属性粘贴", passed, detail));
     }
     var rangeDetail = "未找到 TimelineView。";
     var rangePassed = timeline is not null && TryExportRangeFromTimeline(timeline, window, projectCopyFile, app.Id, out rangeDetail);
-    results.Add(new("I/O 导出范围影响导出时长", rangePassed, rangeDetail));
+    AddResult(new("I/O 导出范围影响导出时长", rangePassed, rangeDetail));
 
     var exportButton = FindById(window, "ExportButton");
     var exportInvoked = exportButton is not null && TryClickPhysical(exportButton);
     var foundExportWindow = exportInvoked ? WaitForWindowName(app.Id, "导出作品", TimeSpan.FromSeconds(5)) : null;
     var exportOpened = foundExportWindow is not null;
     var statusAfterExport = FindById(window, "Status")?.Current.Name ?? "<无状态文本>";
-    results.Add(new("导出窗口可访问", exportOpened, exportOpened ? $"已发现导出窗口：{foundExportWindow!.Current.Name}" : $"找到按钮={exportButton is not null}，物理点击={exportInvoked}，进程窗口=[{string.Join(" | ", FindProcessWindowNames(app.Id))}]，状态栏={statusAfterExport}"));
+    AddResult(new("导出窗口可访问", exportOpened, exportOpened ? $"已发现导出窗口：{foundExportWindow!.Current.Name}" : $"找到按钮={exportButton is not null}，物理点击={exportInvoked}，进程窗口=[{string.Join(" | ", FindProcessWindowNames(app.Id))}]，状态栏={statusAfterExport}"));
     if (exportOpened)
     {
         var exportWindow = WaitForWindowName(app.Id, "导出作品", TimeSpan.FromSeconds(1));
@@ -311,13 +355,13 @@ try
         var selected60 = sixtyOption is not null && TryInvoke(sixtyOption);
         var sixtySummary = exportWindow is null ? null : WaitForNameById(exportWindow, "ExportSummaryFrameRate", name => name == "60 FPS", TimeSpan.FromSeconds(2));
         var exportChoices = allResolutionButtons && allRateButtons && fourKSelected && fourKSummary is not null && hdSelected && hdSummary is not null && selected60 && sixtySummary is not null;
-        results.Add(new("导出选项可访问并更新摘要", exportChoices, $"四种分辨率按钮={allResolutionButtons}，两种帧率按钮={allRateButtons}，4K摘要={fourKSummaryText}，1080p摘要={hdSummaryText}，60FPS摘要={SafeName(sixtySummary)}；控件名称=[{string.Join(" | ", controls.Select(SafeName).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(80))}]"));
+        AddResult(new("导出选项可访问并更新摘要", exportChoices, $"四种分辨率按钮={allResolutionButtons}，两种帧率按钮={allRateButtons}，4K摘要={fourKSummaryText}，1080p摘要={hdSummaryText}，60FPS摘要={SafeName(sixtySummary)}；控件名称=[{string.Join(" | ", controls.Select(SafeName).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct().Take(80))}]"));
         var idleCancel = exportWindow?.FindAll(TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition)
             .Cast<AutomationElement>().FirstOrDefault(x => x.Current.ControlType == ControlType.Button && SafeName(x) == "取消");
         var idleCancelEnabled = idleCancel is not null && idleCancel.Current.IsEnabled;
         var idleCancelClicked = idleCancelEnabled && TryClickPhysical(idleCancel!);
         var exportWindowClosed = idleCancelClicked && WaitForWindowName(app.Id, "导出作品", TimeSpan.FromSeconds(2)) is null;
-        results.Add(new("导出窗口空闲时可关闭", idleCancelEnabled && exportWindowClosed,
+        AddResult(new("导出窗口空闲时可关闭", idleCancelEnabled && exportWindowClosed,
             $"取消按钮启用={idleCancelEnabled}，点击={idleCancelClicked}，窗口关闭={exportWindowClosed}"));
         if (!exportWindowClosed && exportWindow is not null) { FocusWindow(exportWindow); SendAltF4(); }
     }
@@ -327,7 +371,7 @@ try
     SendKey(0x53, true); // Ctrl+S
     Thread.Sleep(800);
     var saved = File.Exists(projectCopyFile) && FrameTrailProjectStoreProbe(projectCopyFile);
-    results.Add(new("保存后项目可重新读取", saved, saved ? "项目 JSON 可解析且媒体相对路径有效。" : "保存后的项目文件无法读取。"));
+    AddResult(new("保存后项目可重新读取", saved, saved ? "项目 JSON 可解析且媒体相对路径有效。" : "保存后的项目文件无法读取。"));
 
     var prefsButton = FindButtonByHint(window, "设置"); var prefsMenuOpened = prefsButton is not null && TryInvoke(prefsButton);
     var prefsMenuItem = prefsMenuOpened ? WaitForName("录制与界面设置…", app.Id, TimeSpan.FromSeconds(3)) : null;
@@ -353,7 +397,7 @@ try
         }
     }
     if (prefsWindow is not null) { FocusWindow(prefsWindow); SendAltF4(); }
-    results.Add(new("预览质量和排除偏好可保存", settingsSaved, settingsSaved ? "设置页将预览宽度写为960、帧率写为60；测试结束会恢复本机原设置文件。" : $"设置窗口={prefsWindow is not null}，预览分辨率控件={prefWidth is not null}，帧率控件={prefFps is not null}，选项={widthSet}/{fpsSet}。"));
+    AddResult(new("预览质量和排除偏好可保存", settingsSaved, settingsSaved ? "设置页将预览宽度写为960、帧率写为60；测试结束会恢复本机原设置文件。" : $"设置窗口={prefsWindow is not null}，预览分辨率控件={prefWidth is not null}，帧率控件={prefFps is not null}，选项={widthSet}/{fpsSet}。"));
 
     app.CloseMainWindow();
     if (!app.WaitForExit(5000)) { app.Kill(entireProcessTree: true); app.WaitForExit(); }
@@ -366,7 +410,7 @@ try
         _ = WaitForProjectTitle(memoWindow, TimeSpan.FromSeconds(10));
         TestMemoPersistence(memoWindow, app!.Id, results);
     }
-    else results.Add(new("备忘录移动、字号与透明度保存重启", false, "重新启动测试项目后无法定位主窗口。"));
+    else AddResult(new("备忘录移动、字号与透明度保存重启", false, "重新启动测试项目后无法定位主窗口。"));
 
     if (app is not null)
     {
@@ -374,28 +418,29 @@ try
         if (!app.WaitForExit(8000)) { app.Kill(entireProcessTree: true); app.WaitForExit(); }
         app.Dispose(); app = null;
     }
+    var expectedReopenState = JsonNode.Parse(File.ReadAllText(projectCopyFile))?.AsObject();
+    var expectedSettings = expectedReopenState?["settings"]?.ToJsonString();
+    var expectedCamera = expectedReopenState?["camera"]?.ToJsonString();
+    var expectedMouseClock = expectedReopenState?["mouseClock"]?.ToJsonString();
     var reopen = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } });
     var reopenedWindow = reopen is null ? null : WaitForWindow(reopen, TimeSpan.FromSeconds(20));
     var reopenedTitle = reopenedWindow is null ? null : WaitForProjectTitle(reopenedWindow, TimeSpan.FromSeconds(10));
-    var reopenedValues = ReadJsonString(projectCopyFile, "camera", "shape") == "circle"
-        && ReadBackground(projectCopyFile).Equals("#202124", StringComparison.OrdinalIgnoreCase)
-        && ReadJsonString(projectCopyFile, "settings", "pointerSmoothing") == "rapid"
-        && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "canvas", "frameScale") - 1.12) < .001
-        && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "canvas", "frameToolbarScale") - 1.08) < .001
-        && Math.Abs(ReadJsonNumber(projectCopyFile, "settings", "canvas", "frameOuterRadius") - 26) < .001
-        && ReadJsonBoolean(projectCopyFile, "settings", "opening", "enabled") == true
+    var reopenedState = JsonNode.Parse(File.ReadAllText(projectCopyFile))?.AsObject();
+    var reopenedValues = reopenedState?["settings"]?.ToJsonString() == expectedSettings
+        && reopenedState?["camera"]?.ToJsonString() == expectedCamera
+        && reopenedState?["mouseClock"]?.ToJsonString() == expectedMouseClock
         && ReadArrayCount(projectCopyFile, "screenMotions") > 0;
     var reopenOkay = reopenedWindow is not null && reopenedTitle is not null && reopenedValues;
-    results.Add(new("保存项目重开并保留面板更改", reopenOkay, reopenedWindow is null ? "关闭后未能重新打开保存的项目。" : $"标题={reopenedTitle?.Current.Name ?? "未加载"}；摄像头形状={ReadJsonString(projectCopyFile,"camera","shape")}，背景={ReadBackground(projectCopyFile)}，开场={ReadJsonBoolean(projectCopyFile,"settings","opening","enabled")}，平滑={ReadJsonString(projectCopyFile,"settings","pointerSmoothing")}，样机比例/顶栏/外圆角={ReadJsonNumber(projectCopyFile,"settings","canvas","frameScale")}/{ReadJsonNumber(projectCopyFile,"settings","canvas","frameToolbarScale")}/{ReadJsonNumber(projectCopyFile,"settings","canvas","frameOuterRadius")}，屏幕3D数量={ReadArrayCount(projectCopyFile,"screenMotions")}。"));
+    AddResult(new("保存项目重开并保留面板更改", reopenOkay, reopenedWindow is null ? "关闭后未能重新打开保存的项目。" : $"标题={reopenedTitle?.Current.Name ?? "未加载"}；关闭前设置与应用场景预设后的最终 JSON 快照一致，3D片段数={ReadArrayCount(projectCopyFile,"screenMotions")}。"));
     if (reopen is not null) { reopen.CloseMainWindow(); if (!reopen.WaitForExit(5000)) reopen.Kill(entireProcessTree: true); reopen.Dispose(); }
 }
 catch (ApplicationErrorDialogException ex)
 {
-    results.Add(new("FrameTrail 错误对话框已中止测试", false, ex.Message));
+    AddResult(new("FrameTrail 错误对话框已中止测试", false, ex.Message));
 }
 catch (Exception ex)
 {
-    results.Add(new("UI 冒烟验收执行", false, ex.ToString()));
+    AddResult(new("UI 冒烟验收执行", false, ex.ToString()));
 }
 finally
 {
@@ -414,9 +459,198 @@ finally
     }, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"UIA_REPORT={reportPath}");
     foreach (var result in results) Console.WriteLine($"{(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}");
-    if (!args.Contains("--effects-only") && !args.Contains("--keep-fixture")) try { Directory.Delete(testRoot, true); } catch { }
+    if (!args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
 }
 return results.Count > 0 && results.All(x => x.Passed) ? 0 : 1;
+
+static void RunNewPanelUiTests(AutomationElement window, Process app, string appPath, string projectFile, List<StepResult> results)
+{
+    var mockupTab = FindRightPanelButton(window, "样机");
+    var openedMockup = mockupTab is not null && TryClickPhysical(mockupTab);
+    var frameCard = openedMockup ? FindButtonByHint(window, "浅色窗口") : null;
+    var frameSelected = frameCard is not null && TryClickPhysical(frameCard);
+    var scale = frameSelected ? WaitForControlName(window, ControlType.Slider, "框体比例", TimeSpan.FromSeconds(3)) : null;
+    var scaleSet = scale is not null && SetRangeValue(scale, 1.12)
+        && WaitForJsonNumber(projectFile, ["settings", "canvas", "frameScale"], 1.12, TimeSpan.FromSeconds(5));
+    var toolbar = scaleSet ? WaitForControlName(window, ControlType.Slider, "顶栏高度", TimeSpan.FromSeconds(3)) : null;
+    var toolbarSet = toolbar is not null && SetRangeValue(toolbar, 1.08)
+        && WaitForJsonNumber(projectFile, ["settings", "canvas", "frameToolbarScale"], 1.08, TimeSpan.FromSeconds(5));
+    var radius = toolbarSet ? WaitForControlName(window, ControlType.Slider, "框体外圆角", TimeSpan.FromSeconds(3)) : null;
+    var radiusSet = radius is not null && SetRangeValue(radius, 26)
+        && WaitForJsonNumber(projectFile, ["settings", "canvas", "frameOuterRadius"], 26, TimeSpan.FromSeconds(5));
+    AddStep(results, new("样机卡片与框体滑杆提交", openedMockup && frameSelected && scaleSet && toolbarSet && radiusSet,
+        $"样机={openedMockup}，卡片={frameSelected}，比例={scaleSet}，顶栏={toolbarSet}，圆角={radiusSet}；JSON=({ReadJsonNumber(projectFile, ["settings", "canvas", "frameScale"])},{ReadJsonNumber(projectFile, ["settings", "canvas", "frameToolbarScale"])},{ReadJsonNumber(projectFile, ["settings", "canvas", "frameOuterRadius"])})"));
+
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var cursor = FindRailButton(window, "光标");
+    var cursorOpened = cursor is not null && TryClickPhysical(cursor);
+    var smoothing = cursorOpened ? WaitForComboByName(window, "移动平滑", TimeSpan.FromSeconds(3)) : null;
+    var smoothingSet = smoothing is not null && SelectComboOption(smoothing, "灵敏", app.Id, 2)
+        && WaitForJsonString(projectFile, ["settings", "pointerSmoothing"], "rapid", TimeSpan.FromSeconds(5));
+    var disclosure = cursorOpened ? FindNamed(window, "时间对齐") : null;
+    var expanded = disclosure is not null && TryExpand(disclosure);
+    var offset = expanded ? WaitForControlName(window, ControlType.Slider, "光标时间偏移", TimeSpan.FromSeconds(3)) : null;
+    var offsetSet = offset is not null && SetRangeValue(offset, 10)
+        && WaitForJsonNumber(projectFile, ["mouseClock", "offsetSeconds"], .01, TimeSpan.FromSeconds(5));
+    var offsetPersists = offsetSet && WaitForControlName(WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window,
+        ControlType.Slider, "光标时间偏移", TimeSpan.FromSeconds(2)) is not null;
+    AddStep(results, new("光标平滑与时间对齐持久化", smoothingSet && offsetPersists,
+        $"平滑={smoothingSet}，分组展开={expanded}，偏移={offsetSet}，重建后可见={offsetPersists}，JSON={ReadJsonString(projectFile, "settings", "pointerSmoothing")}/{ReadJsonNumber(projectFile, ["mouseClock", "offsetSeconds"])}"));
+
+    window = WaitForMainWindow(app.Id, TimeSpan.FromSeconds(3)) ?? window;
+    var openingRail = FindRailButton(window, "开场");
+    var openingOpened = openingRail is not null && TryClickPhysical(openingRail);
+    var enabled = openingOpened ? FindCheckboxContaining(window, "启用全局开场") : null;
+    var isEnabled = false;
+    try { isEnabled = enabled is not null && ((ToggleState)enabled.GetCurrentPropertyValue(TogglePattern.ToggleStateProperty)) == ToggleState.On; } catch { }
+    var projectAlreadyEnabled = ReadJsonBoolean(projectFile, "settings", "opening", "enabled") == true;
+    var toggleClicked = enabled is not null && (projectAlreadyEnabled || TryClickPhysical(enabled, preferAutomationInvoke: false));
+    var toggleSet = toggleClicked
+        && WaitForJsonBoolean(projectFile, ["settings", "opening", "enabled"], true, TimeSpan.FromSeconds(5));
+    var openingCard = toggleSet ? FindButtonByHint(window, "放大入场") : null;
+    var openingSet = openingCard is not null && TryClickPhysical(openingCard)
+        && WaitForJsonString(projectFile, ["settings", "opening", "preset"], "zoomUp", TimeSpan.FromSeconds(5));
+    AddStep(results, new("开场启用与预设卡片提交", openingOpened && toggleSet && openingSet,
+        $"面板={openingOpened}，复选框={enabled is not null}，原值={isEnabled}，点击/已启用={toggleSet}，预设={openingSet}，JSON={ReadJsonBoolean(projectFile, "settings", "opening", "enabled")}/{ReadJsonString(projectFile, "settings", "opening", "preset")}"));
+
+    app.CloseMainWindow();
+    if (!app.WaitForExit(5000)) app.Kill(entireProcessTree: true);
+    using var reopened = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectFile } });
+    var reopenedWindow = reopened is null ? null : WaitForWindow(reopened, TimeSpan.FromSeconds(20));
+    var reopenedTitle = reopenedWindow is null ? null : WaitForProjectTitle(reopenedWindow, TimeSpan.FromSeconds(10));
+    var persisted = reopenedWindow is not null && reopenedTitle is not null
+        && Math.Abs(ReadJsonNumber(projectFile, "settings", "canvas", "frameScale") - 1.12) < .001
+        && Math.Abs(ReadJsonNumber(projectFile, "settings", "canvas", "frameToolbarScale") - 1.08) < .001
+        && Math.Abs(ReadJsonNumber(projectFile, "settings", "canvas", "frameOuterRadius") - 26) < .001
+        && ReadJsonString(projectFile, "settings", "pointerSmoothing") == "rapid"
+        && Math.Abs(ReadJsonNumber(projectFile, "mouseClock", "offsetSeconds") - .01) < .001
+        && ReadJsonBoolean(projectFile, "settings", "opening", "enabled") == true
+        && ReadJsonString(projectFile, "settings", "opening", "preset") == "zoomUp";
+    AddStep(results, new("新面板设置保存并重开", persisted,
+        $"窗口={reopenedWindow is not null}，标题={reopenedTitle?.Current.Name}，样机/指针/开场值已按 JSON 复核。"));
+    if (reopened is not null) { reopened.CloseMainWindow(); if (!reopened.WaitForExit(5000)) reopened.Kill(entireProcessTree: true); }
+}
+
+static void RunRelinkOnly(string appPath, string sourceProject, string isolatedProject, List<StepResult> results)
+{
+    var projectDirectory = Path.GetDirectoryName(isolatedProject)!;
+    var originalDirectory = Path.GetDirectoryName(sourceProject)!;
+    var document = JsonNode.Parse(File.ReadAllBytes(isolatedProject))?.AsObject()
+        ?? throw new InvalidDataException("测试项目 JSON 无效。");
+    var originalRelative = document["mediaPath"]?.GetValue<string>()
+        ?? throw new InvalidDataException("测试项目缺少主素材路径。");
+    var missingCopy = ResolveProjectAsset(projectDirectory, originalRelative);
+    var originalMedia = ResolveProjectAsset(originalDirectory, originalRelative);
+    if (!File.Exists(originalMedia) || !File.Exists(missingCopy)) throw new FileNotFoundException("重定位 fixture 的原始或复制素材不存在。", originalMedia);
+    var originalHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(originalMedia)));
+    File.Delete(missingCopy);
+    var app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", isolatedProject } })
+        ?? throw new InvalidOperationException("无法启动 FrameTrail。");
+    try
+    {
+        var dialog = WaitForWindowName(app.Id, "素材缺失：请选择原视频", TimeSpan.FromSeconds(20));
+        var dialogControls = "";
+        var selected = dialog is not null && SetNativeOpenDialogPath(dialog, originalMedia, out dialogControls);
+        if (dialog is null) dialogControls = "对话框未出现";
+        var dialogClosed = selected && WaitForWindowClosed(app.Id, "素材缺失：请选择原视频", TimeSpan.FromSeconds(15));
+        var window = dialogClosed ? WaitForMainWindow(app.Id, TimeSpan.FromSeconds(20)) : null;
+        var title = window is null ? null : WaitForProjectTitle(window, TimeSpan.FromSeconds(15));
+        var updatedRelative = ReadJsonString(isolatedProject, "mediaPath");
+        var updatedAsset = updatedRelative is null ? null : ResolveProjectAsset(projectDirectory, updatedRelative);
+        var storedInsideProject = updatedRelative is not null
+            && updatedRelative.StartsWith("media/relocated-", StringComparison.OrdinalIgnoreCase)
+            && updatedAsset is not null && File.Exists(updatedAsset)
+            && Path.GetFullPath(updatedAsset).StartsWith(Path.GetFullPath(Path.Combine(projectDirectory, "media")) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        var copiedHash = storedInsideProject ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(updatedAsset!))) : null;
+        var originalUnchanged = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(originalMedia))) == originalHash;
+        var previewControl = window is null ? null : FindById(window, "PreviewImage");
+        var previewPresent = previewControl is not null && !previewControl.Current.IsOffscreen;
+        var decoded = storedInsideProject && DecodeFrameWithBundledFfmpeg(appPath, updatedAsset!);
+        AddStep(results, new("主素材缺失后可重定位到工程内并解码", dialog is not null && selected && dialogClosed && title is not null && storedInsideProject && copiedHash == originalHash && originalUnchanged && previewPresent && decoded,
+            $"缺失对话框={dialog is not null}，选回原素材={selected}，对话框关闭={dialogClosed}，项目已加载={title is not null}，mediaPath={updatedRelative}，副本哈希匹配={copiedHash == originalHash}，原素材未改={originalUnchanged}，预览控件可见={previewPresent}，FFmpeg解码={decoded}；对话框控件={dialogControls}；fixture保留于 {projectDirectory}"));
+
+        if (window is not null)
+        {
+            app.CloseMainWindow();
+            if (!app.WaitForExit(5000)) { app.Kill(entireProcessTree: true); app.WaitForExit(); }
+            app.Dispose();
+            app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", isolatedProject } })
+                ?? throw new InvalidOperationException("无法重新启动 FrameTrail 验证重开。");
+            var reopenedDialog = WaitForWindowName(app.Id, "素材缺失：请选择原视频", TimeSpan.FromSeconds(3));
+            var reopened = reopenedDialog is null ? WaitForMainWindow(app.Id, TimeSpan.FromSeconds(20)) : null;
+            var reopenedTitle = reopened is null ? null : WaitForProjectTitle(reopened, TimeSpan.FromSeconds(15));
+            var reopenedPreview = reopened is not null && FindById(reopened, "PreviewImage") is not null;
+            var relinkPersists = reopenedTitle is not null && reopenedPreview && reopenedDialog is null
+                && ReadJsonString(isolatedProject, "mediaPath") == updatedRelative
+                && updatedAsset is not null && File.Exists(updatedAsset);
+            AddStep(results, new("重新打开重定位项目仍使用工程内素材", relinkPersists,
+                $"重新打开={reopenedTitle is not null}，再次弹缺失框={reopenedDialog is not null}，预览控件={reopenedPreview}，相对路径={ReadJsonString(isolatedProject, "mediaPath")}。"));
+        }
+    }
+    finally
+    {
+        if (!app.HasExited) { app.CloseMainWindow(); if (!app.WaitForExit(3000)) app.Kill(entireProcessTree: true); }
+        app.Dispose();
+    }
+}
+
+static string ResolveProjectAsset(string projectDirectory, string relative)
+{
+    var normalized = relative.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+    return Path.GetFullPath(Path.Combine(projectDirectory, normalized));
+}
+
+static bool SetNativeOpenDialogPath(AutomationElement dialog, string path, out string diagnostic)
+{
+    var details = new List<string>();
+    try
+    {
+        var edits = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit)).Cast<AutomationElement>().ToArray();
+        details.AddRange(edits.Select(x => $"Edit[{SafeName(x)}|{SafeAutomationId(x)}]"));
+        var fileName = edits.FirstOrDefault(x => SafeAutomationId(x) == "1148")
+            ?? edits.FirstOrDefault(x => SafeName(x).Contains("文件名", StringComparison.OrdinalIgnoreCase) || SafeName(x).Contains("File name", StringComparison.OrdinalIgnoreCase));
+        if (fileName is null) { diagnostic = string.Join(";", details); return false; }
+        var value = (ValuePattern)fileName.GetCurrentPattern(ValuePattern.Pattern);
+        value.SetValue(path);
+        details.Add("ValueSet=" + (value.Current.Value == path));
+        if (value.Current.Value != path) { diagnostic = string.Join(";", details); return false; }
+        details.AddRange(dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>().Select(x => $"Button[{SafeName(x)}|{SafeAutomationId(x)}]"));
+        var open = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()
+            .FirstOrDefault(x => SafeAutomationId(x) == "1")
+            ?? dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)).Cast<AutomationElement>()
+                .FirstOrDefault(x => SafeName(x).Contains("打开", StringComparison.OrdinalIgnoreCase) || SafeName(x).Equals("Open", StringComparison.OrdinalIgnoreCase));
+        if (open is null) { diagnostic = string.Join(";", details) + ";未找到Open按钮"; return false; }
+        var invocation = (InvokePattern)open.GetCurrentPattern(InvokePattern.Pattern);
+        var invokeTask = Task.Run(invocation.Invoke);
+        var invoked = invokeTask.Wait(TimeSpan.FromSeconds(5));
+        if (invoked) invokeTask.GetAwaiter().GetResult();
+        diagnostic = string.Join(";", details) + ";FileNameId=" + SafeAutomationId(fileName) + ";OpenId=" + SafeAutomationId(open) + ";InvokeCompleted=" + invoked;
+        return invoked;
+    }
+    catch (Exception ex) { diagnostic = string.Join(";", details) + ";exception=" + ex.GetType().Name + ":" + ex.Message; return false; }
+}
+
+static bool DecodeFrameWithBundledFfmpeg(string appPath, string mediaPath)
+{
+    var directory = Path.GetDirectoryName(appPath)!;
+    var candidates = new[] { Path.Combine(directory, "tools", "ffmpeg", "ffmpeg.exe"), Path.Combine(directory, "ffmpeg.exe"), Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ffmpeg-bundle-probe", "tools", "ffmpeg", "ffmpeg.exe") };
+    var ffmpeg = candidates.FirstOrDefault(File.Exists);
+    if (ffmpeg is null) return false;
+    try
+    {
+        var process = Process.Start(new ProcessStartInfo(ffmpeg)
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardError = true,
+            ArgumentList = { "-v", "error", "-i", mediaPath, "-frames:v", "1", "-f", "null", "NUL" }
+        });
+        if (process is null) return false;
+        if (!process.WaitForExit(15000)) { process.Kill(entireProcessTree: true); return false; }
+        return process.ExitCode == 0;
+    }
+    catch { return false; }
+}
 
 static AutomationElement? WaitForWindow(Process process, TimeSpan timeout)
 {
@@ -621,7 +855,10 @@ static bool TryInvoke(AutomationElement element)
 {
     try
     {
-        ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
+        var invocation = Task.Run(() =>
+            ((InvokePattern)element.GetCurrentPattern(InvokePattern.Pattern)).Invoke());
+        if (!invocation.Wait(TimeSpan.FromSeconds(5))) return false;
+        invocation.GetAwaiter().GetResult();
         var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
         Thread.Sleep(220);
         ThrowIfApplicationErrorDialog(processId);
@@ -631,16 +868,29 @@ static bool TryInvoke(AutomationElement element)
     catch { return false; }
 }
 static string SafeName(AutomationElement? element) { try { return element?.Current.Name ?? ""; } catch { return ""; } }
+static string SafeAutomationId(AutomationElement? element) { try { return element?.Current.AutomationId ?? ""; } catch { return ""; } }
 static bool TryExpand(AutomationElement element)
 {
-    try { ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand(); return true; } catch { return false; }
+    try
+    {
+        var expansion = Task.Run(() => ((ExpandCollapsePattern)element.GetCurrentPattern(ExpandCollapsePattern.Pattern)).Expand());
+        if (!expansion.Wait(TimeSpan.FromSeconds(5))) return false;
+        expansion.GetAwaiter().GetResult();
+        return true;
+    }
+    catch { return false; }
 }
 static bool SetRangeValue(AutomationElement element, double value)
 {
     try
     {
-        var range = (RangeValuePattern)element.GetCurrentPattern(RangeValuePattern.Pattern);
-        range.SetValue(Math.Clamp(value, range.Current.Minimum, range.Current.Maximum));
+        var setting = Task.Run(() =>
+        {
+            var range = (RangeValuePattern)element.GetCurrentPattern(RangeValuePattern.Pattern);
+            range.SetValue(Math.Clamp(value, range.Current.Minimum, range.Current.Maximum));
+        });
+        if (!setting.Wait(TimeSpan.FromSeconds(5))) return false;
+        setting.GetAwaiter().GetResult();
         return true;
     }
     catch { return false; }
@@ -649,19 +899,6 @@ static bool TrySelect(AutomationElement element)
 {
     try { ((SelectionItemPattern)element.GetCurrentPattern(SelectionItemPattern.Pattern)).Select(); return true; }
     catch { return TryInvoke(element); }
-}
-static bool TryToggle(AutomationElement element)
-{
-    try
-    {
-        ((TogglePattern)element.GetCurrentPattern(TogglePattern.Pattern)).Toggle();
-        var processId = (int)element.GetCurrentPropertyValue(AutomationElement.ProcessIdProperty);
-        Thread.Sleep(220);
-        ThrowIfApplicationErrorDialog(processId);
-        return true;
-    }
-    catch (ApplicationErrorDialogException) { throw; }
-    catch { return TryClickPhysical(element, preferAutomationInvoke: false); }
 }
 static bool SelectComboOption(AutomationElement combo, string option, int processId, int fallbackDown)
 {
@@ -753,7 +990,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var refreshedMain = WaitForMainWindow(processId, TimeSpan.FromSeconds(3));
     if (refreshedMain is null)
     {
-        results.Add(new("备忘录移动、字号与透明度保存重启", false, "主窗口在关闭设置对话框后不可重新定位。"));
+        AddStep(results, new("备忘录移动、字号与透明度保存重启", false, "主窗口在关闭设置对话框后不可重新定位。"));
         return;
     }
     mainWindow = refreshedMain;
@@ -767,7 +1004,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var memo = openedMemo ? WaitForWindowName(processId, "本机备忘录", TimeSpan.FromSeconds(4)) : null;
     if (memo is null)
     {
-        results.Add(new("备忘录位置、字号与透明度重开", false, $"启动按钮={launcher is not null}，启动点击={openedRecorder}，录制工具窗口={recorderWindow is not null}，备忘录按钮={memoButton is not null}，备忘录点击={openedMemo}，窗口={openedMemo}。"));
+        AddStep(results, new("备忘录位置、字号与透明度重开", false, $"启动按钮={launcher is not null}，启动点击={openedRecorder}，录制工具窗口={recorderWindow is not null}，备忘录按钮={memoButton is not null}，备忘录点击={openedMemo}，窗口={openedMemo}。"));
         if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
         return;
     }
@@ -791,7 +1028,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var reopened = memoButton is not null && TryClickPhysical(memoButton) ? WaitForWindowName(processId, "本机备忘录", TimeSpan.FromSeconds(4)) : null;
     if (reopened is null)
     {
-        results.Add(new("备忘录位置、字号与透明度重开", false, $"文本={textSet}，字号={sizeSet}，透明度={opacitySet}，移动={movedWindow}；重开窗口未出现。"));
+        AddStep(results, new("备忘录位置、字号与透明度重开", false, $"文本={textSet}，字号={sizeSet}，透明度={opacitySet}，移动={movedWindow}；重开窗口未出现。"));
         if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
         return;
     }
@@ -805,7 +1042,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     var opacityOkay = ranges.Length > 1 && Math.Abs(((RangeValuePattern)ranges[1].GetCurrentPattern(RangeValuePattern.Pattern)).Current.Value - .61) < .02;
     var positionOkay = !afterMove.IsEmpty && !reopenedRect.IsEmpty && Math.Abs(afterMove.Left - reopenedRect.Left) < 16 && Math.Abs(afterMove.Top - reopenedRect.Top) < 16;
     var all = textSet && sizeSet && opacitySet && movedWindow && textOkay && sizeOkay && opacityOkay && positionOkay;
-    results.Add(new("备忘录移动、字号与透明度保存重启", all, $"文本={textOkay}，字号={sizeOkay}，透明度={opacityOkay}，位置={positionOkay}；首次移动={movedWindow}，重开坐标差=({reopenedRect.Left-afterMove.Left:0},{reopenedRect.Top-afterMove.Top:0})。"));
+    AddStep(results, new("备忘录移动、字号与透明度保存重启", all, $"文本={textOkay}，字号={sizeOkay}，透明度={opacityOkay}，位置={positionOkay}；首次移动={movedWindow}，重开坐标差=({reopenedRect.Left-afterMove.Left:0},{reopenedRect.Top-afterMove.Top:0})。"));
     FocusWindow(reopened); SendAltF4();
     if (recorderWindow is not null) { FocusWindow(recorderWindow); SendKey(0x1B, false); }
 }
@@ -822,7 +1059,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
             throw new InvalidOperationException("新建预设的名称对话框未完成。");
         ownedPresetFile = WaitForPresetFile(name, TimeSpan.FromSeconds(5));
         var saved = ownedPresetFile is not null;
-        results.Add(new("本机场景预设可新建", saved, saved ? "本机预设目录中出现独立 manifest。" : $"未发现新建预设 manifest；输入名称={name}；现有名称=[{string.Join(", ", EnumeratePresetNames())}]。"));
+        AddStep(results, new("本机场景预设可新建", saved, saved ? "本机预设目录中出现独立 manifest。" : $"未发现新建预设 manifest；输入名称={name}；现有名称=[{string.Join(", ", EnumeratePresetNames())}]。"));
         if (!saved) return;
 
         var crossProjectApplied = false;
@@ -899,7 +1136,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         catch (ApplicationErrorDialogException) { throw; }
         catch (Exception ex) { crossProjectDetail = "跨项目素材检查异常：" + ex.Message; }
         FocusWindow(mainWindow);
-        results.Add(new("本机预设跨项目复制背景素材", crossProjectApplied, crossProjectDetail));
+        AddStep(results, new("本机预设跨项目复制背景素材", crossProjectApplied, crossProjectDetail));
 
         stage = "重命名预设";
         if (!OpenPresetMenu(mainWindow)) throw new InvalidOperationException("重命名前无法打开场景预设菜单。");
@@ -910,7 +1147,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         var renamed = rename is not null && TryInvoke(rename) && CompleteTextPrompt(processId, "重命名本机预设", renamedName);
         var renamedFile = renamed ? WaitForPresetFile(renamedName, TimeSpan.FromSeconds(5)) : null;
         if (renamedFile is not null) ownedPresetFile = renamedFile;
-        results.Add(new("本机场景预设可改名", renamed && renamedFile is not null, renamed && renamedFile is not null ? "manifest 名称已更新，预设资产目录保持原位。" : $"子菜单={submenuOpened}，重命名命令={rename is not null}。"));
+        AddStep(results, new("本机场景预设可改名", renamed && renamedFile is not null, renamed && renamedFile is not null ? "manifest 名称已更新，预设资产目录保持原位。" : $"子菜单={submenuOpened}，重命名命令={rename is not null}。"));
         if (!renamed || renamedFile is null) return;
 
         stage = "切换预设覆盖的对照样式";
@@ -929,7 +1166,7 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         if (!confirmed) throw new InvalidOperationException($"覆盖确认未完成，确认按钮={yes is not null}。");
         using var manifest = JsonDocument.Parse(ReadSharedBytes(renamedFile));
         var overwritten = changedStyle && confirmed && ReadNumberOrString(manifest.RootElement, "settings", "background") == "#F4F6F6";
-        results.Add(new("本机场景预设可安全覆盖", overwritten, $"当前样式已变更={changedStyle}，确认={confirmed}，新背景={ReadNumberOrString(manifest.RootElement, "settings", "background")}；原目录在新版本提交前保留用于回滚。"));
+        AddStep(results, new("本机场景预设可安全覆盖", overwritten, $"当前样式已变更={changedStyle}，确认={confirmed}，新背景={ReadNumberOrString(manifest.RootElement, "settings", "background")}；原目录在新版本提交前保留用于回滚。"));
 
         stage = "应用已覆盖预设";
         if (!OpenPresetMenu(mainWindow)) throw new InvalidOperationException("应用预设前无法打开场景预设菜单。");
@@ -942,10 +1179,10 @@ static void TestCustomPresetLifecycle(AutomationElement mainWindow, int processI
         var apply = submenuOpened ? WaitForMenuItem(processId, "应用此预设", TimeSpan.FromSeconds(2)) : null;
         var applied = apply is not null && TryInvoke(apply) && WaitForBackground(projectFile, "#F4F6F6", TimeSpan.FromSeconds(4));
         if (!applied) { FocusWindow(mainWindow); SendKey(0x1B, false); }
-        results.Add(new("本机预设可应用到项目", applied, applied ? "项目先切换到深色，再由本机预设恢复为浅色，写入行为已验证。" : $"先切换深色={darkApplied}，应用命令={apply is not null}，项目背景={ReadBackground(projectFile)}。"));
+        AddStep(results, new("本机预设可应用到项目", applied, applied ? "项目先切换到深色，再由本机预设恢复为浅色，写入行为已验证。" : $"先切换深色={darkApplied}，应用命令={apply is not null}，项目背景={ReadBackground(projectFile)}。"));
     }
     catch (ApplicationErrorDialogException) { throw; }
-    catch (Exception ex) { results.Add(new("本机预设生命周期 UIA", false, $"阶段={stage}；{ex.Message}")); }
+    catch (Exception ex) { AddStep(results, new("本机预设生命周期 UIA", false, $"阶段={stage}；{ex.Message}")); }
     finally
     {
         DismissOwnedDialog(processId, "覆盖本机预设");
@@ -1380,7 +1617,7 @@ static void RunEffectUiTests(AutomationElement window, string projectFile, strin
         var timeline = FindById(window, "TimelineView");
         var detail = "未找到时间线。";
         var passed = timeline is not null && TryCopyPasteEffectType(timeline, window, projectFile, effect.Item1, effect.Item3, out detail);
-        results.Add(new($"{effect.Item2}完整复制与属性粘贴", passed, detail));
+        AddStep(results, new($"{effect.Item2}完整复制与属性粘贴", passed, detail));
     }
 }
 
@@ -1525,8 +1762,12 @@ static bool TryExportRangeFromTimeline(AutomationElement timeline,AutomationElem
         if(!OpenTimelineContextAt(timeline,window,projectFile,.5)){diagnostic="无法打开清除范围菜单。";return false;}
         var clear=WaitForName("清除导出范围",processId,TimeSpan.FromSeconds(3));if(clear is null||!TryInvoke(clear)){diagnostic="2秒范围已显示，但右键菜单没有清除命令。";return false;}
         exp=FindById(window,"ExportButton");if(exp is null||!TryClickPhysical(exp)){diagnostic="清除后无法重新打开导出窗口。";return false;}export=WaitForWindowName(processId,"导出作品",TimeSpan.FromSeconds(4));if(export is null){diagnostic="清除后导出窗口未出现。";return false;}
-        names=export.FindAll(TreeScope.Descendants,System.Windows.Automation.Condition.TrueCondition).Cast<AutomationElement>().Select(SafeName).ToArray();var fullDuration=names.Contains("0:03");FocusWindow(export);SendAltF4();
-        diagnostic=fullDuration?"I/O选择2秒区间后导出摘要显示0:02；清除区间后显示完整0:03。":$"范围清除后的时长不符，文本=[{string.Join(" | ",names.Where(x=>x.Contains(':')))}]。";return fullDuration;
+        names=export.FindAll(TreeScope.Descendants,System.Windows.Automation.Condition.TrueCondition).Cast<AutomationElement>().Select(SafeName).ToArray();
+        using var fullDoc=JsonDocument.Parse(ReadSharedBytes(projectFile));
+        var fullSeconds=fullDoc.RootElement.GetProperty("timeline").GetProperty("duration").GetDouble();
+        var expectedDuration=TimeSpan.FromSeconds(fullSeconds).ToString(@"m\:ss");
+        var fullDuration=names.Contains(expectedDuration);FocusWindow(export);SendAltF4();
+        diagnostic=fullDuration?$"I/O选择2秒区间后导出摘要显示0:02；清除区间后显示完整{expectedDuration}。":$"范围清除后预期时长{expectedDuration}，摘要文本=[{string.Join(" | ",names.Where(x=>x.Contains(':')))}]。";return fullDuration;
     }
     catch(Exception ex){diagnostic=ex.Message;return false;}
 }
@@ -1647,6 +1888,23 @@ static void CaptureWindow(AutomationElement window, string path)
     finally { NativeMethods.SelectObject(memory, previous); NativeMethods.DeleteObject(bitmap); NativeMethods.DeleteDC(memory); NativeMethods.ReleaseWindowDC(IntPtr.Zero, source); }
 }
 
+static void AddStep(List<StepResult> results, StepResult result)
+{
+    results.Add(result);
+    SmokeProgress.Append(result);
+}
+
+static class SmokeProgress
+{
+    public static string Path = string.Empty;
+    public static void Append(StepResult result)
+    {
+        if (string.IsNullOrWhiteSpace(Path)) return;
+        var line = $"{DateTimeOffset.Now:O} {(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}{Environment.NewLine}";
+        File.AppendAllText(Path, line);
+    }
+}
+
 record StepResult(string Name, bool Passed, string Detail);
 sealed class ApplicationErrorDialogException(string message) : Exception(message);
 
@@ -1678,4 +1936,3 @@ static class NativeMethods
 }
 struct PointNative { public int X, Y; }
 struct RectNative { public int Left, Top, Right, Bottom; }
-

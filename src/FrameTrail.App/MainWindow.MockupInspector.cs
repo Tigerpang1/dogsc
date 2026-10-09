@@ -18,7 +18,12 @@ public partial class MainWindow
                 ScreenFrameKind.None => "无", ScreenFrameKind.WindowLight => "浅色窗口",
                 ScreenFrameKind.WindowDark => "深色窗口", ScreenFrameKind.BrowserLight => "浅色浏览器",
                 ScreenFrameKind.BrowserDark => "深色浏览器", ScreenFrameKind.Phone => "手机", _ => "平板"
-            }, "window")), value => ApplyEdit(p => CanvasSettingsFor(p).Frame = value),
+            }, "window")), value => ApplyEdit(p =>
+            {
+                var current = CanvasSettingsFor(p);
+                current.Frame = value;
+                ResetMockupDimensions(current);
+            }),
             columns: 2, preview: BuildMockupPreview);
         if (canvas.Frame == ScreenFrameKind.None) return;
         Number("框体比例", canvas.FrameScale, .6, 1.6, value => ApplyEdit(p => CanvasSettingsFor(p).FrameScale = value), "×");
@@ -43,8 +48,16 @@ public partial class MainWindow
         ActionButton("恢复样机默认尺寸", () => ApplyEdit(p =>
         {
             var current = CanvasSettingsFor(p);
-            current.FrameScale = 1; current.FrameToolbarScale = 1; current.FrameOuterRadius = null;
+            ResetMockupDimensions(current);
         }));
+    }
+
+    private static void ResetMockupDimensions(CanvasSettings canvas)
+    {
+        canvas.FrameScale = canvas.Frame == ScreenFrameKind.Phone ? .9 : 1;
+        // This is a multiplier of the renderer's per-style header height.
+        canvas.FrameToolbarScale = 1;
+        canvas.FrameOuterRadius = null;
     }
 
     private FrameworkElement BuildMockupPreview(ScreenFrameKind kind)

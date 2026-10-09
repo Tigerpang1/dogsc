@@ -197,7 +197,8 @@ public sealed class GpuFrameRenderer : IDisposable
         var header = constants.FrameStyle.X;
         var cardHalfHeight = halfHeight + header * .5f;
         var cardPointY = pY + header * .5f;
-        var cardRadius = Math.Max(constants.Style2.W, radius + constants.FrameStyle.W);
+        var desktopChrome = constants.FrameStyle.Y is > .5f and < 4.5f;
+        var cardRadius = desktopChrome ? constants.Style2.W : radius + constants.FrameStyle.W;
         var cardQx = Math.Abs(pX) - halfWidth + cardRadius;
         var cardQy = Math.Abs(cardPointY) - cardHalfHeight + cardRadius;
         var cardOutsideX = Math.Max(cardQx, 0); var cardOutsideY = Math.Max(cardQy, 0);

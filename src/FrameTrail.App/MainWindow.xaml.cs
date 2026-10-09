@@ -45,6 +45,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
     private bool protectiveStop;
     private bool recordingFinalizing;
+    private bool recordingFaultHandled;
     private long recordingStart;
     private record TargetItem(string Name, CaptureTarget Target);
     private record ClipItem(Guid Id, string Title, string Detail, BitmapSource? Thumbnail);
@@ -65,10 +66,18 @@ public partial class MainWindow : Window
         capture.ErrorOccurred += (_, error) => Dispatcher.BeginInvoke(() => { Status.Text = "录制提示：" + error.Message; App.Log(error.Exception ?? new Exception(error.Message)); });
         trackCapture.ErrorOccurred += (_,error)=>Dispatcher.BeginInvoke(async()=>{App.Log(error.Exception??new Exception(error.Message));if(!recordingFinalizing&&capture.State is CaptureState.Recording or CaptureState.Paused)await Guard(StopRecording);Status.Text="独立轨道录制中断，已保留可读素材："+error.Message;});
         capture.RecordingCompleted += result=>Dispatcher.BeginInvoke(async()=>{if(recordingFinalizing||recordingFolder==null)return;recordingFinalizing=true;try{await Guard(()=>CompleteRecording(result));}finally{recordingFinalizing=false;}});
-        capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(() =>
+        capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(async () =>
         {
             if (state.State == CaptureState.Recording && recordingStart==0) recordingStart = state.StopwatchTicks;
-            if (state.State == CaptureState.Faulted) { recordingGuard.Stop(); RecordButton.Content = "●  重新录制"; RecordButton.IsEnabled = true; recordingBar?.Close(); recordingBar = null; }
+            if (state.State == CaptureState.Faulted)
+            {
+                recordingGuard.Stop();
+                if (recordingFolder != null && recordingStart > 0 && !recordingFaultHandled)
+                {
+                    recordingFaultHandled = true;
+                    if (!recordingFinalizing) await Guard(StopRecording);
+                }
+            }
         });
         playbackTimer.Tick += (_, _) => { if (!playing) return; refreshing = true; Playhead.Value = Math.Min(Player.Position.TotalSeconds, Playhead.Maximum); refreshing = false; UpdateTime(); };
     }
@@ -170,7 +179,7 @@ public partial class MainWindow : Window
         try
         {
             if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
-            recordingStart=0; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording), async()=>await Guard(ToggleRecordingPause)); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
+            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, async () => await Guard(StopRecording), async()=>await Guard(ToggleRecordingPause)); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
         finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
@@ -185,7 +194,38 @@ public partial class MainWindow : Window
     private async Task StopRecording()
     {
         if(recordingFinalizing)return;recordingFinalizing=true;
-        try{var result=await capture.StopAsync();await CompleteRecording(result);}finally{recordingFinalizing=false;}
+        recordingGuard.Stop();
+        RecordButton.IsEnabled = false;
+        try
+        {
+            var result = await capture.StopAsync();
+            await CompleteRecording(result);
+        }
+        catch (Exception error)
+        {
+            recordingFaultHandled = true;
+            var tracks = await StopAdditionalTracks();
+            if (recordingFolder != null)
+            {
+                try
+                {
+                    if (tracks.Count > 0)
+                        await File.WriteAllTextAsync(Path.Combine(recordingFolder, "independent-tracks-result.json"), JsonSerializer.Serialize(tracks, new JsonSerializerOptions { WriteIndented = true }));
+                    recordingTrackWarnings.Add("主录制未能完成：" + error.Message);
+                    await File.WriteAllLinesAsync(Path.Combine(recordingFolder, "recording-warnings.txt"), recordingTrackWarnings);
+                }
+                catch (Exception journalError) { App.Log(journalError); }
+            }
+            throw new InvalidOperationException("录制意外结束，已停止独立轨道并保留原素材。请在录制条的保存位置菜单中使用“恢复未完成录制…”，选择此目录：\n" + recordingFolder, error);
+        }
+        finally
+        {
+            NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle, 0);
+            recordingBar?.Close(); recordingBar = null;
+            RecordButton.Content = "开始录制";
+            RecordButton.IsEnabled = true;
+            recordingFinalizing = false;
+        }
     }
     private async Task CompleteRecording(RecordingResult result)
     {
@@ -194,9 +234,14 @@ public partial class MainWindow : Window
         RecordButton.IsEnabled = false;
         try
         {
-            var extraTracks=await StopAdditionalTracks(); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "开始录制";
+            var extraTracks=await StopAdditionalTracks(); recordingTrackWarnings.AddRange(result.Warnings); recordingBar?.Close(); recordingBar = null; RecordButton.Content = "开始录制";
+            // Keep pause/timing records even if validating the main video fails below.
+            await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "independent-tracks-result.json"), JsonSerializer.Serialize(extraTracks, new JsonSerializerOptions { WriteIndented = true }));
             await File.WriteAllTextAsync(Path.Combine(recordingFolder!, "capture-result.json"), JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true }));
             var info = await MediaTools.ProbeAsync(result.OutputPath);
+            if (info.Width < 1 || info.Height < 1 || !double.IsFinite(info.Duration) || info.Duration <= 0)
+                throw new InvalidDataException("录制文件没有可用的视频时长。");
+            await MediaTools.DecodeFrameAsync(result.OutputPath, 0, 16, 16, CancellationToken.None);
             var created = MakeProject("media/screen.mp4", info);
             if (result.InputEventsPath is not null && File.Exists(result.InputEventsPath))
             {
@@ -215,8 +260,16 @@ public partial class MainWindow : Window
             await AttachRecordedTracks(created,result,extraTracks);
             created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
             var path = Path.Combine(recordingFolder!, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
+            await OpenProject(path);
             var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
-            await OpenProject(path); Status.Text = (recordingTrackWarnings.Count>0?$"录制已保留，有 {recordingTrackWarnings.Count} 项素材警告，详情见 recording-warnings.txt。 ":"")+$"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
+            Status.Text = (recordingTrackWarnings.Count>0?$"录制已保留，有 {recordingTrackWarnings.Count} 项素材警告，详情见 recording-warnings.txt。 ":"")+$"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
+        }
+        catch (Exception error)
+        {
+            recordingTrackWarnings.Add("录制素材未能完成项目验证：" + error.Message);
+            try { await File.WriteAllLinesAsync(Path.Combine(recordingFolder!, "recording-warnings.txt"), recordingTrackWarnings); }
+            catch (Exception journalError) { App.Log(journalError); }
+            throw new InvalidOperationException("录制素材未通过完整验证，原文件与恢复记录保留在：\n" + recordingFolder + "\n可从录制条保存位置菜单选择“恢复未完成录制…”。", error);
         }
         finally { RecordButton.IsEnabled = true; }
     }

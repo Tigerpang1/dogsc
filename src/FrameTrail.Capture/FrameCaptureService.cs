@@ -35,6 +35,8 @@ public sealed class FrameCaptureService : IFrameCaptureService
     private int _windowTargetLost;
     private RecordingResult? _latestCompletedResult;
     private FfmpegDesktopRecorder? _desktopRecorder;
+    private Exception? _backendFailure;
+    private TaskCompletionSource<Exception>? _backendFailureSignal;
 
     public CaptureState State => _state;
     public RecordingResult? LatestCompletedResult => _latestCompletedResult;
@@ -106,6 +108,8 @@ public sealed class FrameCaptureService : IFrameCaptureService
             await DisposeRecordingComponentsAsync().ConfigureAwait(false);
             _request = request;
             _warnings.Clear();
+            _backendFailure = null;
+            _backendFailureSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _pausedIntervals.Clear(); _pauseStartTicks = 0;
             _firstFrameObservedTicks = 0; _firstFrameSystemTimestampUnixMilliseconds = 0;
             _firstFrameNumber = 0; _firstFrameSeen = 0;
@@ -207,8 +211,9 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 try { RecordingCompleted?.Invoke(desktopResult); } catch (Exception ex) { ErrorOccurred?.Invoke(this, new CaptureError("录制结果已封装，但完成事件处理程序发生异常。", ex)); }
                 return desktopResult;
             }
-            if (_state is not (CaptureState.Recording or CaptureState.Paused) || _recorder is null || _recordingFinished is null)
+            if (_state is not (CaptureState.Recording or CaptureState.Paused or CaptureState.Faulted) || _recorder is null || _recordingFinished is null)
                 throw new InvalidOperationException("There is no active recording.");
+            var failedBackend = _backendFailure;
             SetState(CaptureState.Stopping);
             _stopTicks = Stopwatch.GetTimestamp();
             if (_pauseStartTicks != 0)
@@ -216,8 +221,38 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 _pausedIntervals.Add(new CapturePauseInterval(_pauseStartTicks, _stopTicks));
                 _pauseStartTicks = 0;
             }
-            await Task.Run(_recorder.Stop).ConfigureAwait(false);
-            var output = await _recordingFinished.Task.WaitAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(false);
+            try { await Task.Run(_recorder.Stop).ConfigureAwait(false); }
+            catch (Exception stopException)
+            {
+                failedBackend ??= _backendFailure;
+                if (failedBackend is null) throw;
+                _warnings.Add("Recorder stop reported an error after backend failure: " + stopException.Message);
+            }
+            failedBackend ??= _backendFailure;
+            var output = string.Empty;
+            try
+            {
+                if (failedBackend is null)
+                {
+                    var completed = _recordingFinished.Task;
+                    var failure = _backendFailureSignal?.Task;
+                    var timeout = Task.Delay(TimeSpan.FromSeconds(30), cancellationToken);
+                    var winner = failure is null ? await Task.WhenAny(completed, timeout).ConfigureAwait(false)
+                        : await Task.WhenAny(completed, failure, timeout).ConfigureAwait(false);
+                    if (winner == timeout) throw new TimeoutException("The recorder did not report completion within 30 seconds.");
+                    if (failure is not null && winner == failure) failedBackend = await failure.ConfigureAwait(false);
+                    else output = await completed.ConfigureAwait(false);
+                }
+                if (failedBackend is not null)
+                    output = await _recordingFinished.Task.WaitAsync(TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+            }
+            catch when (failedBackend is not null && _activeOutputPath is { } failedPath && CaptureFailurePolicy.HasNonEmptyCandidate(failedPath))
+            {
+                output = failedPath;
+                _warnings.Add("The capture backend failed; a non-empty partial output was retained for media validation.");
+            }
+            if (failedBackend is not null && !_warnings.Any(x => x.Contains(failedBackend.Message, StringComparison.Ordinal)))
+                _warnings.Add("Capture backend failure: " + failedBackend.Message);
             var inputPath = _inputSampler?.OutputPath;
             await DisposeRecordingComponentsAsync().ConfigureAwait(false);
             SetState(CaptureState.Completed);
@@ -235,6 +270,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
         }
         catch (Exception ex)
         {
+            await DisposeRecordingComponentsAsync().ConfigureAwait(false);
             SetState(CaptureState.Faulted, ex.Message);
             ErrorOccurred?.Invoke(this, new CaptureError(ex.Message, ex));
             throw;
@@ -587,12 +623,19 @@ public sealed class FrameCaptureService : IFrameCaptureService
         Volatile.Write(ref _firstFrameNumber, e.FrameNumber);
         Interlocked.Exchange(ref _firstFrameSystemTimestampUnixMilliseconds, e.Timestamp);
     }
-    private void OnRecordingFailed(object? sender, RecordingFailedEventArgs e)
+    internal void InjectRecordingFailureForProbe(Exception failure) => HandleRecordingFailure(failure);
+    private void OnRecordingFailed(object? sender, RecordingFailedEventArgs e) =>
+        HandleRecordingFailure(new InvalidOperationException(e.Error));
+    private void HandleRecordingFailure(Exception exception)
     {
-        var exception = new InvalidOperationException(e.Error);
-        _recordingStarted?.TrySetException(exception); _recordingFinished?.TrySetException(exception);
-        ErrorOccurred?.Invoke(this, new CaptureError(e.Error, exception));
-        SetState(CaptureState.Faulted, e.Error);
+        CaptureFailurePolicy.ApplyWindowFailure(exception, _state, _recordingStarted, _recordingFinished, failure => _backendFailure = failure);
+        _backendFailureSignal?.TrySetResult(exception);
+        if (_state != CaptureState.Starting)
+        {
+            _warnings.Add("Capture backend failure: " + exception.Message);
+        }
+        ErrorOccurred?.Invoke(this, new CaptureError(exception.Message, exception));
+        SetState(CaptureState.Faulted, exception.Message);
     }
     private void OnRecordingComplete(object? sender, RecordingCompleteEventArgs e) => _recordingFinished?.TrySetResult(e.FilePath);
     private void SetState(CaptureState state, string? detail = null)
@@ -627,7 +670,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
     }
     public async ValueTask DisposeAsync()
     {
-        if (_state is CaptureState.Recording or CaptureState.Paused) { try { await StopAsync().ConfigureAwait(false); } catch { } }
+        if (_state is CaptureState.Recording or CaptureState.Paused or CaptureState.Faulted) { try { await StopAsync().ConfigureAwait(false); } catch { } }
         await DisposeRecordingComponentsAsync().ConfigureAwait(false);
         _gate.Dispose();
     }

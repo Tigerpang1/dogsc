@@ -288,8 +288,10 @@ float4 PSMain(VertexOutput i) : SV_Target
     float2 cardHalf = ScreenRect.zw * 0.5;
     float2 cardBounds = cardHalf + float2(0, header * 0.5);
     float2 cardDistancePoint = cardPosition * cardHalf + float2(0, header * 0.5);
-    float outerRadius = max(Style2.w, Style.x + FrameStyle.w);
-    float cardDistance = roundedBox(cardDistancePoint, cardBounds, outerRadius);
+    bool desktopChrome = FrameStyle.y > 0.5 && FrameStyle.y < 4.5;
+    float cardRadius = desktopChrome ? Style2.w : Style.x + FrameStyle.w;
+    float outerRadius = desktopChrome ? Style2.w : Style.x;
+    float cardDistance = roundedBox(cardDistancePoint, cardBounds, cardRadius);
 
     if (DeviceFrame.w > 0.5)
     {

@@ -19,16 +19,16 @@
 
 ## 2026-10-09 静态复核
 
-复核截图来自合成项目 `artifacts/validation/reference-visual-fixture/project.frametrail`，不代表真实用户工程。最新页面图位于 `artifacts/validation/visual-audit-v18/`：主编辑器截图为 1920×1249 DIP（本机 150% DPI 下对应 2880×1874 物理像素），悬浮录制条为 714×80 DIP，导出窗口为 840×634 DIP。这里只判布局和控件层级，不作字体像素或设备渲染一致性的结论。
+复核截图来自合成项目 artifacts/validation/reference-visual-fixture/project.frametrail，不代表真实用户工程。final9 页面图位于 artifacts/validation/visual-final/，共11张，覆盖主编辑器、录制、导出与各检查器；主编辑器截图为1920×1249 DIP（150% DPI下物理尺寸约2880×1874像素），悬浮录制条为714×80 DIP，导出窗口为840×634 DIP。这里只判布局和控件层级，不作字体像素或设备渲染一致性的结论。
 
 | 页面 | 当前结果 | 已对照的内容 | 尚未达到完整通过的内容 |
 |---|---|---|---|
 | 编辑主界面 | 部分通过 | 顶栏、六项左 rail、右检查器、中央预览区和底部多轨时间线均在同一视图；主窗口尺寸与原 Retina 截图按 2 倍折算后的逻辑尺寸一致。 | 仍需逐面板对照控件间距、主预览留白、所有空状态和高 DPI 字体；当前截图包含合成素材。 |
 | 悬浮录制条 | 部分通过 | 显示器、窗口、区域、设备、麦克风、摄像头、系统声音、保存位置、备忘录和关闭按单行排列；714×80 DIP 截图与原图 2 倍折算尺寸对应。 | 原生字体、图标笔画和各 DPI 下圆角阴影仍有平台差异；多显示器定位未测。 |
-| 运镜检查器 | 部分通过 | 缩放与屏幕 3D 分页、目标控件、二维位置盘和时间线效果轨道均出现；最新 `motion.png` 显示屏幕 3D 徽标、倾斜盘和画布投影边界。 | 投影边界相对原图仍约左偏 47 DIP、上偏 8–10 DIP；各参数完整选中状态仍需对照。 |
-| 导出窗口 | 部分通过 | v18 无系统标题栏，窗口为 840×634 DIP；标题、关闭按钮、文件名框、目录、视频/音频双选、四个横向分辨率选项、两个横向帧率选项、硬件编码、预览、摘要和 footer 坐标接近原图。UIA 验证 4K/1080p/60 FPS 摘要更新及空闲取消可关闭。 | 路径选择交互和真实导出阶段进度仍需覆盖；未给出无可靠依据的文件大小估算。 |
+| 运镜检查器 | 部分通过 | 缩放与屏幕 3D 分页、目标控件、二维位置盘和时间线效果轨道均出现；`visual-final/motion.png` 显示屏幕 3D 徽标、倾斜盘和画布投影边界。 | 投影四角与原图存在位置和姿态差异；缺少原工程参数，尚不能归因为整体平移或渲染误差。各参数完整选中状态仍需对照。 |
+| 导出窗口 | 部分通过 | `visual-final/export.png` 无系统标题栏，窗口为 840×634 DIP；标题、关闭按钮、文件名框、目录、视频/音频双选、四个横向分辨率选项、两个横向帧率选项、硬件编码、预览、摘要和 footer 坐标接近原图。UIA 验证 4K/1080p/60 FPS 摘要更新及空闲取消可关闭。 | 路径选择交互和真实导出阶段进度仍需覆盖；未给出无可靠依据的文件大小估算。 |
 
-截图证据：主界面与检查器见 [`visual-audit-v18`](../artifacts/validation/visual-audit-v18/)；完整 UIA 报告见 [`ui-full-smoke-audit-v25.json`](../artifacts/validation/ui-full-smoke-audit-v25.json)，备忘录独立重启结果见 [`ui-memo-audit-v24.json`](../artifacts/validation/ui-memo-audit-v24.json)。完整 UIA v25 为 35/38；其屏幕 3D、贴图和柔化属性粘贴失败由独立清洁工程专项 [`ui-effects-all-audit-v38.json`](../artifacts/validation/ui-effects-all-audit-v38.json) 复测通过，原因是旧 UIA 输入的 DPI/z-order 命中问题。内部 App 回归 28/28 也通过。静态截图与行为结果分别记录；motion 投影边界仍有位置差异，因此不声称像素级一致。
+截图证据：主界面与检查器见 [`visual-final`](../artifacts/validation/visual-final/)；完整 final8 UIA 行为报告 [`ui-full-smoke-audit-v36.json`](../artifacts/validation/ui-full-smoke-audit-v36.json) 为42/42通过；截图来自合成工程。final9 截图已更新；样机切换默认比例与零外圆角行为尚未完整 UIA 复测。备忘录独立重启报告 [`ui-memo-audit-v24.json`](../artifacts/validation/ui-memo-audit-v24.json) 通过文本、字号32、透明度0.61和位置保存。完整 UIA 与静态页面分别记录；motion 投影边界仍有位置差异，因此不声称像素级一致。
 
 ## 编辑器布局和控件顺序
 

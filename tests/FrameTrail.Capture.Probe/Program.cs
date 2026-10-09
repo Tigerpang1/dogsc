@@ -4,6 +4,16 @@ using FrameTrail.Capture;
 
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+if (args.Length == 1 && args[0] == "--failure-lifecycle-probe")
+{
+    CaptureFailureLifecycleProbe.Run();
+    return;
+}
+if (args.Length >= 2 && args[0] == "--failure-lifecycle-test")
+{
+    await CaptureFailureLifecycleProbe.RunNativeAsync(Path.GetFullPath(args[1]));
+    return;
+}
 if (args.Length > 0 && args[0] == "--pattern-window-standalone")
 {
     PatternWindowHost.RunStandalone(args);

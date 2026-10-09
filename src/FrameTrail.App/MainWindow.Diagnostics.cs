@@ -16,7 +16,7 @@ public partial class MainWindow
   {
    inspectorTab=state.Item1;if(inspectorTab=="frame")frameTab=state.Item2;if(inspectorTab=="zoom")motionTab=state.Item2;
    if(state.Item3=="motion"&&project?.ScreenMotions.FirstOrDefault() is {} motion)selectedEffect=new("motion",motion.Id);else selectedEffect=null;
-   BuildInspector();InspectorScroll.ScrollToTop();var at=state.Item3=="motion"?12.8:.26;at=Math.Min(at,project?.Timeline.Duration??0);refreshing=true;Playhead.Value=at;refreshing=false;UpdateTime();TimelineView.Selection=selectedEffect;await RenderPreview(at);await Task.Delay(150);UpdateLayout();SaveSnapshot(Path.Combine(directory,state.Item3+".png"));
+   BuildInspector();InspectorScroll.ScrollToTop();var at=state.Item3=="motion"?12.8:project?.Settings.Opening is { Enabled:true } opening?opening.Duration+opening.Stagger*2+.2:.26;at=Math.Min(at,project?.Timeline.Duration??0);refreshing=true;Playhead.Value=at;refreshing=false;UpdateTime();TimelineView.Selection=selectedEffect;await RenderPreview(at);await Task.Delay(150);UpdateLayout();SaveSnapshot(Path.Combine(directory,state.Item3+".png"));
   }
   await ShowFloatingRecorder();await Task.Delay(300);if(recorderSetup!=null){CaptureWindowVisual(recorderSetup,Path.Combine(directory,"recorder.png"));recorderSetup.Close();}
   if(project!=null){selectedEffect=project.ScreenMotions.FirstOrDefault() is {} exportMotion?new("motion",exportMotion.Id):null;await RenderPreview(Math.Min(12.8,project.Timeline.Duration));var export=new ExportWindow(project,PreviewImage.Source,ProjectTitle.Text,(_,_,_,_)=>throw new InvalidOperationException("截图模式不执行导出。")){Owner=this};export.Show();await Task.Delay(300);CaptureWindowVisual(export,Path.Combine(directory,"export.png"));export.Close();}

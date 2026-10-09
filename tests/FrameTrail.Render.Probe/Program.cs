@@ -182,11 +182,32 @@ Check(Math.Abs(plain[cornerProbe] - 36) < 3 && Math.Abs(plain[cornerProbe + 1] -
         "browser chrome uses its larger 22px-scaled outer corner and preserves the straight lower edge");
     Check(RedAt(noFramePixels, 14, 359) > 200,
         "no-frame content remains square when its content radius is zero");
+    var explicitSquareOuter = frameScene with
+    {
+        CornerRadius = .08,
+        Canvas = frameScene.Canvas! with { FrameOuterRadius = 0, BorderWidth = 16 }
+    };
+    var explicitSquarePixels = new byte[plain.Length];
+    renderer.Render(solidScreen, explicitSquareOuter, explicitSquarePixels);
+    Check(RedAt(explicitSquarePixels, 14, 0) > 200,
+        "explicit zero desktop outer radius keeps the top chrome corner square despite rounded content and border width");
     Check(!GpuFrameRenderer.TryMapCanvasPointToSource(frameScene, sourceWidth, sourceHeight, outputWidth, outputHeight,
             new(14.5 / outputWidth, 359.5 / outputHeight), out _)
         && GpuFrameRenderer.TryMapCanvasPointToSource(frameScene, sourceWidth, sourceHeight, outputWidth, outputHeight,
             new(20.5 / outputWidth, 359.5 / outputHeight), out _),
         "canvas hit mapping rejects the window's outer clipped corner while accepting its straight edge");
+}
+{
+    var shadowSource = MakeSolid(0, 0, 245, sourceWidth, sourceHeight);
+    var shadowBase = new FrameScene(0, 0, new(0, 0), new(1, 1), 1, null, 0, "#202124", .1, 0,
+        outputWidth, outputHeight, .5, Canvas: new CanvasSettings { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.None },
+        SourceWidth: sourceWidth, SourceHeight: sourceHeight);
+    var noFrameShadow = new byte[plain.Length]; var noFrameBorderedShadow = new byte[plain.Length];
+    renderer.Render(shadowSource, shadowBase, noFrameShadow);
+    renderer.Render(shadowSource, shadowBase with { Canvas = shadowBase.Canvas! with { BorderWidth = 16 } }, noFrameBorderedShadow);
+    var outsideCorner = (32 * outputWidth + 60) * 4;
+    Check(noFrameShadow.AsSpan(outsideCorner, 4).SequenceEqual(noFrameBorderedShadow.AsSpan(outsideCorner, 4)),
+        "no-frame shadow corner keeps its original radius when border width changes");
 }
 Check(CountDifferent(plain, zoomed) > 10000, "zoom crop changes output pixels");
 Check(CountDifferent(plain, cursor) > 50, "cursor and click pulse change output pixels");
