@@ -68,7 +68,6 @@ function Invoke-LoggedProcess(
         name = $Name
         executable = $FileName
         arguments = @($Arguments)
-        launcherArguments = $null
         workingDirectory = $WorkingDirectory
         timeoutSeconds = $TimeoutSeconds
         startedUtc = [DateTime]::UtcNow.ToString('o')
@@ -90,19 +89,7 @@ function Invoke-LoggedProcess(
         $startInfo.RedirectStandardError = $true
         $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
         $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
-        $launcherArguments = $Arguments
-        if ([IO.Path]::GetFileNameWithoutExtension($FileName) -eq 'pwsh') {
-            if ($Arguments.Count -lt 4 -or $Arguments[0] -ne '-NoProfile' -or
-                $Arguments[1] -ne '-NonInteractive' -or $Arguments[2] -ne '-File') {
-                throw 'PowerShell validation steps must use the known noninteractive script invocation.'
-            }
-            $scriptArguments = if ($Arguments.Count -gt 4) { @($Arguments[4..($Arguments.Count - 1)]) } else { @() }
-            $launcherArguments = @('-NoProfile', '-NonInteractive', '-File',
-                (Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'), '-ScriptPath', $Arguments[3],
-                '-ArgumentsJson', (ConvertTo-Json -InputObject @($scriptArguments) -Compress))
-        }
-        $record.launcherArguments = @($launcherArguments)
-        foreach ($argument in $launcherArguments) { $null = $startInfo.ArgumentList.Add($argument) }
+        foreach ($argument in $Arguments) { $null = $startInfo.ArgumentList.Add($argument) }
 
         $process = [System.Diagnostics.Process]::new()
         $process.StartInfo = $startInfo
@@ -167,9 +154,11 @@ try {
 
     $pwshPath = Join-Path $PSHOME 'pwsh.exe'
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
+    $utf8Bootstrap = Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'
     $testScript = Join-Path $repoRoot 'scripts/test.ps1'
+    $testParameters = @{ Configuration='Release'; IncludeCaptureProbe=$true; IncludeVisualProbe=$true; IncludeReleaseProbe=$true } | ConvertTo-Json -Compress
     $testResult = Invoke-LoggedProcess -Name 'tests' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $testScript, '-Configuration', 'Release', '-IncludeCaptureProbe', '-IncludeVisualProbe', '-IncludeReleaseProbe') `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $testScript, '-ParametersJson', $testParameters) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
 
     $appProject = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
@@ -178,8 +167,9 @@ try {
         -WorkingDirectory $repoRoot -TimeoutSeconds $BuildTimeoutSeconds
 
     $packageScript = Join-Path $repoRoot 'scripts/package.ps1'
+    $packageParameters = @{ Configuration='Release'; Version=$Version; WithoutFfmpeg=$true; SkipInstaller=$true } | ConvertTo-Json -Compress
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $packageScript, '-Configuration', 'Release', '-Version', $Version, '-WithoutFfmpeg', '-SkipInstaller') `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $PackageTimeoutSeconds
 
     $buildInfoPath = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/BUILD-INFO.txt"

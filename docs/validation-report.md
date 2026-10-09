@@ -125,5 +125,6 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 - 麦克风时钟段纯测接受暂停前后两段及增加合法重锚段的情况，拒绝时间或帧倒序、重叠、缺口、活动覆盖不足和暂停内容泄漏；它不访问麦克风。该项在后台回归v2之后增加，当前 `-IncludeCaptureProbe` 共八组；`package-0.2.3/source-validation-logs-6fefeebe14554efbb5ac6386e0d8b73a/tests.stdout.log` 已记录独立源码包八组通过。真实输入信号和物理设备复位仍待实录。
 - `runtime-lock-stability-v1.json` 确认13份NuGet锁文件在后台测试后哈希不变。发布使用锁定恢复。源码身份测试也覆盖深层解压路径与父Git仓库，独立源码构建的每轮报告保存在对应日志目录中。
 - 源码ZIP结构策略的17项合成用例通过，拒绝根目录外文件、规范路径重复、文件目录冲突、Windows路径歧义及无效元数据类型；只测试临时归档，不构建或运行应用。独立验证的子PowerShell使用UTF-8输出，`package-log-encoding-repro-v2/summary.json` 确认中文stdout/stderr完整、特殊字符参数不被执行、失败退出码传播及父进程代码页保持。
+- 后续完整源码验证暴露了UTF-8启动脚本的命名参数传递错误，失败报告保留在 `source-validation-logs-82092e451a504be7a23f390e093d620a/result.json`。已改成JSON对象与命名参数映射，并将 `test-utf8-script.ps1` 纳入发行规则回归，覆盖实际配置参数和开关绑定；该失败报告不会被改写成通过。
 
 当前程序包和源码包的最终文件、提交、哈希及验收范围以 `artifacts/release/FrameTrail-0.2.3-candidate-manifest.json`、`artifacts/validation/package-0.2.3/source-validation.json` 和 `content-result.json` 为准；候选清单不表示实际安装、卸载或设备录制已经通过。

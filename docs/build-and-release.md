@@ -24,6 +24,8 @@
 
 ## 本地验证包
 
+源码验证的PowerShell子进程通过显式参数映射运行，并使用UTF-8记录stdout/stderr；`test-utf8-script.ps1` 验证命名参数、开关、特殊字符文本和失败退出码，不改变调用者的控制台代码页。
+
 独立的 `FrameTrail.App.Smoke` 会操作真实鼠标键盘，必须显式传入 `--interactive-desktop`。启动后每次输入前核对前台属于本次测试应用；用户切走时停止输入并释放测试按住的键和鼠标按钮，结果标记未完成，不反复抢回焦点。Windows 拒绝自动激活时，可加 `--wait-for-foreground`，等待180秒内手动切入测试窗口一次。测试前将四个应用偏好文件的原始状态保存到本次临时目录；异常强停后可用 `FrameTrail.App.Smoke.exe --restore-user-data <测试临时目录>` 恢复，先核对该目录确属需要恢复的测试轮次。
 
 ```powershell

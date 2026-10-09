@@ -62,6 +62,8 @@ try {
         & (Join-Path $PSScriptRoot 'test-release-manifest.ps1')
         & (Join-Path $PSScriptRoot 'test-source-provenance.ps1')
         & (Join-Path $PSScriptRoot 'test-source-zip-policy.ps1')
+        & (Join-Path $PSScriptRoot 'test-utf8-script.ps1')
+        if ($LASTEXITCODE -ne 0) { throw "UTF-8 子脚本回归失败，退出码 $LASTEXITCODE" }
         Write-Host '发行清单、源码来源与源码 ZIP 结构规则检查完成；使用隔离合成数据，未运行安装器或应用。'
     }
 }
