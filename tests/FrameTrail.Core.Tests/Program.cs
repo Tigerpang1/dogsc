@@ -108,24 +108,100 @@ double SampleEase(ZoomEasing easing, double progress)
 }
 Check(Math.Abs(SampleEase(ZoomEasing.Cubic, .25) - .07079658) < 1e-6
     && Math.Abs(SampleEase(ZoomEasing.Quintic, .25) - .04530125) < 1e-6
+    && Math.Abs(SampleEase(ZoomEasing.Quadratic, .25) - .12015) < 1e-4
     && Math.Abs(SampleEase(ZoomEasing.Spring, .5) - .88059446) < 1e-6,
-    "zoom easing matches Swift Bezier controls and normalized default spring samples");
+    "zoom easing matches Swift quadratic/cubic/quintic Bezier controls and normalized default spring samples");
 
 var track = new[] { new PointerEvent(0, new(.1, .2)), new PointerEvent(.1, new(.2, .3)), new PointerEvent(.2, new(.4, .5)) };
-var pointer = PointerTrack.Sample(track, .15).Position;
+var pointer = PointerTrack.Sample(track, .15, PointerSmoothing.Medium).Position;
 Check(pointer is not null && pointer.Value.X > .2 && pointer.Value.X < .4, "monotone pointer interpolation");
+Check(JsonSerializer.Deserialize<FrameTrailSettings>("{}")!.PointerSmoothing == PointerSmoothing.Smooth,
+    "projects without a pointer smoothing field retain the original smooth default");
+Check(new CanvasSettings().FrameToolbarScale == 1 && new CanvasSettings().FrameOuterRadius is null,
+    "legacy mock frames retain the default toolbar scale and inferred outer radius");
+const double springStep = 1d / 240;
+var spring = new PreparedPointerTrack([new(0, new(.1, .2)), new(.2, new(.12, .215))], PointerSmoothing.Smooth).Sample(springStep).Position!.Value;
+var expectedSpringX = .1 + (450 * ((.12 - .1) * springStep / .2) / 2.8 * springStep) * springStep;
+var expectedSpringY = .2 + (450 * ((.215 - .2) * springStep / .2) / 2.8 * springStep) * springStep;
+Check(Math.Abs(spring.X - expectedSpringX) < 1e-12 && Math.Abs(spring.Y - expectedSpringY) < 1e-12,
+    "smooth pointer follows the upstream 240Hz second-order spring integration at its first step");
+var profileEvents = new[] { new PointerEvent(0, new(.1, .2)), new PointerEvent(.1, new(.4, .35)), new PointerEvent(.2, new(.7, .65)), new PointerEvent(.3, new(.9, .8)) };
+var smoothSample = new PreparedPointerTrack(profileEvents, PointerSmoothing.Smooth).Sample(.15).Position!.Value;
+var mediumSample = new PreparedPointerTrack(profileEvents, PointerSmoothing.Medium).Sample(.15).Position!.Value;
+var rapidSample = new PreparedPointerTrack(profileEvents, PointerSmoothing.Rapid).Sample(.15).Position!.Value;
+Check(Math.Abs(smoothSample.X - mediumSample.X) > .005 && Math.Abs(mediumSample.X - rapidSample.X) > .0001,
+    $"Smooth/Medium/Rapid use distinct spring or Hermite responses ({smoothSample.X:F6}, {mediumSample.X:F6}, {rapidSample.X:F6})");
+var clickTrack = new PreparedPointerTrack([new(0, new(.1, .1)), new(.1, new(.8, .7), PointerEventKind.LeftClick), new(.2, new(.8, .7))]);
+Check(clickTrack.Sample(.1).Position == new NormalizedPoint(.8, .7)
+    && clickTrack.Sample(.1).ClickStrength == 0
+    && clickTrack.Sample(.19).ClickStrength > 0,
+    "spring smoothing anchors exact click location while retaining click pulse timing");
+var longGap = new[] { new PointerEvent(0, new(.2, .2)), new PointerEvent(.1, new(.3, .3)), new PointerEvent(1, new(.8, .8)) };
+var gapSample = new PreparedPointerTrack(longGap, PointerSmoothing.Smooth).Sample(.75).Position!.Value;
+Check(gapSample.X < .4 && new PreparedPointerTrack(longGap, PointerSmoothing.Rapid).Sample(.75).Position == new NormalizedPoint(.3, .3),
+    "long silence holds the last event instead of interpolating toward a future movement");
+var sparseLongTrack = new PreparedPointerTrack([new(0, new(.2, .2)), new(86_400, new(.21, .21))], PointerSmoothing.Smooth);
+Check(sparseLongTrack.Sample(43_200).Position is { } sparseLongPosition && sparseLongPosition.X is > .19 and < .22,
+    "a 24-hour sparse pointer track skips settled idle spans instead of allocating a full-rate spring cache");
+var calibratedSmoothA = new PreparedFrameSceneEvaluator(new FrameTrailProject
+{
+    MediaPath = "capture.mp4", Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 1 }] },
+    PointerEvents = track.ToList(), Settings = new() { AutoZoom = false, PointerSmoothing = PointerSmoothing.Medium }
+}).Evaluate(.15).Cursor;
+var calibratedSmoothBProject = new FrameTrailProject
+{
+    MediaPath = "capture.mp4", Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 1 }] },
+    PointerEvents = track.ToList(), MouseClock = new(.05, 1), Settings = new() { AutoZoom = false, PointerSmoothing = PointerSmoothing.Medium }
+};
+var calibratedSmoothB = new PreparedFrameSceneEvaluator(calibratedSmoothBProject).Evaluate(.2).Cursor;
+Check(calibratedSmoothA is { } calibratedA && calibratedSmoothB is { } calibratedB
+    && Math.Abs(calibratedA.X - calibratedB.X) < 1e-12 && Math.Abs(calibratedA.Y - calibratedB.Y) < 1e-12
+    && calibratedSmoothBProject.Settings.PointerSmoothing == PointerSmoothing.Medium,
+    "mouse time calibration shifts sampling time without changing the selected smoothing profile");
 
 var root = Path.Combine(Path.GetTempPath(), "frametrail-core-tests-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
 try
 {
     var file = Path.Combine(root, "sample.frametrail");
-    var project = new FrameTrailProject { MediaPath = "media/recording.mp4", Media = new() { Width = 1920, Height = 1080, Duration = 40 }, Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 40 }] }, PointerEvents = clicks.ToList(), Camera = new() { MediaPath = "media/camera.mp4", SourceStart = 0, TimelineStart = 0, Duration = 4, SyncSegments = [new(0, 0, 1), new(1, 3, 1)] } };
+    var project = new FrameTrailProject { MediaPath = "media/recording.mp4", Media = new() { Width = 1920, Height = 1080, Duration = 40 }, Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 40 }] }, PointerEvents = clicks.ToList(), Settings = new() { PointerSmoothing = PointerSmoothing.Rapid }, Camera = new() { MediaPath = "media/camera.mp4", SourceStart = 0, TimelineStart = 0, Duration = 4, SyncSegments = [new(0, 0, 1), new(1, 3, 1)] } };
     FrameTrailProjectStore.Save(file, project);
     project.Settings.Background = "#ffffff";
     FrameTrailProjectStore.Save(file, project);
     Check(File.Exists(file + FrameTrailProjectStore.BackupSuffix), "backup creation");
     var restored = FrameTrailProjectStore.RestoreBackup(file);
-    Check(restored.Settings.Background == "#202124" && restored.Camera?.SyncSegments is { Count: 2 } && restored.Camera.SyncSegments[1] == new CameraSyncSegment(1, 3, 1), "backup restore preserves camera sync segment mappings");
+    Check(restored.Settings.Background == "#202124" && restored.Settings.PointerSmoothing == PointerSmoothing.Rapid && restored.Camera?.SyncSegments is { Count: 2 } && restored.Camera.SyncSegments[1] == new CameraSyncSegment(1, 3, 1), "backup restore preserves pointer smoothing and camera sync segment mappings");
+    if (OperatingSystem.IsWindows())
+    {
+        var transientSave = Copy(restored); transientSave.DisplayName = "短时文件占用后保存";
+        var held = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read);
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var release = Task.Run(async () => { await Task.Delay(75); held.Dispose(); });
+        FrameTrailProjectStore.Save(file, transientSave);
+        await release;
+        elapsed.Stop();
+        Check(elapsed.ElapsedMilliseconds >= 50 && elapsed.Elapsed < TimeSpan.FromSeconds(4)
+            && FrameTrailProjectStore.Load(file).DisplayName == "短时文件占用后保存",
+            "atomic project replacement retries a short Windows sharing lock and loads the new project");
+
+        var originalBytes = File.ReadAllBytes(file);
+        var blockedSave = Copy(FrameTrailProjectStore.Load(file)); blockedSave.DisplayName = "持续占用时不得替换";
+        using (var persistentHandle = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            var blockedTimer = System.Diagnostics.Stopwatch.StartNew();
+            try { FrameTrailProjectStore.Save(file, blockedSave); throw new Exception("persistent project file lock was ignored"); }
+            catch (IOException ex)
+            {
+                blockedTimer.Stop();
+                Check(ex.Message.Contains(file, StringComparison.OrdinalIgnoreCase)
+                    && blockedTimer.Elapsed < TimeSpan.FromSeconds(4),
+                    "persistent replacement failure is bounded and names the target project");
+            }
+        }
+        Check(File.ReadAllBytes(file).SequenceEqual(originalBytes)
+            && Directory.GetFiles(root, Path.GetFileName(file) + ".tmp-*").Length == 0
+            && FrameTrailProjectStore.Load(file).DisplayName == "短时文件占用后保存",
+            "a persistent replacement lock preserves the original project and cleans the temporary file");
+    }
     restored.Media.FrameRate = 0;
     try { FrameTrailProjectStore.Save(file, restored); throw new Exception("invalid source frame rate was accepted"); } catch (InvalidDataException) { }
     restored.Media.FrameRate = 30;
@@ -199,7 +275,7 @@ var effectsProject = new FrameTrailProject
 {
     MediaPath = "capture.mp4",
     Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 10 }] },
-    Settings = new() { AutoZoom = false, Cursor = new() { Visible = true, HideWhenIdle = true, IdleSeconds = .4 }, Opening = new() { Enabled = true, Preset = OpeningPreset.RotateIn, Duration = .8 }, BackgroundStyle = new() { Kind = BackgroundKind.Pattern, Pattern = BackgroundPatternKind.Dots } },
+    Settings = new() { AutoZoom = false, PointerSmoothing = PointerSmoothing.Rapid, Cursor = new() { Visible = true, HideWhenIdle = true, IdleSeconds = .4 }, Opening = new() { Enabled = true, Preset = OpeningPreset.RotateIn, Duration = .8 }, BackgroundStyle = new() { Kind = BackgroundKind.Pattern, Pattern = BackgroundPatternKind.Dots } },
     PointerEvents = [new(1, new(.3, .4)), new(1.2, new(.32, .42))],
     ScreenMotions = [new() { Start = 2, Duration = 2, EnterDuration = 1, ReturnDuration = 1, Target = new() { Position = new(.7, .6), Scale = 1.3, RotationY = 12 }, Focus = new() { Target = FocusEffectTarget.Pointer } }, new() { Start = 6, Duration = 1, EnterDuration = .5, Target = new() { Position = new(.2, .5) } }],
     Camera = new() { MediaPath = "media/camera.mp4", SourceStart = 3, Duration = 4, TimelineStart = 2, Position = new(.8, .8), Shape = CameraShape.Circle, Crop = new(.1, .2, .7, .6) },
@@ -376,6 +452,22 @@ try
     invalid.Settings.Canvas = new() { BorderWidth = 61 };
     FrameTrailProjectStore.Save(Path.Combine(root, "invalid-border.frametrail"), invalid);
     throw new Exception("oversized pixel canvas border was accepted");
+}
+catch (InvalidDataException) { }
+try
+{
+    var invalid = Copy(negativeCameraProject);
+    invalid.Settings.Canvas = new() { FrameOuterRadius = 160.01 };
+    FrameTrailProjectStore.Save(Path.Combine(root, "invalid-frame-radius.frametrail"), invalid);
+    throw new Exception("oversized mock frame radius was accepted");
+}
+catch (InvalidDataException) { }
+try
+{
+    var invalid = Copy(negativeCameraProject);
+    invalid.Settings.Canvas = new() { FrameToolbarScale = .64 };
+    FrameTrailProjectStore.Save(Path.Combine(root, "invalid-toolbar-scale.frametrail"), invalid);
+    throw new Exception("out-of-range mock frame toolbar scale was accepted");
 }
 catch (InvalidDataException) { }
 try

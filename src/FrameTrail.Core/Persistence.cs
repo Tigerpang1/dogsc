@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -7,10 +8,12 @@ namespace FrameTrail;
 public static class FrameTrailProjectStore
 {
     public const string BackupSuffix = ".bak";
+    private static readonly int[] ReplaceRetryDelaysMilliseconds = [20, 40, 80, 160];
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true, PropertyNamingPolicy = JsonNamingPolicy.CamelCase, Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) } };
     public static FrameTrailProject Load(string projectFile)
     {
-        var path = Path.GetFullPath(projectFile); using var stream = File.OpenRead(path);
+        var path = Path.GetFullPath(projectFile);
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         var project = JsonSerializer.Deserialize<FrameTrailProject>(stream, JsonOptions) ?? throw new InvalidDataException("项目文件为空。");
         Validate(project, Path.GetDirectoryName(path)!); return project;
     }
@@ -24,7 +27,7 @@ public static class FrameTrailProjectStore
             using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 65536, FileOptions.WriteThrough))
             { JsonSerializer.Serialize(stream, project, JsonOptions); stream.Flush(true); }
             if (File.Exists(path)) File.Copy(path, path + BackupSuffix, true);
-            File.Move(temp, path, true);
+            MoveWithSharingRetry(temp, path);
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
@@ -33,9 +36,44 @@ public static class FrameTrailProjectStore
         var path = Path.GetFullPath(projectFile); var backup = path + BackupSuffix;
         if (!File.Exists(backup)) throw new FileNotFoundException("找不到项目备份。", backup);
         var restored = Load(backup); var temp = path + ".restore-" + Guid.NewGuid().ToString("N");
-        try { File.Copy(backup, temp); File.Move(temp, path, true); }
+        try { File.Copy(backup, temp); MoveWithSharingRetry(temp, path); }
         finally { if (File.Exists(temp)) File.Delete(temp); }
         return restored;
+    }
+
+    private static void MoveWithSharingRetry(string source, string destination)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                File.Move(source, destination, true);
+                return;
+            }
+            catch (Exception ex) when (IsTransientWindowsReplaceError(ex))
+            {
+                if (attempt >= ReplaceRetryDelaysMilliseconds.Length)
+                    throw new IOException($"无法替换项目文件“{destination}”：有限重试后仍被占用或访问被拒绝。", ex);
+                Thread.Sleep(ReplaceRetryDelaysMilliseconds[attempt]);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new IOException($"无法替换项目文件“{destination}”。", ex);
+            }
+        }
+    }
+
+    private static bool IsTransientWindowsReplaceError(Exception exception)
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        Exception? current = exception;
+        while (current is not null)
+        {
+            var code = Marshal.GetHRForException(current) & 0xffff;
+            if (code is 5 or 32 or 33) return true;
+            current = current.InnerException;
+        }
+        return false;
     }
     public static string ResolveMediaPath(string projectFile, FrameTrailProject project)
     {
@@ -73,10 +111,10 @@ public static class FrameTrailProjectStore
         if (project.Media.Duration < 0 || project.Media.Width < 0 || project.Media.Height < 0 || !double.IsFinite(project.Media.Duration + project.Media.Width + project.Media.Height)
             || !double.IsFinite(project.Media.FrameRate) || project.Media.FrameRate is <= 0 or > 240) throw new InvalidDataException("媒体元数据无效。");
         if (project.Settings.CanvasWidth < 2 || project.Settings.CanvasHeight < 2 || !double.IsFinite(project.Settings.Padding) || project.Settings.Padding is < 0 or > .5 || !double.IsFinite(project.Settings.CornerRadius) || project.Settings.CornerRadius is < 0 or > .5 || !double.IsFinite(project.Settings.Shadow) || project.Settings.Shadow is < 0 or > 1) throw new InvalidDataException("画布设置无效。");
-        if (!double.IsFinite(project.Settings.MainAudioVolume) || project.Settings.MainAudioVolume is < 0 or > 4 || project.DisplayName?.Length > 240) throw new InvalidDataException("项目名称或主音轨音量无效。");
+        if (!Enum.IsDefined(project.Settings.PointerSmoothing) || !double.IsFinite(project.Settings.MainAudioVolume) || project.Settings.MainAudioVolume is < 0 or > 4 || project.DisplayName?.Length > 240) throw new InvalidDataException("指针平滑模式、项目名称或主音轨音量无效。");
         if (project.Settings.Opening is { } opening && (!Enum.IsDefined(opening.Preset) || !Enum.IsDefined(opening.Easing) || !double.IsFinite(opening.Duration) || opening.Duration is <= 0 or > 10 || !double.IsFinite(opening.Stagger) || opening.Stagger is < 0 or > 1.2 || opening.IncludedElements is null || opening.ElementOrder is null || opening.IncludedElements.Any(x => !Enum.IsDefined(x)) || opening.ElementOrder.Any(x => !Enum.IsDefined(x)) || opening.IncludedElements.Distinct().Count() != opening.IncludedElements.Count || opening.ElementOrder.Distinct().Count() != opening.ElementOrder.Count || !double.IsFinite(opening.ScaleFrom) || opening.ScaleFrom is < .1 or > 4 || !double.IsFinite(opening.OffsetX) || Math.Abs(opening.OffsetX) > 1 || !double.IsFinite(opening.OffsetY) || Math.Abs(opening.OffsetY) > 1 || !double.IsFinite(opening.RotationFrom) || Math.Abs(opening.RotationFrom) > 180 || !double.IsFinite(opening.OpacityFrom) || opening.OpacityFrom is < 0 or > 1)) throw new InvalidDataException("开场动画参数无效。");
         if (project.PointerEvents.Any(x => !double.IsFinite(x.Time) || x.Time < 0 || !x.Location.IsFinite) || project.ZoomClips.Any(x => !double.IsFinite(x.Start + x.End + x.Scale + x.EnterDuration + x.ExitDuration) || x.Start < 0 || x.End <= x.Start || x.Scale < 1 || x.EnterDuration is < 0 or > 5 || x.ExitDuration is < 0 or > 5 || !x.Focus.IsFinite)) throw new InvalidDataException("指针或缩放轨道数据无效。");
-        if (project.Settings.Canvas is { } canvas && (!Enum.IsDefined(canvas.Frame) || canvas.AspectWidth < 2 || canvas.AspectHeight < 2 || !canvas.Crop.IsFinite || !IsUnitRect(canvas.Crop) || !canvas.ContentPosition.IsFinite || canvas.ContentScale is < .1 or > 4 || !double.IsFinite(canvas.ContentScale) || canvas.FrameScale is < .6 or > 1.6 || !double.IsFinite(canvas.FrameScale) || canvas.BorderWidth is < 0 or > 60 || !double.IsFinite(canvas.BorderWidth))) throw new InvalidDataException("画布裁切或布局无效。");
+        if (project.Settings.Canvas is { } canvas && (!Enum.IsDefined(canvas.Frame) || canvas.AspectWidth < 2 || canvas.AspectHeight < 2 || !canvas.Crop.IsFinite || !IsUnitRect(canvas.Crop) || !canvas.ContentPosition.IsFinite || canvas.ContentScale is < .1 or > 4 || !double.IsFinite(canvas.ContentScale) || canvas.FrameScale is < .6 or > 1.6 || !double.IsFinite(canvas.FrameScale) || canvas.BorderWidth is < 0 or > 60 || !double.IsFinite(canvas.BorderWidth) || !double.IsFinite(canvas.FrameToolbarScale) || canvas.FrameToolbarScale is < .65 or > 1.6 || canvas.FrameOuterRadius is { } outerRadius && (!double.IsFinite(outerRadius) || outerRadius is < 0 or > 160))) throw new InvalidDataException("画布裁切或布局无效。");
         if (project.Settings.BackgroundStyle is { } background)
         {
             if (!Enum.IsDefined(background.Kind) || !Enum.IsDefined(background.ImageFit) || !Enum.IsDefined(background.Pattern) || !Enum.IsDefined(background.Preset) || background.Blur is < 0 or > 1 || !double.IsFinite(background.Blur) || !double.IsFinite(background.VideoStartTime) || background.VideoStartTime < 0 || !double.IsFinite(background.AngleDegrees) || !double.IsFinite(background.PatternSpacing) || background.PatternSpacing is < 8 or > 512 || !double.IsFinite(background.PatternStrength) || background.PatternStrength is < 0 or > 1 || !double.IsFinite(background.Speed) || background.Speed is < 0 or > 10) throw new InvalidDataException("背景设置无效。");

@@ -13,7 +13,7 @@ public partial class MainWindow
  {
   if(project==null)return;var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("zoom",id);ApplyEdit(p=>p.ZoomClips.Add(new(){Id=id,Start=start,End=Math.Min(p.Media.Duration,start+2),Scale=1.5,Focus=new(.5,.5),Automatic=false}));
  }
- private static IEnumerable<(ZoomEasing,string)> Easings()=>new[]{(ZoomEasing.Linear,"线性"),(ZoomEasing.Cubic,"平滑"),(ZoomEasing.Quintic,"柔和"),(ZoomEasing.Spring,"弹簧")};
+ private static IEnumerable<(ZoomEasing,string)> Easings()=>new[]{(ZoomEasing.Linear,"线性"),(ZoomEasing.Quadratic,"二次"),(ZoomEasing.Cubic,"平滑"),(ZoomEasing.Quintic,"柔和"),(ZoomEasing.Spring,"弹簧")};
  private void BuildMotionInspector()
  {
   var p=project!;Section("运镜类型");Tabs(motionTab,("zoom","⌕  缩放",()=>{motionTab="zoom";BuildInspector();}),("motion","⬡  屏幕 3D",()=>{motionTab="motion";BuildInspector();}));

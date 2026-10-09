@@ -618,6 +618,9 @@ public static class DogScProjectImporter
             ContentScale = Math.Clamp(Number(canvas, "contentScale", 1), .1, 4),
             Frame = MapScreenFrame(String(canvas, "screenFrame")),
             FrameScale = Math.Clamp(Number(canvas, "screenFrameScale", 1), .6, 1.6),
+            FrameToolbarScale = Math.Clamp(Number(canvas, "screenFrameToolbarScale", 1), .65, 1.6),
+            FrameOuterRadius = Get(canvas, "screenFrameOuterCornerRadius").ValueKind == JsonValueKind.Number
+                ? Math.Clamp(Number(canvas, "screenFrameOuterCornerRadius", 18), 0, 160) : null,
             BorderWidth = Math.Clamp(Number(canvas, "borderWidth", 0), 0, 60),
             BorderColor = Color(String(canvas, "borderHex"), "#FFFFFF"),
             Title = String(canvas, "screenFrameTitle"),
@@ -626,7 +629,8 @@ public static class DogScProjectImporter
         settings.CanvasWidth = aspectWidth;
         settings.CanvasHeight = aspectHeight;
         settings.Padding = Math.Clamp(Number(canvas, "padding", 80) / Math.Max(1, Math.Min(aspectWidth, aspectHeight)), 0, .5);
-        settings.CornerRadius = Math.Clamp(Number(canvas, "cornerRadius", 24) / Math.Max(1, Math.Min(aspectWidth, aspectHeight)), 0, .5);
+        settings.CornerRadius = Math.Clamp((settings.Canvas.Frame == ScreenFrameKind.None
+            ? Number(canvas, "cornerRadius", 24) : Number(canvas, "screenFrameContentCornerRadius", 0)) / Math.Max(1, Math.Min(aspectWidth, aspectHeight)), 0, .5);
         settings.Shadow = Math.Clamp(Number(canvas, "shadowStrength", .28), 0, 1);
 
         var source = Get(canvas, "backgroundSource");
@@ -695,8 +699,6 @@ public static class DogScProjectImporter
             warnings.Add("DogSC 自定义画布比例未保留原自定义字段，按媒体比例近似导入。");
         if (String(canvas, "screenFrame").StartsWith("device", StringComparison.OrdinalIgnoreCase))
             warnings.Add("DogSC 设备样机与内建几何参数未迁移，已映射到最接近的 Phone/Tablet 外框。");
-        if (Number(canvas, "screenFrameToolbarScale", 1) != 1 || Get(canvas, "screenFrameOuterCornerRadius").ValueKind == JsonValueKind.Number || Get(canvas, "screenFrameContentCornerRadius").ValueKind == JsonValueKind.Number)
-            warnings.Add("DogSC 样机工具栏独立缩放和自定义外/内圆角没有对应字段；已使用 FrameTrail 默认几何。");
         if (Math.Abs(Number(canvas, "insetOpacity", .125) - .125) > .0001)
             warnings.Add("DogSC 样机插入画面的透明度没有对应字段；使用不透明画面。");
     }
@@ -938,6 +940,7 @@ public static class DogScProjectImporter
     private static ZoomEasing MapEasing(string value) => value switch
     {
         "线性" or "linear" => ZoomEasing.Linear,
+        "二次方缓动" or "二次" or "quadratic" => ZoomEasing.Quadratic,
         "五次平滑" or "quintic" => ZoomEasing.Quintic,
         "弹簧" or "spring" => ZoomEasing.Spring,
         _ => ZoomEasing.Cubic
@@ -1011,4 +1014,3 @@ public sealed record DogScProjectImportResult(
     string ProjectFilePath,
     FrameTrailProject Project,
     DogScProjectImportReport Report);
-

@@ -6,7 +6,7 @@ cbuffer SceneConstants : register(b0)
     float4 Style;            // corner radius px, shadow radius px, shadow strength, click strength
     float4 Cursor;           // normalized source x/y, visible, cursor scale
     float4 Background;       // rgba
-    float4 Style2;           // gradient angle, cursor style, click effect style, reserved
+    float4 Style2;           // gradient angle, cursor style, click effect style, frame outer radius px
     float4 BackgroundEnd;    // gradient end rgba
     float4 FrameStyle;       // header height pixels, frame kind, light mode, border width
     float4 DeviceFrame;      // bezel px, outer radius px, rim width px, kind (1 phone, 2 tablet)
@@ -288,7 +288,8 @@ float4 PSMain(VertexOutput i) : SV_Target
     float2 cardHalf = ScreenRect.zw * 0.5;
     float2 cardBounds = cardHalf + float2(0, header * 0.5);
     float2 cardDistancePoint = cardPosition * cardHalf + float2(0, header * 0.5);
-    float cardDistance = roundedBox(cardDistancePoint, cardBounds, Style.x + FrameStyle.w);
+    float outerRadius = max(Style2.w, Style.x + FrameStyle.w);
+    float cardDistance = roundedBox(cardDistancePoint, cardBounds, outerRadius);
 
     if (DeviceFrame.w > 0.5)
     {
@@ -313,7 +314,7 @@ float4 PSMain(VertexOutput i) : SV_Target
     float3 shadowProjection = transformPoint(shadowTarget, Inverse0, Inverse1, Inverse2);
     float2 shadowPosition = shadowProjection.xy / max(abs(shadowProjection.z), 0.00001) * sign(shadowProjection.z);
     float2 shadowBounds = cardBounds + (DeviceFrame.w > 0.5 ? DeviceFrame.xx : float2(0, 0));
-    float shadowRadius = DeviceFrame.w > 0.5 ? DeviceFrame.y : Style.x;
+    float shadowRadius = DeviceFrame.w > 0.5 ? DeviceFrame.y : outerRadius;
     float2 shadowPoint = shadowPosition * cardHalf + float2(0, header * 0.5 - Style.y * 0.48);
     float shadowD = roundedBox(shadowPoint, shadowBounds, shadowRadius + Style.y * 0.4);
     float shadow = (1.0 - smoothstep(-Style.y, Style.y, shadowD)) * Style.z;
@@ -344,7 +345,8 @@ float4 PSMain(VertexOutput i) : SV_Target
         }
     }
 
-    if (d <= 0.0)
+    bool contentVisible = d <= 0.0 && cardDistance <= 0.0;
+    if (contentVisible)
     {
         float2 sourceUv = Crop.xy + local * Crop.zw;
         color = lerp(color, SourceTexture.Sample(LinearClamp, sourceUv), Motion.y);
@@ -380,7 +382,7 @@ float4 PSMain(VertexOutput i) : SV_Target
         color = applyRegionEffect(color, i.UV, sourceUv, BlurRect3, BlurStyle3);
     }
 
-    if (d <= 0.0 && Style.w > 0.001 && Cursor.z > 0.5 && Style2.z < 1.5)
+    if (contentVisible && Style.w > 0.001 && Cursor.z > 0.5 && Style2.z < 1.5)
     {
         float2 cursorLocal = (Cursor.xy - Crop.xy) / max(Crop.zw, 0.00001);
         float3 clickProjection = transformPoint(cursorLocal * 2.0 - 1.0, Transform0, Transform1, Transform2);
@@ -391,7 +393,7 @@ float4 PSMain(VertexOutput i) : SV_Target
         color.rgb = lerp(color.rgb, ClickColor.rgb, ring * Style.w * 0.9);
     }
 
-    if (d <= 0.0 && Cursor.z > 0.5)
+    if (contentVisible && Cursor.z > 0.5)
     {
         float2 cursorLocal = (Cursor.xy - Crop.xy) / max(Crop.zw, 0.00001);
         float3 cursorProjection = transformPoint(cursorLocal * 2.0 - 1.0, Transform0, Transform1, Transform2);

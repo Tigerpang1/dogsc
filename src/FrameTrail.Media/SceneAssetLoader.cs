@@ -130,7 +130,7 @@ public sealed class SceneAssetLoader : IDisposable
         var sh = scene.SourceHeight > 0 ? scene.SourceHeight : canvas.AspectHeight;
         var frameScale = canvas.FrameScale;
         var shortEdge = Math.Min(outputWidth, outputHeight);
-        var baseHeader = canvas.Frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 };
+        var baseHeader = (canvas.Frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 }) * Math.Clamp(canvas.FrameToolbarScale, .65, 1.6);
         var padding = Math.Clamp(scene.Padding, 0, .49);
         var fit = Math.Min(outputWidth * (1 - 2 * padding) / sw, Math.Max(2, outputHeight * (1 - 2 * padding) - baseHeader * frameScale) / sh);
         var scale = (scene.Canvas?.ContentScale ?? 1) * frameScale * (scene.ScreenMotion?.Scale ?? 1) * (scene.Opening?.Scale ?? 1);

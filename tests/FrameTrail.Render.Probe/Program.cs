@@ -166,6 +166,28 @@ finally { Directory.Delete(blurAssetRoot, true); }
 Check(plain[0] == 36 && plain[1] == 33 && plain[2] == 32 && plain[3] == 255, "background color at canvas corner");
 var cornerProbe = (14 * outputWidth + 25) * 4;
 Check(Math.Abs(plain[cornerProbe] - 36) < 3 && Math.Abs(plain[cornerProbe + 1] - 33) < 3, "screen corner is clipped to background");
+{
+    var solidScreen = MakeSolid(0, 0, 245, sourceWidth, sourceHeight);
+    var frameScene = new FrameScene(0, 0, new(0, 0), new(1, 1), 1, null, 0, "#202124", 0, 0,
+        outputWidth, outputHeight, 0, Canvas: new CanvasSettings { AspectWidth = 16, AspectHeight = 9, Frame = ScreenFrameKind.WindowLight },
+        SourceWidth: sourceWidth, SourceHeight: sourceHeight);
+    var windowPixels = new byte[plain.Length]; var browserPixels = new byte[plain.Length]; var noFramePixels = new byte[plain.Length];
+    renderer.Render(solidScreen, frameScene, windowPixels);
+    renderer.Render(solidScreen, frameScene with { Canvas = frameScene.Canvas! with { Frame = ScreenFrameKind.BrowserDark } }, browserPixels);
+    renderer.Render(solidScreen, frameScene with { Canvas = frameScene.Canvas! with { Frame = ScreenFrameKind.None } }, noFramePixels);
+    int RedAt(byte[] pixels, int x, int y) => pixels[(y * outputWidth + x) * 4 + 2];
+    Check(RedAt(windowPixels, 14, 359) < 80 && RedAt(windowPixels, 20, 359) > 200,
+        "window chrome keeps its 18px-scaled outer corner while content radius is zero and preserves the straight lower edge");
+    Check(RedAt(browserPixels, 14, 359) < 80 && RedAt(browserPixels, 23, 359) > 200,
+        "browser chrome uses its larger 22px-scaled outer corner and preserves the straight lower edge");
+    Check(RedAt(noFramePixels, 14, 359) > 200,
+        "no-frame content remains square when its content radius is zero");
+    Check(!GpuFrameRenderer.TryMapCanvasPointToSource(frameScene, sourceWidth, sourceHeight, outputWidth, outputHeight,
+            new(14.5 / outputWidth, 359.5 / outputHeight), out _)
+        && GpuFrameRenderer.TryMapCanvasPointToSource(frameScene, sourceWidth, sourceHeight, outputWidth, outputHeight,
+            new(20.5 / outputWidth, 359.5 / outputHeight), out _),
+        "canvas hit mapping rejects the window's outer clipped corner while accepting its straight edge");
+}
 Check(CountDifferent(plain, zoomed) > 10000, "zoom crop changes output pixels");
 Check(CountDifferent(plain, cursor) > 50, "cursor and click pulse change output pixels");
 var overlayProbe = ((int)(outputHeight * .15) * outputWidth + (int)(outputWidth * .15)) * 4;

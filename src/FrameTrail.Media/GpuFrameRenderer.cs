@@ -194,6 +194,16 @@ public sealed class GpuFrameRenderer : IDisposable
         var outsideX = Math.Max(qX, 0); var outsideY = Math.Max(qY, 0);
         var distance = MathF.Sqrt(outsideX * outsideX + outsideY * outsideY) + Math.Min(Math.Max(qX, qY), 0) - radius;
         if (distance > .5f) return false;
+        var header = constants.FrameStyle.X;
+        var cardHalfHeight = halfHeight + header * .5f;
+        var cardPointY = pY + header * .5f;
+        var cardRadius = Math.Max(constants.Style2.W, radius + constants.FrameStyle.W);
+        var cardQx = Math.Abs(pX) - halfWidth + cardRadius;
+        var cardQy = Math.Abs(cardPointY) - cardHalfHeight + cardRadius;
+        var cardOutsideX = Math.Max(cardQx, 0); var cardOutsideY = Math.Max(cardQy, 0);
+        var cardDistance = MathF.Sqrt(cardOutsideX * cardOutsideX + cardOutsideY * cardOutsideY)
+            + Math.Min(Math.Max(cardQx, cardQy), 0) - cardRadius;
+        if (cardDistance > .5f) return false;
 
         sourcePoint = new NormalizedPoint(
             constants.Crop.X + sourceX * constants.Crop.Z,
@@ -252,7 +262,8 @@ public sealed class GpuFrameRenderer : IDisposable
         var bezelBase = shortEdge * (isPhone ? .026 : isTablet ? .035 : 0);
         var outerRadiusBase = shortEdge * (isPhone ? .11 : isTablet ? .065 : 0);
         // Match the source renderer's 46px toolbar at 1080p; browser chrome uses its 1.08 toolbar scale.
-        var baseHeaderHeight = frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 };
+        var toolbarScale = Math.Clamp(scene.Canvas?.FrameToolbarScale ?? 1, .65, 1.6);
+        var baseHeaderHeight = (frame switch { ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * (46d / 1080), ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * (46d * 1.08 / 1080), _ => 0 }) * toolbarScale;
         var reservedHeader = baseHeaderHeight * frameScale;
         var fit = Math.Min(Math.Max(2, availableWidth - bezelBase * 2) / sourceWidth,
             Math.Max(2, availableHeight - reservedHeader - bezelBase * 2) / sourceHeight);
@@ -270,8 +281,17 @@ public sealed class GpuFrameRenderer : IDisposable
         screenWidth *= totalScale; screenHeight *= totalScale;
         var left = screenCenterX - screenWidth * .5; var top = screenCenterY - screenHeight * .5;
         var deviceBezel = bezelBase * totalScale;
-        var deviceOuterRadius = outerRadiusBase * totalScale;
+        var authoredOuterRadius = scene.Canvas?.FrameOuterRadius;
+        var deviceOuterRadius = authoredOuterRadius.HasValue
+            ? shortEdge * Math.Clamp(authoredOuterRadius.Value, 0, 160) / 1080d * totalScale
+            : outerRadiusBase * totalScale;
         var radius = deviceKind > 0 ? Math.Max(1, deviceOuterRadius - deviceBezel) : Math.Clamp(scene.CornerRadius, 0, .5) * shortEdge;
+        var chromeOuterRadius = frame switch
+        {
+            ScreenFrameKind.WindowLight or ScreenFrameKind.WindowDark => shortEdge * totalScale * ((float)(authoredOuterRadius ?? 18) / 1080f),
+            ScreenFrameKind.BrowserLight or ScreenFrameKind.BrowserDark => shortEdge * totalScale * ((float)(authoredOuterRadius ?? 22) / 1080f),
+            _ => 0
+        };
         var shadowRadius = Math.Clamp(scene.Shadow, 0, 1) * shortEdge * .045;
         var crop = scene.CropOrigin.IsFinite && scene.CropSize.IsFinite ? scene.CropOrigin : new NormalizedPoint(0, 0);
         var cropSize = scene.CropSize.IsFinite ? scene.CropSize : new NormalizedPoint(1, 1);
@@ -318,7 +338,7 @@ public sealed class GpuFrameRenderer : IDisposable
             Style = new((float)radius, (float)shadowRadius, (float)Math.Clamp(scene.Shadow, 0, 1), cursorVisible ? (float)Math.Clamp(scene.ClickStrength, 0, 1) : 0),
             Cursor = new((float)cursor.X, (float)cursor.Y, cursorVisible ? 1 : 0, cursorScale),
             Background = background,
-            Style2 = new(angle, (float)style, (float)clickStyle, 0),
+            Style2 = new(angle, (float)style, (float)clickStyle, (float)chromeOuterRadius),
             BackgroundEnd = endBackground,
             BackgroundPattern = new(patternKind, patternSpacing, patternStrength, 0),
             PatternColor = ParseColor(gradient.PatternColor),

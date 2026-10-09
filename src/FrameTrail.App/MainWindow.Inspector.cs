@@ -77,7 +77,7 @@ public partial class MainWindow
   else if(frameTab=="background") BuildBackgroundInspector();
   else
   {
-   Section("样机外框");Choices("外观",canvas.Frame,Enum.GetValues<ScreenFrameKind>().Select(x=>(x,x switch{ScreenFrameKind.None=>"无",ScreenFrameKind.WindowLight=>"浅色窗口",ScreenFrameKind.WindowDark=>"深色窗口",ScreenFrameKind.BrowserLight=>"浅色浏览器",ScreenFrameKind.BrowserDark=>"深色浏览器",ScreenFrameKind.Phone=>"手机",_=>"平板"})),v=>ApplyEdit(x=>CanvasSettingsFor(x).Frame=v));TextField("窗口标题",canvas.Title,v=>ApplyEdit(x=>CanvasSettingsFor(x).Title=v));TextField("网址",canvas.Address,v=>ApplyEdit(x=>CanvasSettingsFor(x).Address=v));Number("外框缩放",canvas.FrameScale,.6,1.6,v=>ApplyEdit(x=>CanvasSettingsFor(x).FrameScale=v),"×");
+   BuildMockupInspector();
   }
  }
  private static string ValidColor(string value){if(!System.Text.RegularExpressions.Regex.IsMatch(value,"^#[0-9a-fA-F]{6}$"))throw new ArgumentException("颜色格式为 #RRGGBB。");return value;}

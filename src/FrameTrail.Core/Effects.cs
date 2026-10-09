@@ -70,6 +70,9 @@ public sealed record CanvasSettings
     public double ContentScale { get; set; } = 1;
     public ScreenFrameKind Frame { get; set; } = ScreenFrameKind.None;
     public double FrameScale { get; set; } = 1;
+    public double FrameToolbarScale { get; set; } = 1;
+    /// <summary>Outer frame radius in a 1080px reference canvas; null selects the frame's native default.</summary>
+    public double? FrameOuterRadius { get; set; }
     public double BorderWidth { get; set; }
     public string BorderColor { get; set; } = "#FFFFFF";
     public string Title { get; set; } = "";

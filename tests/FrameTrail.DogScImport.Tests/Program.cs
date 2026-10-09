@@ -60,7 +60,7 @@ try
       },
       "openingSequence":{"isEnabled":true,"preset":"轻 3D","motionCurve":"swift","duration":2.4,"stagger":0.2,"includedElements":["屏幕","贴图"],"elementOrder":["屏幕","摄像头","贴图"]},
       "recordingMarkers":[{"id":"55555555-5555-5555-5555-555555555555","sourceTime":1.25,"number":2}],
-      "canvas":{"aspectRatio":"16:9","padding":90,"cornerRadius":24,"shadowStrength":0.4,"contentPosition":{"x":0.4,"y":0.6},"contentScale":1.2,"crop":{"x":0.1,"y":0.05,"width":0.8,"height":0.9},"screenFrame":"windowDark","screenFrameScale":1.1,"borderWidth":3,"borderHex":"#AABBCC","screenFrameTitle":"Demo","screenFrameBrowserAddress":"example.test","backgroundSource":{"kind":"projectVideo","relativePath":"assets/background.mp4"}},
+      "canvas":{"aspectRatio":"16:9","padding":90,"cornerRadius":24,"shadowStrength":0.4,"contentPosition":{"x":0.4,"y":0.6},"contentScale":1.2,"crop":{"x":0.1,"y":0.05,"width":0.8,"height":0.9},"screenFrame":"windowDark","screenFrameScale":1.1,"screenFrameToolbarScale":1.3,"screenFrameOuterCornerRadius":32,"screenFrameContentCornerRadius":8,"borderWidth":3,"borderHex":"#AABBCC","screenFrameTitle":"Demo","screenFrameBrowserAddress":"example.test","backgroundSource":{"kind":"projectVideo","relativePath":"assets/background.mp4"}},
       "cursorStyle":{"assetID":"system.arrow","hideWhenIdle":true,"idleDelay":2.0,"size":1.2,"clickEffectStyle":"ripple","clickColor":"#FFAA00"},
       "camera":{"shape":"circle","position":{"x":0.83,"y":0.78},"size":0.24,"borderWidth":2,"roundness":0.5,"isMirrored":true,"isHidden":true,"contentPosition":{"x":0.55,"y":0.45},"contentScale":1.4},
       "audio":{"systemVolume":0.82,"microphoneVolume":0.73,"isSystemMuted":false,"isMicrophoneMuted":false},
@@ -85,6 +85,7 @@ try
     Check(loaded.AudioTracks.Count == 1 && Math.Abs(loaded.AudioTracks[0].Volume - .73) < 1e-9 && File.ReadAllBytes(Path.Combine(destination, loaded.AudioTracks[0].MediaPath)).SequenceEqual(microphoneBytes), "独立麦克风轨道和素材映射");
     Check(Math.Abs(loaded.Settings.MainAudioVolume - .82) < 1e-9 && !loaded.Settings.MainAudioMuted, "内嵌系统音轨音量和静音状态映射");
     Check(loaded.Settings.Canvas?.Frame == ScreenFrameKind.WindowDark && loaded.Settings.Canvas.Crop == new NormalizedRect(.1, .05, .8, .9), "常用画布布局和窗口外框映射");
+    Check(loaded.Settings.Canvas!.FrameToolbarScale == 1.3 && loaded.Settings.Canvas.FrameOuterRadius == 32 && Math.Abs(loaded.Settings.CornerRadius - 8d / 1080) < 1e-9, "样机顶栏、外圆角与内容圆角独立导入");
     Check(loaded.Settings.BackgroundStyle?.Kind == BackgroundKind.Video && loaded.Settings.BackgroundStyle.VideoPath == "assets/background.mp4" && File.ReadAllBytes(Path.Combine(destination, loaded.Settings.BackgroundStyle.VideoPath)).SequenceEqual(backgroundVideoBytes), "DogSC 项目循环视频背景安全复制并持久化");
     Check(loaded.Settings.Cursor?.Scale == 1.2 && Math.Abs(loaded.Settings.Cursor.ClickDuration - .36) < 1e-9, "系统光标尺寸、隐藏规则和相近点击反馈映射");
     Check(loaded.ScreenMotions.Count == 1 && loaded.ScreenMotions[0].Focus?.Target == FocusEffectTarget.Pointer && loaded.ScreenMotions[0].Target.RotationY == -4, "屏幕 3D 姿态与指针聚焦效果映射");

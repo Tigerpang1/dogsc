@@ -47,7 +47,7 @@ public sealed class EditorTimelineControl : FrameworkElement
  protected override void OnRender(DrawingContext dc)
  {
   dc.DrawRectangle(B("Surface"),null,new Rect(0,0,ActualWidth,ActualHeight));hits.Clear();var pen=new Pen(B("Hairline"),.65);
-  Text(dc,"▣   轨道",new(17,12),11,B("Ink"));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
+  EditorIcon.DrawVector(dc,"layers",new Rect(16,9,16,16),B("Ink"));Text(dc,"轨道",new(38,12),11,B("Ink"));EditorIcon.DrawVector(dc,"chevron",new Rect(LabelWidth-25,10,12,12),B("Secondary"));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
   if(Project==null){Text(dc,"录制或导入视频后，片段与效果将在此显示",new(LabelWidth+25,70),12);return;}
   var s=Scale;var step=new[]{.05,.1,.25,.5,1,2,5,10,15,30,60,120,300,600}.FirstOrDefault(x=>x*s>=100);if(step==0)step=1200;
   dc.PushClip(new RectangleGeometry(new Rect(LabelWidth,0,Math.Max(0,ActualWidth-LabelWidth),ActualHeight)));
@@ -60,7 +60,7 @@ public sealed class EditorTimelineControl : FrameworkElement
    dc.PushClip(new RectangleGeometry(rect,9,9));
    if(Filmstrip&&Assets?.Thumbnails.Count>0){for(double px=rect.X;px<rect.Right;px+=90){var sourceTime=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var image=Assets.Thumbnails.OrderBy(z=>Math.Abs(z.SourceTime-sourceTime)).First().Image;dc.DrawImage(image,new Rect(px,rect.Y,90,58));}}
    else dc.DrawRectangle(new SolidColorBrush(Color.FromRgb(228,232,230)),null,new Rect(rect.X,rect.Y,rect.Width,58));
-   if(Waveform&&Assets?.Peaks.Count>0){var wavePen=new Pen(new SolidColorBrush(Color.FromRgb(120,125,125)),1);var peak=Math.Max(.001,Assets.Peaks.Max());for(double px=rect.X;px<rect.Right;px+=2){var st=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var k=Math.Clamp((int)(st/Assets.Duration*Assets.Peaks.Count),0,Assets.Peaks.Count-1);var v=Math.Max(.5,Assets.Peaks[k]/peak*8);dc.DrawLine(wavePen,new(px,rect.Bottom-11-v),new(px,rect.Bottom-11+v));}}
+   if(Waveform&&Assets?.Peaks.Count>0&&Assets.Duration>0){var peak=Math.Max(.001,Assets.Peaks.Max());var geometry=new StreamGeometry();var mid=rect.Bottom-11d;var left=rect.Left;var right=rect.Right;var waveStep=2d;double Amplitude(double px){var st=segment.SourceStart+(px-rect.X)/s*segment.PlaybackRate;var k=Math.Clamp((int)(st/Assets.Duration*Assets.Peaks.Count),0,Assets.Peaks.Count-1);return Math.Clamp(Assets.Peaks[k]/peak*8,.5,8);}using(var ctx=geometry.Open()){ctx.BeginFigure(new Point(left,mid),true,true);for(var px=left;px<=right;px+=waveStep)ctx.LineTo(new Point(px,mid-Amplitude(px)),true,false);ctx.LineTo(new Point(right,mid),true,false);for(var px=right;px>=left;px-=waveStep)ctx.LineTo(new Point(px,mid+Amplitude(px)),true,false);ctx.LineTo(new Point(left,mid),true,false);}geometry.Freeze();dc.DrawGeometry(new SolidColorBrush(Color.FromRgb(120,125,125)),null,geometry);}
    dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(145,30,33,33)),null,new Rect(Math.Max(rect.Left+4,rect.Right-60),rect.Top+5,55,19),8,8);Text(dc,TimeSpan.FromSeconds(segment.OutputDuration).ToString(@"m\:ss\.ff"),new(Math.Max(rect.Left+8,rect.Right-55),rect.Top+7),10,Brushes.White);
    dc.Pop();hits.Add(new(rect,new("screen",segment.Id),segment.SourceStart,segment.SourceDuration,segment.PlaybackRate,i));elapsed+=segment.OutputDuration;
   }
@@ -79,11 +79,11 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb(50,70,169,134)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}
   dc.Pop();dc.DrawRectangle(B("Surface"),null,new Rect(0,RulerHeight,LabelWidth,Math.Max(0,ActualHeight-RulerHeight)));
-  Text(dc,"▱   屏幕录制",new(16,RulerHeight+35),11,B("Ink"));y=RulerHeight+PrimaryHeight;
-  foreach(var name in LaneNames()){dc.DrawLine(pen,new(0,y),new(ActualWidth,y));Text(dc,name,new(18,y+18),11,B("Ink"));y+=LaneHeight;}
+  EditorIcon.DrawVector(dc,"trackScreen",new Rect(16,RulerHeight+31,18,18),B("Ink"));Text(dc,"屏幕录制",new(40,RulerHeight+35),11,B("Ink"));y=RulerHeight+PrimaryHeight;
+  foreach(var lane in LaneNames()){dc.DrawLine(pen,new(0,y),new(ActualWidth,y));EditorIcon.DrawVector(dc,lane.Icon,new Rect(17,y+16,17,17),B("Secondary"));Text(dc,lane.Label,new(41,y+18),11,B("Ink"));y+=LaneHeight;}
   dc.DrawLine(pen,new(0,RulerHeight),new(ActualWidth,RulerHeight));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
  }
- IEnumerable<string> LaneNames(){if(!HiddenTracks.Contains("zoom"))yield return "⌕   缩放";if(!HiddenTracks.Contains("motion"))yield return "⬡   屏幕 3D";if(Project?.Camera!=null&&!HiddenTracks.Contains("camera"))yield return "▣   摄像头";if(Project?.CameraMotions.Count>0&&!HiddenTracks.Contains("cameraMotion"))yield return "◇   摄像运动";if(Project?.Overlays.Count>0&&!HiddenTracks.Contains("overlay"))yield return "▧   贴图";if(Project?.BlurClips.Count>0&&!HiddenTracks.Contains("blur"))yield return "▨   柔化";if(Project?.AudioTracks.Count>0&&!HiddenTracks.Contains("audio"))yield return "≋   声音";}
+ IEnumerable<(string Icon,string Label)> LaneNames(){if(!HiddenTracks.Contains("zoom"))yield return ("trackZoom","缩放");if(!HiddenTracks.Contains("motion"))yield return ("track3d","屏幕 3D");if(Project?.Camera!=null&&!HiddenTracks.Contains("camera"))yield return ("trackCamera","摄像头");if(Project?.CameraMotions.Count>0&&!HiddenTracks.Contains("cameraMotion"))yield return ("trackCameraMotion","摄像运动");if(Project?.Overlays.Count>0&&!HiddenTracks.Contains("overlay"))yield return ("trackOverlay","贴图");if(Project?.BlurClips.Count>0&&!HiddenTracks.Contains("blur"))yield return ("trackBlur","柔化");if(Project?.AudioTracks.Count>0&&!HiddenTracks.Contains("audio"))yield return ("trackAudio","声音");}
  public static Guid AudioId(int i)=>new(i+1,0,0,new byte[8]);
  void DrawEffects(DrawingContext dc,string kind,IEnumerable<(Guid Id,double Start,double Duration,string Label)> clips,double y,Color color)
  {

@@ -102,8 +102,8 @@ public static class AutoZoomPlanner
 
 public static class PointerTrack
 {
-    public static (NormalizedPoint? Position, double ClickStrength) Sample(IReadOnlyList<PointerEvent> source, double sourceTime)
-        => new PreparedPointerTrack(source).Sample(sourceTime);
+    public static (NormalizedPoint? Position, double ClickStrength) Sample(IReadOnlyList<PointerEvent> source, double sourceTime, PointerSmoothing smoothing = PointerSmoothing.Smooth)
+        => new PreparedPointerTrack(source, smoothing).Sample(sourceTime);
 }
 
 /// <summary>Pre-sorted pointer samples; each frame uses binary search instead of sorting and scanning the recording.</summary>
@@ -111,27 +111,25 @@ public sealed class PreparedPointerTrack
 {
     private readonly PointerEvent[] events;
     private readonly PointerEvent[] clicks;
-    public PreparedPointerTrack(IEnumerable<PointerEvent> source)
+    private readonly PointerSmoothing smoothing;
+    private readonly SpringSample[] springSamples;
+    public PreparedPointerTrack(IEnumerable<PointerEvent> source, PointerSmoothing smoothing = PointerSmoothing.Smooth)
     {
+        if (!Enum.IsDefined(smoothing)) throw new ArgumentOutOfRangeException(nameof(smoothing));
+        this.smoothing = smoothing;
         events = source.Where(x => double.IsFinite(x.Time) && x.Time >= 0 && x.Location.IsFinite).OrderBy(x => x.Time).ToArray();
+        if (events.Length > 0 && events[^1].Time > TimeSpan.FromDays(7).TotalSeconds)
+            throw new InvalidDataException("鼠标事件时间超出七天安全范围，无法构建平滑轨道。");
         clicks = events.Where(x => x.Kind is PointerEventKind.LeftClick or PointerEventKind.RightClick).ToArray();
+        springSamples = smoothing == PointerSmoothing.Smooth ? BuildSpringSamples() : [];
     }
     public (NormalizedPoint? Position, double ClickStrength) Sample(double sourceTime)
     {
         if (!double.IsFinite(sourceTime) || sourceTime < 0 || events.Length == 0) return (null, 0);
         var upper = UpperBound(events, sourceTime);
         if (upper == 0) return (null, 0);
-        var lowerIndex = upper - 1; var lower = events[lowerIndex]; NormalizedPoint location;
-        if (upper == events.Length || events[upper].Time - lower.Time > .5 || events[upper].Time <= lower.Time) location = lower.Location;
-        else
-        {
-            var next = events[upper]; var duration = next.Time - lower.Time; var t = Math.Clamp((sourceTime - lower.Time) / duration, 0, 1);
-            var previous = lowerIndex > 0 && lower.Time > events[lowerIndex - 1].Time ? events[lowerIndex - 1] : lower;
-            var after = upper + 1 < events.Length && events[upper + 1].Time > next.Time ? events[upper + 1] : next;
-            location = new NormalizedPoint(
-                Hermite(lower.Location.X, next.Location.X, Tangent(previous.Time, previous.Location.X, lower.Time, lower.Location.X, next.Time, next.Location.X), Tangent(lower.Time, lower.Location.X, next.Time, next.Location.X, after.Time, after.Location.X), duration, t),
-                Hermite(lower.Location.Y, next.Location.Y, Tangent(previous.Time, previous.Location.Y, lower.Time, lower.Location.Y, next.Time, next.Location.Y), Tangent(lower.Time, lower.Location.Y, next.Time, next.Location.Y, after.Time, after.Location.Y), duration, t)).Clamp();
-        }
+        var lowerIndex = upper - 1; var lower = events[lowerIndex];
+        var location = smoothing == PointerSmoothing.Smooth ? SampleSpring(sourceTime) : SampleHermite(lowerIndex, upper, sourceTime);
         var clickIndex = UpperBound(clicks, sourceTime) - 1;
         var click = clickIndex >= 0 && sourceTime - clicks[clickIndex].Time <= .18 ? clicks[clickIndex] : null;
         var strength = click is null ? 0 : Math.Sin(Math.PI * Math.Clamp((sourceTime - click.Time) / .18, 0, 1));
@@ -154,6 +152,156 @@ public sealed class PreparedPointerTrack
     }
     private static double Hermite(double a, double b, double ma, double mb, double duration, double t)
     { var t2 = t * t; var t3 = t2 * t; return (2*t3-3*t2+1)*a + (t3-2*t2+t)*duration*ma + (-2*t3+3*t2)*b + (t3-t2)*duration*mb; }
+
+    private NormalizedPoint SampleHermite(int lowerIndex, int upperIndex, double time)
+    {
+        var lower = events[lowerIndex];
+        if (upperIndex >= events.Length) return lower.Location;
+        var upper = events[upperIndex];
+        var duration = upper.Time - lower.Time;
+        if (duration <= 0 || !IsContinuousMovement(lower, upper)) return lower.Location;
+        var progress = Math.Clamp((time - lower.Time) / duration, 0, 1);
+        var tangentScale = smoothing == PointerSmoothing.Medium ? .78 : 1;
+        return new NormalizedPoint(
+            Hermite(lower.Location.X, upper.Location.X, TangentAt(lowerIndex, true) * tangentScale, TangentAt(upperIndex, true) * tangentScale, duration, progress),
+            Hermite(lower.Location.Y, upper.Location.Y, TangentAt(lowerIndex, false) * tangentScale, TangentAt(upperIndex, false) * tangentScale, duration, progress)).Clamp();
+    }
+
+    private double TangentAt(int index, bool xAxis)
+    {
+        var current = events[index];
+        var previousIndex = index - 1;
+        while (previousIndex >= 0 && events[previousIndex].Time >= current.Time) previousIndex--;
+        var nextIndex = index + 1;
+        while (nextIndex < events.Length && events[nextIndex].Time <= current.Time) nextIndex++;
+        var currentValue = xAxis ? current.Location.X : current.Location.Y;
+        if (previousIndex >= 0 && nextIndex < events.Length)
+        {
+            var previous = events[previousIndex]; var next = events[nextIndex];
+            var previousDuration = current.Time - previous.Time; var nextDuration = next.Time - current.Time;
+            var previousValue = xAxis ? previous.Location.X : previous.Location.Y;
+            var nextValue = xAxis ? next.Location.X : next.Location.Y;
+            var previousSlope = (currentValue - previousValue) / previousDuration;
+            var nextSlope = (nextValue - currentValue) / nextDuration;
+            if (!double.IsFinite(previousSlope) || !double.IsFinite(nextSlope) || previousSlope * nextSlope <= 0) return 0;
+            var firstWeight = 2 * nextDuration + previousDuration;
+            var secondWeight = nextDuration + 2 * previousDuration;
+            var denominator = firstWeight / previousSlope + secondWeight / nextSlope;
+            return double.IsFinite(denominator) && Math.Abs(denominator) > double.Epsilon
+                ? (firstWeight + secondWeight) / denominator : 0;
+        }
+        if (nextIndex < events.Length)
+        {
+            var next = events[nextIndex];
+            return ((xAxis ? next.Location.X : next.Location.Y) - currentValue) / (next.Time - current.Time);
+        }
+        if (previousIndex >= 0)
+        {
+            var previous = events[previousIndex];
+            return (currentValue - (xAxis ? previous.Location.X : previous.Location.Y)) / (current.Time - previous.Time);
+        }
+        return 0;
+    }
+
+    private NormalizedPoint SampleSpring(double time)
+    {
+        var basePosition = SampleSpringBase(time);
+        var clickIndex = UpperBound(clicks, time);
+        var index = clickIndex < clicks.Length && time >= clicks[clickIndex].Time - .18
+            ? clickIndex
+            : clickIndex - 1;
+        if (index < 0 || index >= clicks.Length) return basePosition;
+        var click = clicks[index];
+        var previous = index > 0 ? clicks[index - 1].Time : double.NegativeInfinity;
+        var next = index + 1 < clicks.Length ? clicks[index + 1].Time : double.PositiveInfinity;
+        var start = Math.Max(events[0].Time, Math.Max(click.Time - .18, double.IsNegativeInfinity(previous) ? double.NegativeInfinity : (previous + click.Time) * .5));
+        var end = Math.Min(click.Time + .18, double.IsPositiveInfinity(next) ? double.PositiveInfinity : (click.Time + next) * .5);
+        if (time < start || time > end || end <= start) return basePosition;
+        var anchor = SampleSpringBase(click.Time);
+        var dx = click.Location.X - anchor.X; var dy = click.Location.Y - anchor.Y;
+        var weight = time <= click.Time ? SmootherStep((time - start) / Math.Max(click.Time - start, double.Epsilon))
+            : 1 - SmootherStep((time - click.Time) / Math.Max(end - click.Time, double.Epsilon));
+        return new NormalizedPoint(Math.Clamp(basePosition.X + dx * weight, 0, 1), Math.Clamp(basePosition.Y + dy * weight, 0, 1));
+    }
+
+    private NormalizedPoint SampleSpringBase(double time)
+    {
+        var i = UpperBound(springSamples, time);
+        if (i == 0) return events[0].Location;
+        if (i >= springSamples.Length) return springSamples[^1].Position;
+        var a = springSamples[i - 1]; var b = springSamples[i];
+        var t = Math.Clamp((time - a.Time) / (b.Time - a.Time), 0, 1);
+        return new NormalizedPoint(a.Position.X + (b.Position.X - a.Position.X) * t, a.Position.Y + (b.Position.Y - a.Position.Y) * t);
+    }
+
+    private SpringSample[] BuildSpringSamples()
+    {
+        if (events.Length == 0) return [];
+        const double step = 1d / 240;
+        const double mass = 2.8, stiffness = 450, damping = 66;
+        var first = events[0]; var last = events[^1];
+        var settleDuration = Math.Max(.65, 6 * Math.Sqrt(mass / stiffness));
+        var endTime = last.Time + settleDuration;
+        var estimatedSamples = Math.Ceiling((endTime - first.Time) / step) + 2;
+        var samples = new List<SpringSample>((int)Math.Min(estimatedSamples, 65_536)) { new(first.Time, first.Location) };
+        var position = first.Location; var stableTarget = position; var velocityX = 0d; var velocityY = 0d;
+        var eventIndex = 1; var sampleTime = first.Time;
+        while (sampleTime < endTime)
+        {
+            if (samples.Count >= 2_000_000)
+                throw new InvalidDataException("鼠标轨道过长，平滑缓存已达到安全上限；请将移动平滑切换为“适中”或“灵敏”，或使用较短的指针素材。");
+            if (eventIndex < events.Length)
+            {
+                var previousEvent = events[eventIndex - 1];
+                var nextEvent = events[eventIndex];
+                if (nextEvent.Time - previousEvent.Time > 1.3
+                    && sampleTime >= previousEvent.Time + .65
+                    && sampleTime < nextEvent.Time - .65)
+                {
+                    sampleTime = nextEvent.Time - .65;
+                    samples.Add(new(sampleTime, position));
+                    continue;
+                }
+            }
+            var nextTime = Math.Min(sampleTime + step, endTime);
+            while (eventIndex < events.Length && events[eventIndex].Time <= nextTime) eventIndex++;
+            var lowerIndex = Math.Max(eventIndex - 1, 0);
+            NormalizedPoint target;
+            if (eventIndex < events.Length)
+            {
+                var lo = events[lowerIndex]; var hi = events[eventIndex];
+                if (IsContinuousMovement(lo, hi))
+                {
+                    var t = Math.Clamp((nextTime - lo.Time) / Math.Max(hi.Time - lo.Time, double.Epsilon), 0, 1);
+                    target = new(lo.Location.X + (hi.Location.X - lo.Location.X) * t, lo.Location.Y + (hi.Location.Y - lo.Location.Y) * t);
+                }
+                else target = lo.Location;
+            }
+            else target = last.Location;
+            var dx = target.X - stableTarget.X; var dy = target.Y - stableTarget.Y;
+            if (dx * dx + dy * dy >= .00035 * .00035) stableTarget = target;
+            var dt = nextTime - sampleTime;
+            velocityX += (stiffness * (stableTarget.X - position.X) - damping * velocityX) / mass * dt;
+            velocityY += (stiffness * (stableTarget.Y - position.Y) - damping * velocityY) / mass * dt;
+            position = new(Math.Clamp(position.X + velocityX * dt, 0, 1), Math.Clamp(position.Y + velocityY * dt, 0, 1));
+            sampleTime = nextTime; samples.Add(new(sampleTime, position));
+        }
+        return samples.ToArray();
+    }
+
+    private static bool IsContinuousMovement(PointerEvent lower, PointerEvent upper)
+    {
+        var duration = upper.Time - lower.Time;
+        if (duration <= 0) return false;
+        if (duration <= .12) return true;
+        if (duration > .50) return false;
+        var dx = upper.Location.X - lower.Location.X; var dy = upper.Location.Y - lower.Location.Y;
+        return dx * dx + dy * dy <= .03 * .03;
+    }
+    private static double SmootherStep(double x) { x = Math.Clamp(x, 0, 1); return x * x * x * (x * (x * 6 - 15) + 10); }
+    private static int UpperBound(SpringSample[] values, double time)
+    { var low = 0; var high = values.Length; while (low < high) { var mid = low + (high - low) / 2; if (values[mid].Time <= time) low = mid + 1; else high = mid; } return low; }
+    private readonly record struct SpringSample(double Time, NormalizedPoint Position);
 }
 
 public static class FrameSceneEvaluator
@@ -193,7 +341,7 @@ public sealed class PreparedFrameSceneEvaluator
         segments = project.Timeline.Segments.ToArray(); outputEnds = new double[segments.Length];
         var output = 0d;
         for (var i = 0; i < segments.Length; i++) outputEnds[i] = output += segments[i].OutputDuration;
-        pointerTrack = new PreparedPointerTrack(project.PointerEvents);
+        pointerTrack = new PreparedPointerTrack(project.PointerEvents, project.Settings.PointerSmoothing);
         motionClips = project.ScreenMotions.OrderBy(x => x.Start).ToArray();
         motionStarts = motionClips.Select(x => x.Start).ToArray();
         motionFromStates = new ScreenMotionState[motionClips.Length];
@@ -566,6 +714,7 @@ public sealed class PreparedFrameSceneEvaluator
             ZoomEasing.Linear => x,
             ZoomEasing.Quintic => Bezier(x, .82, 0, .18, 1),
             ZoomEasing.Spring => Spring(x),
+            ZoomEasing.Quadratic => Bezier(x, .45, 0, .55, 1),
             _ => Bezier(x, .65, 0, .35, 1)
         };
     }

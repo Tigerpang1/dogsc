@@ -9,8 +9,10 @@ public readonly record struct NormalizedPoint(double X, double Y)
 }
 
 public enum PointerEventKind { Move, LeftClick, RightClick }
+/// <summary>Pointer reconstruction profile. Smooth uses the continuous second-order spring; Medium and Rapid use monotone Hermite motion with progressively less lag.</summary>
+public enum PointerSmoothing { Smooth, Medium, Rapid }
 public sealed record PointerEvent(double Time, NormalizedPoint Location, PointerEventKind Kind = PointerEventKind.Move, string? CursorAsset = null);
-public enum ZoomEasing { Linear, Cubic, Quintic, Spring }
+public enum ZoomEasing { Linear, Cubic, Quintic, Spring, Quadratic }
 public sealed record ZoomClip
 {
     public Guid Id { get; init; } = Guid.NewGuid();
@@ -139,6 +141,7 @@ public sealed record FrameTrailSettings
     public double CornerRadius { get; set; } = .02;
     public double Shadow { get; set; } = .3;
     public bool CursorVisible { get; set; } = true;
+    public PointerSmoothing PointerSmoothing { get; set; } = FrameTrail.PointerSmoothing.Smooth;
     public bool AutoZoom { get; set; } = true;
     public double MainAudioVolume { get; set; } = 1;
     public bool MainAudioMuted { get; set; }

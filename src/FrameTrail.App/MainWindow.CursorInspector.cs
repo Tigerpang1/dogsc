@@ -27,6 +27,9 @@ public partial class MainWindow
             x.Settings.CursorVisible = value;
         }));
         Number("大小", cursor.Scale, .3, 4, value => ApplyEdit(x => CursorSettingsFor(x).Scale = value), "×");
+        Choices("移动平滑", p.Settings.PointerSmoothing,
+            new[] { (PointerSmoothing.Smooth, "平滑"), (PointerSmoothing.Medium, "适中"), (PointerSmoothing.Rapid, "灵敏") },
+            value => ApplyEdit(x => x.Settings.PointerSmoothing = value));
         Toggle("静止后隐藏", cursor.HideWhenIdle, value => ApplyEdit(x => CursorSettingsFor(x).HideWhenIdle = value));
         if (cursor.HideWhenIdle)
             Number("静止隐藏延迟", cursor.IdleSeconds, .2, 10, value => ApplyEdit(x => CursorSettingsFor(x).IdleSeconds = value), " s");

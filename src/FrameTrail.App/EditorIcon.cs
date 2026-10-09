@@ -10,6 +10,14 @@ public sealed class EditorIcon : FrameworkElement
  public EditorIcon(){Width=19;Height=19;IsHitTestVisible=false;}
  static readonly Dictionary<string,string> Paths=new(){
  ["folder"]="M2,6 L8,6 10,8 22,8 22,20 2,20 Z M2,6 L2,4 9,4 11,6 20,6",
+ ["trackScreen"]="M2,3 L22,3 22,17 2,17 Z M8,22 L16,22 M12,17 L12,22",
+ ["trackZoom"]="M3,9 L3,3 9,3 M15,3 L21,3 21,9 M21,15 L21,21 15,21 M9,21 L3,21 3,15 M12,7 L12,17 M7,12 L17,12",
+ ["track3d"]="M12,2 L22,7 22,18 12,23 2,18 2,7 Z M2,7 L12,13 22,7 M12,13 L12,23",
+ ["trackCamera"]="M3,6 L15,6 15,19 3,19 Z M15,10 L22,6 22,19 15,15 Z",
+ ["trackOverlay"]="M5,3 L21,3 21,19 5,19 Z M2,6 L2,22 18,22 M8,16 L12,11 15,14 17,12 21,17",
+ ["trackAudio"]="M3,9 L7,9 13,4 13,21 7,16 3,16 Z M17,8 C21,12 21,13 17,17",
+ ["trackBlur"]="M4,4 L20,4 20,20 4,20 Z M8,8 L8,16 M12,8 L12,16 M16,8 L16,16",
+ ["trackCameraMotion"]="M12,2 L22,12 12,22 2,12 Z M7,12 L17,12 M12,7 L12,17",
  ["frame"]="M3,3 L18,3 18,6 M7,7 L22,7 22,21 7,21 Z M8,18 L12,13 16,17 18,14 21,18 M3,3 L3,17 5,17",
  ["opening"]="M4,6 L20,6 20,21 4,21 Z M4,10 L20,10 M7,2 L17,2 M12,12 L12,18 M9,15 L15,15",
  ["zoom"]="M3,9 L3,3 9,3 M15,3 L21,3 21,9 M21,15 L21,21 15,21 M9,21 L3,21 3,15",
@@ -40,7 +48,28 @@ public sealed class EditorIcon : FrameworkElement
  ["flag"]="M5,23 L5,2 20,2 16,8 20,14 5,14",["reset"]="M3,2 L3,9 10,9 M3,9 C4,-1 23,0 23,12 C23,24 5,27 2,16",
  ["wave"]="M2,10 L2,15 M6,6 L6,19 M10,2 L10,23 M14,7 L14,18 M18,4 L18,21 M22,9 L22,15",["aspect"]="M2,4 L22,4 22,20 2,20 Z M7,4 L7,20 M17,4 L17,20",["layers"]="M12,2 L23,8 12,14 1,8 Z M2,13 L12,19 22,13 M2,18 L12,24 22,18"
  };
- protected override void OnRender(DrawingContext dc){var b=Stroke??(Brush?)TryFindResource("Ink")??Brushes.DimGray;var p=new Pen(b,1.65){StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round,LineJoin=PenLineJoin.Round};if(!Paths.TryGetValue(Kind,out var path))path=Paths["frame"];dc.PushTransform(new ScaleTransform(ActualWidth/24,ActualHeight/24));dc.DrawGeometry(Kind=="play"?b:null,p,Geometry.Parse(path));dc.Pop();}
+ internal static void DrawVector(DrawingContext dc,string kind,Rect bounds,Brush brush)
+ {
+  if(bounds.Width<=0||bounds.Height<=0)return;
+  dc.PushTransform(new TranslateTransform(bounds.X,bounds.Y));dc.PushTransform(new ScaleTransform(bounds.Width/24,bounds.Height/24));
+  if(kind is "previous" or "next")
+  {
+   var g=new StreamGeometry();using(var c=g.Open())
+   {
+    if(kind=="previous"){c.BeginFigure(new Point(3,3),true,true);c.LineTo(new Point(7,3),true,false);c.LineTo(new Point(7,21),true,false);c.LineTo(new Point(3,21),true,false);c.BeginFigure(new Point(21,3),true,true);c.LineTo(new Point(9,12),true,false);c.LineTo(new Point(21,21),true,false);}
+    else{c.BeginFigure(new Point(17,3),true,true);c.LineTo(new Point(21,3),true,false);c.LineTo(new Point(21,21),true,false);c.LineTo(new Point(17,21),true,false);c.BeginFigure(new Point(3,3),true,true);c.LineTo(new Point(15,12),true,false);c.LineTo(new Point(3,21),true,false);}
+   }
+   g.Freeze();dc.DrawGeometry(brush,null,g);
+  }
+  else
+  {
+   var pen=new Pen(brush,1.65){StartLineCap=PenLineCap.Round,EndLineCap=PenLineCap.Round,LineJoin=PenLineJoin.Round};
+   if(!Paths.TryGetValue(kind,out var path))path=Paths["frame"];
+   dc.DrawGeometry(kind=="play"?brush:null,pen,Geometry.Parse(path));
+  }
+  dc.Pop();dc.Pop();
+ }
+ protected override void OnRender(DrawingContext dc){var b=Stroke??(Brush?)TryFindResource("Ink")??Brushes.DimGray;DrawVector(dc,Kind,new Rect(0,0,ActualWidth,ActualHeight),b);}
 }
 public sealed class DotGrid:FrameworkElement
 {
