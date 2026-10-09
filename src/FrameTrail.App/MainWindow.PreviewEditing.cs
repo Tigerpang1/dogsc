@@ -46,7 +46,7 @@ public partial class MainWindow
    else if(kind=="blur")p.BlurClips.First(x=>x.Id==id).Rect=ConstrainRect(r);
    else if(kind=="motion"){var target=p.ScreenMotions.First(x=>x.Id==id).Target;if(previewResizing)target.Scale=Math.Clamp(target.Scale*r.Width/originalDragRect.Width,.3,3);else target.Position=new(Math.Clamp(target.Position.X+r.X-originalDragRect.X,0,1),Math.Clamp(target.Position.Y+r.Y-originalDragRect.Y,0,1));}
    else if(inspectorTab=="camera"&&p.Camera is {} camera){camera.Position=new(r.X+r.Width/2,r.Y+r.Height/2);if(previewResizing)camera.Size=Math.Clamp(r.Height,.08,.9);}
-   else if(inspectorTab=="frame"){var c=CanvasSettingsFor(p);c.ContentPosition=new(r.X+r.Width/2,r.Y+r.Height/2);if(previewResizing)c.ContentScale=Math.Clamp(c.ContentScale*r.Width/originalDragRect.Width,.25,3);}
+   else if(inspectorTab=="frame"){var c=CanvasSettingsFor(p);c.ContentPosition=new(r.X+r.Width/2,r.Y+r.Height/2);if(previewResizing)c.ContentScale=Math.Clamp(c.ContentScale*r.Width/originalDragRect.Width,.25,4);}
   });e.Handled=true;
  }
 }

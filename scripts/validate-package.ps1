@@ -45,7 +45,7 @@ try {
     Run-OwnedProcess $exe @('--open', $sample, '--playback-smoke', $playback) $true
     Check-Report $playback '隔离开发环境后的便携版有声播放与暂停恢复'
     $workflow = Join-Path $validation 'portable-workflow'
-    Run-OwnedProcess $exe @('--workflow-smoke', $workflow, '--with-pause', '--record-seconds', '6') $true
+    Run-OwnedProcess $exe @('--workflow-smoke', $workflow, '--with-pause', '--with-input-stimulus', '--record-seconds', '6') $true
     Check-Report (Join-Path $workflow 'workflow-result.json') '便携版真实录制、暂停、编辑、重开及导出'
     if (-not $SkipInstallation) {
         $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9EB9A39E-9EF9-4E70-9D2B-E081ECBC1A68}_is1'
@@ -67,6 +67,8 @@ try {
         if ((Test-Path -LiteralPath $registry) -or (Test-Path -LiteralPath $installedExe)) { throw '卸载后仍残留应用主程序或安装注册项。' }
         $report.Checks += [ordered]@{ Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
+    $report.Artifacts = @(Get-ChildItem -LiteralPath (Join-Path $repo 'artifacts/release') -File | Where-Object { $_.Name -in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe") } | ForEach-Object { [ordered]@{ Name=$_.Name; Bytes=$_.Length; SHA256=(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
+    $report.BuildInfo = Get-Content -LiteralPath (Join-Path $release 'BUILD-INFO.txt') -Raw
     $report.Passed = $true
 } catch { $report.Error = $_.Exception.ToString(); throw }
 finally {

@@ -49,7 +49,7 @@ public partial class MainWindow
  {
   if(TimelineView==null)return;MarkerMenuButton.Visibility=project?.Markers.Count>0?Visibility.Visible:Visibility.Collapsed;TimelineView.Project=project;TimelineView.Assets=timelineAssets;TimelineView.Position=Playhead.Value;
   if(selectedEffect!=null)TimelineView.Selection=selectedEffect;else if(Clips.SelectedItem is ClipItem clip)TimelineView.Selection=new("screen",clip.Id);
-  TimelineView.Refresh();TimelineScroll.Maximum=Math.Max(0,TimelineView.DocumentWidth-Math.Max(1,TimelineView.ActualWidth-142));TimelineScroll.ViewportSize=Math.Max(1,TimelineView.ActualWidth-142);
+  UpdateTimelineDisplayButtons();TimelineView.Refresh();TimelineScroll.Maximum=Math.Max(0,TimelineView.DocumentWidth-Math.Max(1,TimelineView.ActualWidth-152));TimelineScroll.ViewportSize=Math.Max(1,TimelineView.ActualWidth-152);
   if(project!=null){var g=Gcd(project.Settings.CanvasWidth,project.Settings.CanvasHeight);AspectLabel.Text=$"{project.Settings.CanvasWidth/g}:{project.Settings.CanvasHeight/g}";}
   BuildInspector();
  }
@@ -69,8 +69,9 @@ public partial class MainWindow
  private void InspectorTabClick(object sender,RoutedEventArgs e){inspectorTab=(string)((Button)sender).Tag;BuildInspector();}
  private void CanvasControlsClick(object sender,RoutedEventArgs e){inspectorTab="frame";frameTab="layout";BuildInspector();}
  private void CropClick(object sender,RoutedEventArgs e){inspectorTab="crop";BuildInspector();}
- private void FilmstripClick(object sender,RoutedEventArgs e){TimelineView.Filmstrip=!TimelineView.Filmstrip;TimelineView.InvalidateVisual();}
- private void WaveClick(object sender,RoutedEventArgs e){TimelineView.Waveform=!TimelineView.Waveform;TimelineView.InvalidateVisual();}
+ private void FilmstripClick(object sender,RoutedEventArgs e){TimelineView.Filmstrip=!TimelineView.Filmstrip;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
+ private void WaveClick(object sender,RoutedEventArgs e){TimelineView.Waveform=!TimelineView.Waveform;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
+ private void UpdateTimelineDisplayButtons(){FilmstripButton.SetResourceReference(BackgroundProperty,TimelineView.Filmstrip?"ControlSurface":"Surface");WaveButton.SetResourceReference(BackgroundProperty,TimelineView.Waveform?"ControlSurface":"Surface");}
  private async void TimelineHover(double? time)
  {
   if(timelineHoverPosition==time)return;timelineHoverPosition=time;if(playing||project==null||operationCancellation!=null)return;

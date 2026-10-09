@@ -37,12 +37,6 @@ public partial class MainWindow
    if(clip.Focus is { } focus){FocusEffect F(FrameTrailProject x)=>Target(x).Focus!;Choices("形状",focus.Shape,new[]{(FocusEffectShape.Radial,"径向"),(FocusEffectShape.Linear,"线性")},v=>ApplyEdit(x=>F(x).Shape=v));Choices("目标",focus.Target,new[]{(FocusEffectTarget.Animation,"随运镜"),(FocusEffectTarget.Pointer,"随鼠标"),(FocusEffectTarget.Fixed,"固定")},v=>ApplyEdit(x=>F(x).Target=v));PointPad("焦点",focus.Center,v=>ApplyEdit(x=>F(x).Center=v));Number("范围",focus.Size,.1,1,v=>ApplyEdit(x=>F(x).Size=v));Number("虚化",focus.Blur,0,1,v=>ApplyEdit(x=>F(x).Blur=v));Number("暗化",focus.Dimming,0,.75,v=>ApplyEdit(x=>F(x).Dimming=v));Number("柔和度",focus.Softness,0,1,v=>ApplyEdit(x=>F(x).Softness=v));if(focus.Shape==FocusEffectShape.Linear)Number("焦面角度",focus.AngleDegrees,-180,180,v=>ApplyEdit(x=>F(x).AngleDegrees=v),"°");}
   }
  }
- private void BuildCursorInspector()
- {
-  var p=project!;var c=p.Settings.Cursor??new(){Visible=p.Settings.CursorVisible};Section("光标显示");Toggle("显示光标",c.Visible,v=>ApplyEdit(x=>{CursorSettingsFor(x).Visible=v;x.Settings.CursorVisible=v;}));Choices("样式",c.Style,new[]{(CursorStyle.SystemArrow,"箭头"),(CursorStyle.Dot,"圆点"),(CursorStyle.Ring,"圆环")},v=>ApplyEdit(x=>CursorSettingsFor(x).Style=v));Number("大小",c.Scale,.3,4,v=>ApplyEdit(x=>CursorSettingsFor(x).Scale=v),"×");Toggle("静止后隐藏",c.HideWhenIdle,v=>ApplyEdit(x=>CursorSettingsFor(x).HideWhenIdle=v));if(c.HideWhenIdle)Number("隐藏等待",c.IdleSeconds,.2,10,v=>ApplyEdit(x=>CursorSettingsFor(x).IdleSeconds=v)," s");
-  Section("点击反馈");Toggle("显示点击效果",c.ClickEffectsEnabled,v=>ApplyEdit(x=>CursorSettingsFor(x).ClickEffectsEnabled=v));Choices("效果",c.ClickEffect,new[]{(ClickEffectStyle.Pulse,"脉冲"),(ClickEffectStyle.Ring,"涟漪"),(ClickEffectStyle.None,"无")},v=>ApplyEdit(x=>CursorSettingsFor(x).ClickEffect=v));TextField("颜色",c.ClickColor,v=>ApplyEdit(x=>CursorSettingsFor(x).ClickColor=ValidColor(v)));Number("持续时间",c.ClickDuration,.05,2,v=>ApplyEdit(x=>CursorSettingsFor(x).ClickDuration=v)," s");
-  Section("独立时间校准");Number("时间偏移",p.MouseClock.OffsetSeconds*1000,-10000,10000,v=>ApplyEdit(x=>{x.MouseClock=x.MouseClock with{OffsetSeconds=v/1000};if(x.ZoomClips.All(z=>z.Automatic))x.ZoomClips=AutoZoomPlanner.Plan(x.PointerEvents.Select(a=>a with{Time=x.MouseClock.ToSourceTime(a.Time)}));})," ms","0");Note("只调整光标与点击的时间，画面和声音不会移动。");
- }
  private void AddOverlayClick(object sender,RoutedEventArgs e)=>ImportImageAsset(relative=>{if(project==null)return;var id=Guid.NewGuid();var t=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("overlay",id);inspectorTab="overlay";ApplyEdit(p=>p.Overlays.Add(new(){Id=id,MediaPath=relative,Start=t,Duration=Math.Min(3,p.Media.Duration-t)}));});
  private void AddBlurClip(){if(project==null)return;var id=Guid.NewGuid();var t=Math.Min(SourceNow,Math.Max(0,project.Media.Duration-.1));selectedEffect=new("blur",id);inspectorTab="blur";ApplyEdit(p=>p.BlurClips.Add(new(){Id=id,Start=t,Duration=Math.Min(3,p.Media.Duration-t)}));}
  private void RectControls(NormalizedRect rect,Action<NormalizedRect> apply)
@@ -59,12 +53,35 @@ public partial class MainWindow
  {
   var p=project!;ActionButton("添加柔化片段",AddBlurClip);var clip=p.BlurClips.FirstOrDefault(x=>x.Id==selectedEffect?.Id)??p.BlurClips.LastOrDefault();if(clip==null)return;var id=clip.Id;BlurClip Target(FrameTrailProject x)=>x.BlurClips.First(a=>a.Id==id);Section("柔化区域");RectControls(clip.Rect,v=>ApplyEdit(x=>Target(x).Rect=ConstrainRect(v)));Choices("处理方式",clip.Kind,new[]{(BlurKind.Blur,"柔化"),(BlurKind.Pixelate,"马赛克")},v=>ApplyEdit(x=>Target(x).Kind=v));Number("强度",clip.Strength,0,1,v=>ApplyEdit(x=>Target(x).Strength=v));Number("圆角",clip.CornerRadius,0,.3,v=>ApplyEdit(x=>Target(x).CornerRadius=v));Section("片段");Number("开始",clip.Start,0,Math.Max(0,p.Media.Duration-.1),v=>ApplyEdit(x=>Target(x).Start=v)," s");Number("长度",clip.Duration,.1,p.Media.Duration,v=>ApplyEdit(x=>Target(x).Duration=v)," s");Number("进入",clip.EnterDuration,0,2,v=>ApplyEdit(x=>Target(x).EnterDuration=v)," s");Number("退出",clip.ExitDuration,0,2,v=>ApplyEdit(x=>Target(x).ExitDuration=v)," s");
  }
+ private double cameraVisibleOpacity=1;
  private void BuildCameraInspector()
  {
-  var p=project!;ActionButton("导入摄像头素材…",()=>_=Guard(ImportCamera));if(p.Camera is not { } camera){Note("可以在录制工具中同时录制摄像头，或导入独立视频素材。",true);return;}
-  Section("摄像头布局");Choices("形状",camera.Shape,new[]{(CameraShape.RoundedRectangle,"圆角方形"),(CameraShape.Circle,"圆形")},v=>ApplyEdit(x=>x.Camera!.Shape=v));PointPad("位置",camera.Position,v=>ApplyEdit(x=>x.Camera!.Position=v));Number("大小",camera.Size,.08,.9,v=>ApplyEdit(x=>x.Camera!.Size=v));Number("圆角 / 圆形",camera.CornerRadius,0,.5,v=>ApplyEdit(x=>x.Camera!.CornerRadius=v));Number("描边",camera.BorderWidth,0,18,v=>ApplyEdit(x=>x.Camera!.BorderWidth=v),"","0");Number("不透明度",camera.Opacity,0,1,v=>ApplyEdit(x=>x.Camera!.Opacity=v));Toggle("水平镜像",camera.Mirrored,v=>ApplyEdit(x=>x.Camera!.Mirrored=v));Section("素材裁切");RectControls(camera.Crop,v=>ApplyEdit(x=>x.Camera!.Crop=ConstrainRect(v)));ActionButton("恢复完整摄像头画面",()=>ApplyEdit(x=>x.Camera!.Crop=NormalizedRect.Full));Section("素材同步");if(camera.SyncSegments is {Count:>1} segments)Note($"录制素材含 {segments.Count} 段同步区间；暂停间隙不显示相机画面。");Number("时间偏移",camera.TimelineStart,-10,10,v=>ApplyEdit(x=>CameraTimelineOperations.Move(x.Camera!,v-x.Camera!.TimelineStart))," s");Number("素材起点",camera.SourceStart,0,Math.Max(.04,AvailableAssetDuration(camera.MediaPath,camera.SourceStart+camera.Duration)-.04),ChangeCameraSourceStart," s");
-  ActionButton("添加摄像头运动",()=>{var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,p.Media.Duration-.1));selectedEffect=new("cameraMotion",id);ApplyEdit(x=>x.CameraMotions.Add(new(){Id=id,Start=start,Duration=Math.Min(2,x.Media.Duration-start),TargetPosition=camera.Position,TargetSize=Math.Min(.9,camera.Size*1.2)}));});
-  var motion=p.CameraMotions.FirstOrDefault(x=>x.Id==selectedEffect?.Id);if(motion!=null){var id=motion.Id;CameraMotionClip M(FrameTrailProject x)=>x.CameraMotions.First(a=>a.Id==id);Section("摄像运动");PointPad("目标位置",motion.TargetPosition,v=>ApplyEdit(x=>M(x).TargetPosition=v));Number("目标大小",motion.TargetSize,.08,.9,v=>ApplyEdit(x=>M(x).TargetSize=v));Number("时长",motion.Duration,.1,p.Media.Duration,v=>ApplyEdit(x=>M(x).Duration=v)," s");Number("进入",motion.EnterDuration,0,3,v=>ApplyEdit(x=>M(x).EnterDuration=v)," s");Number("回落",motion.ReturnDuration,0,3,v=>ApplyEdit(x=>M(x).ReturnDuration=v)," s");Choices("曲线",motion.Easing,Easings(),v=>ApplyEdit(x=>M(x).Easing=v));}
+  var p=project!;
+  if(p.Camera is not { } camera){InspectorHost.Children.Add(new FrameTrail.App.EditorIcon{Kind="camera",Width=40,Height=40,HorizontalAlignment=HorizontalAlignment.Center,Margin=new(0,45,0,14),Stroke=Brush("Secondary")});Section("没有摄像头轨");Note("这个项目没有可编辑的摄像头素材。录制时可启用摄像头，也可导入独立视频。",true);ActionButton("导入摄像头素材…",()=>_=Guard(ImportCamera),true);return;}
+  var motion=p.CameraMotions.FirstOrDefault(x=>x.Id==selectedEffect?.Id);
+  if(motion!=null){BuildCameraMotionInspector(motion);return;}
+  Note("基础布局作用于全片；时间线动画可在指定时段覆盖它。");
+  Toggle("显示摄像头",camera.Opacity>0,v=>{if(!v&&camera.Opacity>0)cameraVisibleOpacity=camera.Opacity;ApplyEdit(x=>x.Camera!.Opacity=v?cameraVisibleOpacity:0);});
+  if(camera.Opacity>0)
+  {
+   Section("位置与形状");Note("直接在画布中拖动，拖右下角调整大小。");PointPad("摄像头位置",camera.Position,v=>ApplyEdit(x=>x.Camera!.Position=v));Number("摄像头大小",camera.Size*100,8,90,v=>ApplyEdit(x=>x.Camera!.Size=v/100),"%","0");
+   ChoiceCards("形状",camera.Shape,new[]{(CameraShape.RoundedRectangle,"圆角方形","window"),(CameraShape.Circle,"圆形","camera")},v=>ApplyEdit(x=>x.Camera!.Shape=v),2,v=>new System.Windows.Controls.Border{Width=v==CameraShape.Circle?34:42,Height=34,CornerRadius=new(v==CameraShape.Circle?17:8),Background=Brush("Secondary"),HorizontalAlignment=HorizontalAlignment.Center});
+   if(camera.Shape!=CameraShape.Circle)Number("圆角程度",camera.CornerRadius*200,0,100,v=>ApplyEdit(x=>x.Camera!.CornerRadius=v/200),"%","0");
+   Section("基础外观");Toggle("镜像摄像头",camera.Mirrored,v=>ApplyEdit(x=>x.Camera!.Mirrored=v));Number("描边",camera.BorderWidth,0,18,v=>ApplyEdit(x=>x.Camera!.BorderWidth=v),"","0");Number("不透明度",camera.Opacity*100,0,100,v=>ApplyEdit(x=>x.Camera!.Opacity=v/100),"%","0");
+   ActionButton("添加摄像头运动",()=>AddCameraMotion(camera));
+   InspectorDisclosure("蒙版内取景",()=>{Note("只调整素材在当前形状内的取景，不移动摄像头外框。");RectControls(camera.Crop,v=>ApplyEdit(x=>x.Camera!.Crop=ConstrainRect(v)));ActionButton("恢复完整摄像头画面",()=>ApplyEdit(x=>x.Camera!.Crop=NormalizedRect.Full));});
+  }
+  else Note("摄像头画面已隐藏，声音仍使用声音面板的独立设置。开启后可调整布局和外观。");
+  InspectorDisclosure("素材同步",()=>{if(camera.SyncSegments is {Count:>1} segments)Note($"录制素材含 {segments.Count} 段同步区间；暂停间隙不显示相机画面。");Number("时间偏移",camera.TimelineStart,-10,10,v=>ApplyEdit(x=>CameraTimelineOperations.Move(x.Camera!,v-x.Camera!.TimelineStart))," s");Number("素材起点",camera.SourceStart,0,Math.Max(.04,AvailableAssetDuration(camera.MediaPath,camera.SourceStart+camera.Duration)-.04),ChangeCameraSourceStart," s");});
+  InspectorDisclosure("摄像头素材",()=>{Note(System.IO.Path.GetFileName(camera.MediaPath));ActionButton("导入摄像头素材…",()=>_=Guard(ImportCamera));});
+ }
+ private void AddCameraMotion(CameraTrack camera)
+ {
+  var p=project!;var id=Guid.NewGuid();var start=Math.Min(SourceNow,Math.Max(0,p.Media.Duration-.1));selectedEffect=new("cameraMotion",id);ApplyEdit(x=>x.CameraMotions.Add(new(){Id=id,Start=start,Duration=Math.Min(2,x.Media.Duration-start),TargetPosition=camera.Position,TargetSize=Math.Min(.9,camera.Size*1.2)}));
+ }
+ private void BuildCameraMotionInspector(CameraMotionClip motion)
+ {
+  var p=project!;var id=motion.Id;CameraMotionClip M(FrameTrailProject x)=>x.CameraMotions.First(a=>a.Id==id);Section("摄像头动画");Note("当前片段的目标布局只在对应时间段内生效。");PointPad("目标位置",motion.TargetPosition,v=>ApplyEdit(x=>M(x).TargetPosition=v));Number("目标大小",motion.TargetSize,.08,.9,v=>ApplyEdit(x=>M(x).TargetSize=v));Section("片段与动画");Number("时长",motion.Duration,.1,p.Media.Duration,v=>ApplyEdit(x=>M(x).Duration=v)," s");Number("进入",motion.EnterDuration,0,3,v=>ApplyEdit(x=>M(x).EnterDuration=v)," s");Number("回落",motion.ReturnDuration,0,3,v=>ApplyEdit(x=>M(x).ReturnDuration=v)," s");ChoiceCards("曲线",motion.Easing,Easings().Select(x=>(x.Item1,x.Item2,"wave")),v=>ApplyEdit(x=>M(x).Easing=v),2);
  }
  private async Task ImportCamera()
  {
@@ -72,20 +89,23 @@ public partial class MainWindow
  }
  private void BuildAudioInspector()
  {
-  var p=project!;Section("屏幕录制声音");Toggle("静音",p.Settings.MainAudioMuted,v=>ApplyEdit(x=>x.Settings.MainAudioMuted=v));Number("音量",p.Settings.MainAudioVolume*100,0,200,v=>ApplyEdit(x=>x.Settings.MainAudioVolume=v/100),"%","0");
-  if(p.Camera!=null){Section("摄像头声音");Toggle("摄像头静音",p.Camera.Muted,v=>ApplyEdit(x=>x.Camera!.Muted=v));Number("音量",p.Camera.Volume*100,0,200,v=>ApplyEdit(x=>x.Camera!.Volume=v/100),"%","0");}
-  for(var i=0;i<p.AudioTracks.Count;i++){var index=i;var a=p.AudioTracks[i];Section($"独立音轨 {i+1}");Note(System.IO.Path.GetFileName(a.MediaPath));Toggle("静音",a.Muted,v=>ApplyEdit(x=>x.AudioTracks[index].Muted=v));Number("音量",a.Volume*100,0,200,v=>ApplyEdit(x=>x.AudioTracks[index].Volume=v/100),"%","0");Number("时间偏移",a.OffsetSeconds,-10,10,v=>ApplyEdit(x=>x.AudioTracks[index].OffsetSeconds=v)," s");ActionButton("移除音轨",()=>ApplyEdit(x=>x.AudioTracks.RemoveAt(index)));}
+  var p=project!;Section("全片音轨");Note("音量和静音作用于整条素材，剪辑、变速和重排后按最终时间线混合。");
+  AudioVolumeRow("主素材声音","screen",p.Settings.MainAudioMuted,p.Settings.MainAudioVolume,v=>ApplyEdit(x=>x.Settings.MainAudioMuted=v),v=>ApplyEdit(x=>x.Settings.MainAudioVolume=v));
+  if(p.Camera!=null)AudioVolumeRow("摄像头声音","camera",p.Camera.Muted,p.Camera.Volume,v=>ApplyEdit(x=>x.Camera!.Muted=v),v=>ApplyEdit(x=>x.Camera!.Volume=v));
+  for(var i=0;i<p.AudioTracks.Count;i++)
+  {
+   var index=i;var a=p.AudioTracks[i];AudioVolumeRow($"独立音轨 {i+1}","audio",a.Muted,a.Volume,v=>ApplyEdit(x=>x.AudioTracks[index].Muted=v),v=>ApplyEdit(x=>x.AudioTracks[index].Volume=v));
+   InspectorDisclosure($"音轨 {i+1} · 同步与素材",()=>{Note(System.IO.Path.GetFileName(a.MediaPath));Number("时间偏移",a.OffsetSeconds,-10,10,v=>ApplyEdit(x=>x.AudioTracks[index].OffsetSeconds=v)," s");ActionButton("移除音轨",()=>ApplyEdit(x=>x.AudioTracks.RemoveAt(index)));});
+  }
   ActionButton("导入音频…",()=>_=Guard(ImportAudio));
+ }
+ private void AudioVolumeRow(string title,string icon,bool muted,double volume,Action<bool> mute,Action<double> change)
+ {
+  var row=new System.Windows.Controls.DockPanel{Margin=new(0,20,0,3)};row.Children.Add(new EditorIcon{Kind=icon,Width=17,Height=17,Margin=new(0,0,8,0),Stroke=Brush("Secondary")});row.Children.Add(new System.Windows.Controls.TextBlock{Text=title,FontWeight=FontWeights.SemiBold,VerticalAlignment=VerticalAlignment.Center});InspectorHost.Children.Add(row);Toggle("静音",muted,mute);Number("音量",volume*100,0,200,v=>change(v/100),"%","0");
  }
  private async Task ImportAudio()
  {
   if(projectFile==null)return;var d=new OpenFileDialog{Filter="音频/视频|*.wav;*.mp3;*.m4a;*.aac;*.flac;*.mp4;*.mov"};if(d.ShowDialog(this)!=true)return;var info=await MediaTools.ProbeAsync(d.FileName);if(!info.HasAudio)throw new InvalidDataException("素材没有音轨。");var relative="media/audio-"+Guid.NewGuid().ToString("N")+System.IO.Path.GetExtension(d.FileName);var path=System.IO.Path.Combine(System.IO.Path.GetDirectoryName(projectFile)!,relative);Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);File.Copy(d.FileName,path);auxiliaryDurations[relative]=info.Duration;ApplyEdit(p=>p.AudioTracks.Add(new(){MediaPath=relative,Duration=info.Duration}));
  }
- private void BuildOpeningInspector()
- {
-  var o=project!.Settings.Opening??new OpeningSettings();var values=o.ResolvePreset();Section("开场动效");Choices("预设",o.Preset,new[]{(OpeningPreset.Custom,"自定"),(OpeningPreset.ZoomUp,"放大入场"),(OpeningPreset.Fade,"淡入"),(OpeningPreset.SlideUp,"上升"),(OpeningPreset.RotateIn,"旋转入场"),(OpeningPreset.Converge,"汇聚"),(OpeningPreset.SideSlide,"侧向滑入"),(OpeningPreset.Light3D,"轻 3D")},v=>ApplyEdit(x=>(x.Settings.Opening??=new()).Preset=v));Toggle("启用开场",o.Enabled,v=>ApplyEdit(x=>(x.Settings.Opening??=new()).Enabled=v));Number("时长",o.Duration,.1,5,v=>ApplyEdit(x=>(x.Settings.Opening??=new()).Duration=v)," s");
-  Section("元素与顺序");foreach(var element in o.ElementOrder.Concat(Enum.GetValues<OpeningElement>()).Distinct()){var current=element;var label=element switch{OpeningElement.Screen=>"屏幕",OpeningElement.Camera=>"摄像头",_=>"贴图"};Toggle(label+"参与开场",o.IncludedElements.Contains(element),v=>ApplyEdit(x=>{var opening=x.Settings.Opening??=new();if(v&&!opening.IncludedElements.Contains(current))opening.IncludedElements.Add(current);else if(!v)opening.IncludedElements.Remove(current);}));var row=new System.Windows.Controls.StackPanel{Orientation=System.Windows.Controls.Orientation.Horizontal,HorizontalAlignment=HorizontalAlignment.Right};foreach(var direction in new[]{-1,1}){var d=direction;var button=new System.Windows.Controls.Button{Content=d<0?"提前 ↑":"延后 ↓",FontSize=10,Padding=new(10,3,10,3)};button.Click+=(_,_)=>ApplyEdit(x=>{var opening=x.Settings.Opening??=new();var order=opening.ElementOrder.Concat(Enum.GetValues<OpeningElement>()).Distinct().ToList();var index=order.IndexOf(current);var next=Math.Clamp(index+d,0,order.Count-1);(order[index],order[next])=(order[next],order[index]);opening.ElementOrder=order;});row.Children.Add(button);}InspectorHost.Children.Add(row);}Number("元素间隔",o.Stagger,0,1,v=>ApplyEdit(x=>(x.Settings.Opening??=new()).Stagger=v)," s");
-  Section("起始姿态");Number("初始大小",values.ScaleFrom,.1,2,v=>EditOpeningCustom(x=>x.ScaleFrom=v),"×");Number("水平位移",values.OffsetX,-1,1,v=>EditOpeningCustom(x=>x.OffsetX=v));Number("垂直位移",values.OffsetY,-1,1,v=>EditOpeningCustom(x=>x.OffsetY=v));Number("初始旋转",values.RotationFrom,-180,180,v=>EditOpeningCustom(x=>x.RotationFrom=v),"°");Number("初始不透明度",values.OpacityFrom,0,1,v=>EditOpeningCustom(x=>x.OpacityFrom=v));Choices("曲线",o.Easing,Easings(),v=>ApplyEdit(x=>(x.Settings.Opening??=new()).Easing=v));ActionButton("从开头预览",()=>{Playhead.Value=0;PlayClick(this,new());});
- }
- private void EditOpeningCustom(Action<OpeningSettings> edit)=>ApplyEdit(p=>{var value=(p.Settings.Opening??new()).ResolvePreset() with{Preset=OpeningPreset.Custom};edit(value);p.Settings.Opening=value;});
+
 }
