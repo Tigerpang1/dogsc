@@ -58,7 +58,7 @@ try
         return results.All(x => x.Passed) ? 0 : 1;
     }
     PrepareFeatureFixture(projectCopyFile);
-    if (args.Contains("--effects-only") || args.Contains("--full-uncut-effects"))
+    if ((args.Contains("--effects-only") && !args.Contains("--preserve-reordered-timeline")) || args.Contains("--full-uncut-effects"))
         PrepareUncutEffectTimeline(projectCopyFile);
     if (args.Contains("--motion-curves-only"))
     {
@@ -2149,6 +2149,9 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
         var sourceStart = source.GetProperty("start").GetDouble(); var targetStart = targetClip.GetProperty("start").GetDouble();
         var sourceDuration = source.GetProperty("duration").GetDouble();
         if (!double.IsFinite(sourceValue) || !double.IsFinite(targetValue) || Math.Abs(sourceValue - targetValue) < .001) { diagnostic = $"fixture 值没有区别：{valuePath}={sourceValue}/{targetValue}。"; return false; }
+        var sourcePoint = FindVisibleClipInteriorPoint(before.RootElement, timeline, mainWindow, sourceStart, sourceDuration);
+        var targetPoint = FindVisibleClipInteriorPoint(before.RootElement, timeline, mainWindow, targetStart, targetClip.GetProperty("duration").GetDouble());
+        if (!double.IsFinite(sourcePoint) || !double.IsFinite(targetPoint)) { diagnostic = $"时间线上找不到有足够可见宽度的来源或目标片段：source={sourceStart:0.###}+{sourceDuration:0.###}，target={targetStart:0.###}+{targetClip.GetProperty("duration").GetDouble():0.###}。"; return false; }
         var laneIndex = arrayName switch { "screenMotions" => 1, "cameraMotions" => 3, "overlays" => 4, "blurClips" => 5, _ => -1 };
         if (laneIndex < 0) { diagnostic = "未知的时间线轨道。"; return false; }
         var expectedInspector = arrayName switch { "screenMotions" => "运镜", "cameraMotions" => "摄像头", "overlays" => "贴图", "blurClips" => "柔化", _ => "" };
@@ -2156,7 +2159,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
         var targetInspector = "";
         timelineScroll = FindTimelineScrollPattern(timeline);
         if (timelineScroll is not null) originalScrollPercent = timelineScroll.Current.VerticalScrollPercent;
-        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, sourceStart + Math.Min(.2, sourceDuration * .35), out var sourceClick)) { diagnostic = "无法选择来源片段。"; return false; }
+        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, sourcePoint, out var sourceClick)) { diagnostic = "无法选择来源片段。"; return false; }
         sourceInspector = WaitForInspectorTitle(mainWindow, expectedInspector, TimeSpan.FromSeconds(2));
         if (sourceInspector != expectedInspector)
         {
@@ -2166,7 +2169,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
             return false;
         }
         FocusWindow(mainWindow); TryFocusTimeline(timeline); SendKey(0x43, true);
-        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, targetStart + Math.Min(.2, sourceDuration * .35), out var targetClick)) { diagnostic = "无法选择目标片段。"; return false; }
+        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, targetPoint, out var targetClick)) { diagnostic = "无法选择目标片段。"; return false; }
         targetInspector = WaitForInspectorTitle(mainWindow, expectedInspector, TimeSpan.FromSeconds(2));
         if (targetInspector != expectedInspector)
         {
@@ -2197,7 +2200,7 @@ static bool TryCopyPasteEffectType(AutomationElement timeline, AutomationElement
             return false;
         }
 
-        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, sourceStart + Math.Min(.2, sourceDuration * .35), out _)) { diagnostic = "无法重新选择来源片段。"; return false; }
+        if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, sourcePoint, out _)) { diagnostic = "无法重新选择来源片段。"; return false; }
         FocusWindow(mainWindow); SendKey(0x43, true);
         if (!ClickEffectClip(timeline, mainWindow, before.RootElement, laneIndex, 5.55, out _)) { diagnostic = "无法将播放头移到空白轨道位置。"; return false; }
         FocusWindow(mainWindow);
@@ -2240,6 +2243,31 @@ static double ReadCurrentClipValue(string projectFile, string arrayName, double 
         return clip.ValueKind == JsonValueKind.Undefined ? double.NaN : ReadNumberPath(clip, valuePath);
     }
     catch { return double.NaN; }
+}
+
+static double FindVisibleClipInteriorPoint(JsonElement project, AutomationElement timeline, AutomationElement mainWindow, double clipStart, double clipDuration)
+{
+    var duration = project.GetProperty("timeline").GetProperty("duration").GetDouble();
+    var handle = (IntPtr)mainWindow.Current.NativeWindowHandle;
+    var dpi = NativeMethods.GetDpiForWindow(handle) / 96d; if (dpi < .5 || dpi > 4) dpi = 1;
+    var bounds = timeline.Current.BoundingRectangle;
+    var pixelsPerOutputSecond = (bounds.Width - 152 * dpi) / duration;
+    if (!double.IsFinite(pixelsPerOutputSecond) || pixelsPerOutputSecond <= 0) return double.NaN;
+    var candidates = new List<(double Start, double End, double OutputWidth)>();
+    foreach (var segment in project.GetProperty("timeline").GetProperty("segments").EnumerateArray())
+    {
+        var start = segment.GetProperty("sourceStart").GetDouble();
+        var end = start + segment.GetProperty("sourceDuration").GetDouble();
+        var rate = segment.GetProperty("playbackRate").GetDouble();
+        var overlapStart = Math.Max(clipStart, start);
+        var overlapEnd = Math.Min(clipStart + clipDuration, end);
+        if (overlapEnd - overlapStart <= 0 || rate <= 0) continue;
+        var outputWidth = ((overlapEnd - overlapStart) / rate) * pixelsPerOutputSecond;
+        candidates.Add((overlapStart, overlapEnd, outputWidth));
+    }
+    var selected = candidates.FirstOrDefault(x => x.OutputWidth >= 16);
+    if (selected.OutputWidth < 16) selected = candidates.OrderByDescending(x => x.OutputWidth).FirstOrDefault();
+    return selected.OutputWidth <= 0 ? double.NaN : (selected.Start + selected.End) / 2;
 }
 
 static (ScrollPattern? Pattern, AutomationElement? Viewport) FindTimelineScroll(AutomationElement timeline)

@@ -1,8 +1,10 @@
 # FrameTrail 0.2.1 本机打包验证
 
-本轮交付为 Windows 11 x64 本地开发预览。便携包与 per-user 安装程序均已构建并经过本机运行检查，源码归档要求 Git 工作区干净。每个产物的实际提交、哈希及最后验证结果由包内 `BUILD-INFO.txt`、源码内 `SOURCE-METADATA.json` 和工作区机器可读报告确定。
+本轮交付为 Windows 11 x64 本地开发预览。便携包、per-user 安装程序和源码归档使用同一已提交版本，源码归档要求 Git 工作区干净。每个产物的实际提交、哈希及最后验证结果由包内 `BUILD-INFO.txt`、源码内 `SOURCE-METADATA.json` 和工作区机器可读报告确定；应用编译成功不代替包运行验收。
 
 0.2.1 使用 `scripts/validate-package.ps1 -Version 0.2.1` 和 `scripts/validate-source-package.ps1 -Version 0.2.1 -SourceZip <ZIP>`。最终结果分别写入 `artifacts/validation/package-0.2.1/result.json` 和 `source-validation.json`，必须分别为 `Passed: true`、`status: passed`，并与发布清单中的包哈希对应。下面的 0.2.0 记录作为已完成的历史基线保留。
+
+当前包验收检查必要文件与两份上游 MIT 来源、隔离开发环境后的便携播放、真实录制与暂停/编辑/重开/导出、per-user 安装播放及卸载注册清理，共五项。源码验收在工作区之外的 TEMP 独立解压且没有 `.git`，运行 Core/导入器测试、应用构建和不附带 FFmpeg 的重新打包。两组报告通过后才允许 `write-release-manifest.ps1` 写出交付清单；该脚本再次核对三个交付文件的实际哈希以及程序包、源码包的提交一致性。
 
 ## 0.2.0 历史包验证
 

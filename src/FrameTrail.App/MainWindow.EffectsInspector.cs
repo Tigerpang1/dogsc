@@ -118,7 +118,7 @@ public partial class MainWindow
   for(var i=0;i<p.AudioTracks.Count;i++)
   {
    var index=i;var a=p.AudioTracks[i];if(a.Source!=AudioTrackSource.System)AudioVolumeRow(a.Source==AudioTrackSource.Microphone?"麦克风":"独立音轨 "+(i+1),"audio",a.Muted,a.Volume,v=>ApplyEdit(x=>x.AudioTracks[index].Muted=v),v=>ApplyEdit(x=>x.AudioTracks[index].Volume=v));
-   InspectorDisclosure($"音轨 {i+1} · 同步与素材",()=>{Note(System.IO.Path.GetFileName(a.MediaPath));Number("时间偏移",a.OffsetSeconds,-10,10,v=>ApplyEdit(x=>x.AudioTracks[index].OffsetSeconds=v)," s");ActionButton("移除音轨",()=>ApplyEdit(x=>x.AudioTracks.RemoveAt(index)));});
+   InspectorDisclosure($"音轨 {i+1} · 同步与素材",()=>{Note(System.IO.Path.GetFileName(a.MediaPath));Number("时间偏移",a.OffsetSeconds,-10,10,v=>ApplyEdit(x=>AudioTimelineOperations.Move(x.AudioTracks[index],v-x.AudioTracks[index].OffsetSeconds))," s");ActionButton("移除音轨",()=>ApplyEdit(x=>x.AudioTracks.RemoveAt(index)));});
   }
   ActionButton("导入音频…",()=>_=Guard(ImportAudio));
  }

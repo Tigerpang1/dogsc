@@ -6,7 +6,7 @@
 
 final19的新增媒体证据为 `camera-clock-media-20261009-114914/result.json`（2×源时钟和重排/变速后，预览及MP4依次显示绿、红、黄，3.5秒105帧）；`overlay-export-20261009-114909/result.json`（Spotlight、贴图样式与背景处理）；`audio-overrides-20261009-054919/audio-overrides.summary.json`（分段音量、静音、分段时钟及真实M4A）。音频首段两路幅度比均约0.49976，静音泄漏约2.3e-8。独立非零偏移音轨测试也检查3.000秒总长、前导1秒与尾部0.5秒静音，以及两个速率区间约0.4997的音量比，防止后段提前叠入首段。普通集成报告为 `synthetic-testsrc2-20261009-114924-057/result.json`；同步报告为 `sync-1080p60-20261009-114932-409/result.json`，最大音画偏差20ms。
 
-桌面新增控件专项 `ui-advanced-final17-audit.json`、`ui-spotlight-audio-final17-audit.json` 均为5/5通过，覆盖ZoomFocus、摄像头动画和基础样式、贴图边框/阴影/背景柔化/隐藏、Spotlight、所选片段音量及保存重开。`motion-curves-ui-final15.json` 全项通过，覆盖曲线、弹簧、开场、光标和慢放。final19在此后修正了相机大于50%的圆角上限和音频混音滤镜，两者均在final19媒体测试中重新验证。完整UIA与最终包内回归另行记入交付报告。
+桌面新增控件专项 `ui-advanced-final17-audit.json`、`ui-spotlight-audio-final17-audit.json` 均为5/5通过，覆盖ZoomFocus、摄像头动画和基础样式、贴图边框/阴影/背景柔化/隐藏、Spotlight、所选片段音量及保存重开。`motion-curves-ui-final15.json` 全项通过，覆盖曲线、弹簧、开场、光标和慢放。final19在此后修正了相机大于50%的圆角上限和音频混音滤镜，两者均在final19媒体测试中重新验证。桌面完整流程和应用内部回归见下方，不把一项自动化点击失败计作应用内部回归失败，也不把后续专项结果改写成全量42项通过。
 
 final15媒体产物为 `overlay-export-20261009-112311`、`camera-media-20261009-112313`、`synthetic-testsrc2-20261009-112320-646` 和 `sync-1080p60-20261009-112327-899`；均有成功报告。普通集成四帧比较PSNR为23.68–25.17dB、MAE为3.94–5.27，1080p60/360帧耗时1.653秒；同步样本最大20ms。
 
@@ -41,7 +41,7 @@ Windows 11 Pro x64（`10.0.26200`），AMD Ryzen 7 9850X3D、NVIDIA GeForce RTX 
 | 媒体导出 | Render.Probe通过范围MP4的ffprobe、抽帧顺序和音频范围检查；1440p与4K、30/60fps矩阵通过。组合场景导出36帧，独立音频及全部场景层通过。暂停后同一WAV映射出的多个音频片段，经2倍速和重排后可正常导出M4A；无主素材音轨时，相机容器音轨按多个同步片段导出AudioOnly M4A通过。Integration的NVENC/D3D11 1080p60同步样片输出300帧，三处闪帧时间为0.5/2/4秒，音频脉冲为0.48/1.98/3.98秒，最大测得偏差20ms。真实70秒录制工程编辑后导出52.9秒工程长度的MP4通过；此前复跑工程的53.200秒输出为另一份旧编辑状态。Integration还生成117帧、320×180、30fps、3.9秒MP4及同长M4A，ffprobe确认音频流和时长。另有1920×1080、60fps、360帧、6秒NVENC/D3D11输出，耗时2.106秒。 |
 | 长时区域视听采集 | `artifacts/validation/long-capture/ffplay-sync-correct-region-30m-report.json` 与对应媒体记录：正确区域同时采集30分钟，H.264 320×180、60/1 CFR、1800.683333秒、108041帧；WAV 1800.532472秒。检测到1072组闪帧/音频cue，1072组均一一配对（配对容差±250ms），覆盖名义1080组的99.26%；另有8组未检出，原因未分类。音频相对视频中位−45.790ms、绝对P95 70.790ms、P99 79.606ms、最大94.123ms，漂移估计+0.02696ms/min，满足本次长时100ms验收阈值。该试验的音频来自系统回环，FFplay fixture 同时播放画面和声音，可能混入桌面其他声源，不能当作无污染独立声源测试。启动前20秒12组的P95为65.623ms，未满足短测50ms阈值；另一15秒短探针9组最大47.594ms仅说明该次结果，不能据此泛化。 |
 | 预览与导出构图 | Integration在四个成片时间点比较真实 `PreviewPlaybackSession` 帧与导出帧，源时间完全对齐；PSNR为24.06–25.58dB，MAE为3.78–5.03。阈值按低分辨率H.264压缩设置为PSNR≥23.5dB且MAE≤8；这是有损编码容差，不是逐像素相等。 |
-| 用户界面编辑 | `artifacts/validation/editor-regression-final.json` 28/28通过；独立桌面 UIA `ui-full-smoke-audit-v36.json` 为42/42通过，包含真实控件操作、四类效果复制/属性粘贴、预设生命周期、导出范围、设置及备忘录保存重开。App内部回归覆盖60fps媒体逐帧前进/后退、多选重排及撤销、音轨多选删除、剪贴板效果、分段摄像头移动/裁切/滑移、1秒范围MP4和保存重开。`playback-regression-v4.json` 验证54帧/1.766秒暂停后续播18帧至2.333秒。缩略图/波形截图见 `editor-with-thumbnails.png`。 |
+| 用户界面编辑 | final20 应用内部回归 `editor-regression-final20-audit.json` 为39/39通过，覆盖逐帧、多选重排与撤销、摄像头分段编辑、音轨组删除、四类效果复制/属性粘贴、1秒范围MP4和保存重开，并含声音检查器偏移同步段的保存重载。桌面 UIA `ui-full-final17-audit.json` 为41/42；唯一失败是贴图属性粘贴用例点击到重排片段边界，目标未选中。后续 `ui-overlays-reordered-final20-audit.json` 保留重排工程并在可见片段内部复测，贴图复制/属性粘贴通过；这补充了该单项证据，不改变全量报告的41/42记录。`playback-regression-v4.json` 验证54帧/1.766秒暂停后续播18帧至2.333秒。 |
 | DogSC导入 | `dotnet run --project tests/FrameTrail.DogScImport.Tests/FrameTrail.DogScImport.Tests.csproj -c Release` 的构造schema fixtures通过，覆盖版本字段、素材复制安全和当前已映射效果。未用真实Mac工程互操作；导入报告逐项保留损失，Windows自有工程格式不伪装成原格式完全兼容。 |
 | 原创样例 | `scripts/create-sample.ps1` 重新生成相对路径工程、合成屏幕/摄像头视频、独立tone、角标和8秒导出；脚本保存并重开工程后调用实际ExportEngine，再由ffprobe确认1280×720、30fps、8秒且有音轨。成品与来源说明位于 `artifacts/sample/FrameTrail-Demo/`。 |
 | 便携版包内验证 | `artifacts/validation/package-0.2.0/result.json` 通过：隔离开发环境的 `PATH` 与 `DOTNET_ROOT` 后，便携版有声播放、暂停恢复，以及真实录制/暂停/编辑/重开/导出均通过。每次workflow的时长、指针与点击数以同目录当前workflow-result.json为准；真实受控点击运镜已有另一个input-workflow-final证据。此验证仍在开发机Windows 11上，不等价于无运行库干净虚拟机；per-user安装版样例播放与卸载清理也通过；最终源码归档另由source-validation.json核验。 |
@@ -65,6 +65,8 @@ ScreenRecorderLib旧后端完成的30分钟样片有4,095帧、1800.049秒视频
 本报告和测试结果不代表完整DogSC兼容或整个迁移阶段结束。平台光标资源、部分原生采集时钟精度、真实设备矩阵以及长录制质量仍有限制。
 
 源码包已完成工作区外独立重建预验（2026-10-09 09:04–09:05 UTC）：归档无 Git 元数据，Core/导入器测试、App 构建和无 FFmpeg 便携包生成均通过，BUILD-INFO 正确标注 source archive。最终发行物的源码 SHA 与二进制 SHA 以 DELIVERY-MANIFEST.json 和 package-0.2.0 下最后报告为准。
+
+桌面截图 `visual-final20-audit/` 含主界面及10个检查器/录制/导出页面，共11张，使用同一合成参考工程。截图用于结构与控件顺序检查，不证明与Mac版逐像素一致；投影四角仍有位置/姿态差异，缺少原Mac工程参数，暂不能归因于整体平移或渲染误差。其余硬件、真实Mac工程互操作及95%全功能目标仍未得到证明。
 
 补充异常与重定位验证：
 

@@ -30,7 +30,7 @@ pwsh -File scripts/package.ps1 -Version 0.2.1
 
 ## 验证证据
 
-本机为 Windows 11 Pro 26200、AMD Ryzen 7 9850X3D、NVIDIA RTX 5070 Ti。Core/导入器测试、真实 GPU 效果探针、1080p/1440p/4K × 30/60fps 编码矩阵、剪辑重排后的画面与音频频率对照均通过。桌面 UIA 覆盖主窗口、预设、复制粘贴、导出设置和备忘录；应用内部回归28/28通过，覆盖多音轨组删除、素材末尾边界、撤销、属性粘贴、保存重开和1秒范围的真实MP4导出。具体结果以 [验证报告](docs/validation-report.md) 为准。
+本机为 Windows 11 Pro 26200、AMD Ryzen 7 9850X3D、NVIDIA RTX 5070 Ti。Core/导入器测试、真实 GPU 效果探针、1080p/1440p/4K × 30/60fps 编码矩阵、剪辑重排后的画面与音频频率对照均通过。应用内部 final20 回归39/39通过；桌面 UIA final17 全量42项中41项通过，唯一失败是重排后贴图目标片段的测试点击落在片段边界；随后在保留重排时间线的独立专项中该贴图属性粘贴通过。静态界面保存了11张页面截图。具体结果和限制以 [验证报告](docs/validation-report.md) 与 [迁移验收表](docs/parity-checklist.md) 为准；这些证据尚不足以认定“静态完全一致、功能迁移95%”已达到。
 
 测试原始产物在 `artifacts/validation`，不纳入 Git 或发行包，以免包含真实屏幕内容。合成媒体、算法测试和本机测试不等同于另一台干净机器或所有摄像头/麦克风已验收。
 
