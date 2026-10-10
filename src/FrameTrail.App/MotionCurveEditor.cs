@@ -23,6 +23,7 @@ public sealed class MotionCurveEditor : FrameworkElement
         Height = 154;
         MinWidth = 140;
         Focusable = true;
+        SetResourceReference(FocusVisualStyleProperty, "SurfaceKeyboardFocus");
         Cursor = Cursors.Cross;
         ToolTip = "拖动控制点调整曲线；Esc 取消。下方数值可精确调整。";
         System.Windows.Automation.AutomationProperties.SetName(this, "自定义运动曲线图");

@@ -1,4 +1,16 @@
-# 0.2.6 界面打磨与验收
+# 0.2.6–0.2.7 界面打磨与验收
+
+## 0.2.7 交互预览：移除系统虚线焦点框
+
+2026-10-10 用户明确拒绝截图中围住整片时间线的 Windows/WPF 虚线焦点框。本次在应用级覆盖主题默认焦点样式，补齐自绘时间线与曲线控件；时间线键盘焦点只标记左上“轨道”标题，分隔条使用短条提示，滚动容器不额外占用 Tab 停靠位。悬浮时间游标改为细实线。鼠标点击不额外圈住整片内容，键盘焦点仍可辨认。
+
+实际 0.2.7 预览位于 `artifacts/preview/FrameTrail-0.2.7-focus/app/FrameTrail.exe`。同内容工程的 150% DPI 浅深色实机检查已完成：鼠标选中第二片段、方向键从 00:07.08 前进到 00:07.12、Shift+Tab 到缩放按钮、Tab 返回时间线，均未出现整块虚线框；Tab 返回时标题局部焦点清晰可见。截图位于 `artifacts/validation/focus-polish-v1/timeline-keyboard-{light,dark}.jpg`。此构建供本地交互预览，不替代最终源码归档、安装器或全产品验收。
+
+`artifacts/validation/focus-offscreen-v5/result.json` 共 77 项通过，其中包括全局主题回退的实际焦点模板、连续实线与旧虚线负对照、时间线局部边界、曲线与分隔条可见像素。v1–v3 的探针采样和遍历问题保留为失败记录，v4 是修正后的首次通过，v5 增加了全局回退检查。离屏结果不代表真实系统高对比模式或全 DPI 矩阵通过。
+
+本次 `FrameTrail.Render.Probe` 标准回归通过（退出码 0），使用本机 Direct3D 11 硬件后端验证场景渲染与实际媒体导出；日志位于 `artifacts/validation/focus-polish-v1/render-probe.log`。其中摄像头素材测试验证已有媒体的合成语义，不代表物理摄像头采集验收。
+
+焦点样式遵循 [WPF 官方说明](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/advanced/styling-for-focus-in-controls-and-focusvisualstyle)：应用可覆盖主题焦点资源，FocusVisualStyle 的模板目标仍为 Control，并可用于自绘 FrameworkElement。视觉策略以本项目用户禁用要求为准。
 
 更新：2026-10-10。此记录覆盖共享控件、设置页和导出窗口；0.2.5 的媒体、录制和交付验收仍保留各自版本边界。
 

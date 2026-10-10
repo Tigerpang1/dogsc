@@ -19,6 +19,37 @@
       </Setter.Value>
     </Setter>
   </Style>
+  <!-- Override WPF's theme fallback too: custom FrameworkElements and template
+       children must never fall back to the system dotted focus rectangle. -->
+  <Style x:Key="{x:Static SystemParameters.FocusVisualStyleKey}" TargetType="Control"
+         BasedOn="{StaticResource SurfaceKeyboardFocus}"/>
+  <Style x:Key="TimelineKeyboardFocus" TargetType="Control">
+    <Setter Property="Template"><Setter.Value>
+      <ControlTemplate>
+        <Border x:Name="Focus" Width="136" Height="30" HorizontalAlignment="Left" VerticalAlignment="Top"
+                Margin="8,5,0,0" CornerRadius="7" BorderThickness="1.5"
+                BorderBrush="{DynamicResource Accent}" IsHitTestVisible="False"/>
+        <ControlTemplate.Triggers>
+          <DataTrigger Binding="{Binding HighContrast, Source={StaticResource TransientPreferences}}" Value="True">
+            <Setter TargetName="Focus" Property="BorderBrush" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+          </DataTrigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
+  <Style x:Key="TimelineResizeFocus" TargetType="Control">
+    <Setter Property="Template"><Setter.Value>
+      <ControlTemplate>
+        <Border x:Name="Focus" Width="48" Height="2" HorizontalAlignment="Center" VerticalAlignment="Center"
+                CornerRadius="1" Background="{DynamicResource Accent}" IsHitTestVisible="False"/>
+        <ControlTemplate.Triggers>
+          <DataTrigger Binding="{Binding HighContrast, Source={StaticResource TransientPreferences}}" Value="True">
+            <Setter TargetName="Focus" Property="Background" Value="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}"/>
+          </DataTrigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate>
+    </Setter.Value></Setter>
+  </Style>
   <Style x:Key="FloatingSurface" TargetType="Border">
     <Setter Property="Background" Value="{DynamicResource Chrome}"/>
     <Setter Property="BorderBrush" Value="{DynamicResource Hairline}"/>

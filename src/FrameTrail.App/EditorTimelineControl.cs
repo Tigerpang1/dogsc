@@ -58,6 +58,9 @@ public sealed class EditorTimelineControl : FrameworkElement
  public EditorTimelineControl()
  {
   Focusable=true;MinHeight=234;SizeChanged+=(_,_)=>InvalidateVisual();
+  SetResourceReference(FocusVisualStyleProperty,"TimelineKeyboardFocus");
+  System.Windows.Automation.AutomationProperties.SetName(this,"时间线");
+  System.Windows.Automation.AutomationProperties.SetHelpText(this,"左右方向键逐帧定位；空格播放或暂停；S 分割所选片段。");
   if(Application.Current?.TryFindResource("TransientPreferences") is TransientPreferences preferences)
   {
    isHighContrast=preferences.HighContrast;
@@ -104,7 +107,7 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind switch{BlurKind.Blur=>"柔化",BlurKind.Spotlight=>"聚光",_=>"马赛克"})),Color.FromRgb(208,192,220));
   if(Project.AudioTracks.Count>0)Lane("audio",Project.AudioTracks.Select((z,i)=>(AudioId(i),z.OffsetSeconds,z.Duration,z.Muted?"音频 · 静音":"音频 · "+(i+1))),Color.FromRgb(198,200,228));
   foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(IsHighContrast?B("Accent"):new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14,B("Ink"));}
-  if(HoverTime.HasValue){var x=X(HoverTime.Value);dc.DrawLine(new Pen(B("Secondary"),1){DashStyle=DashStyles.Dash},new(x,0),new(x,ActualHeight));}
+  if(HoverTime.HasValue){var x=X(HoverTime.Value);dc.DrawLine(new Pen(B("Secondary"),.75),new(x,0),new(x,ActualHeight));}
   var playX=X(Position);dc.DrawLine(new Pen(B("Ink"),1.25),new(playX,5),new(playX,ActualHeight));dc.DrawEllipse(B("Ink"),null,new(playX,7),4,4);
   if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);var rangeColor=IsHighContrast?SystemColors.HighlightColor:Color.FromRgb(70,169,134);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)(IsHighContrast?70:50),rangeColor.R,rangeColor.G,rangeColor.B)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}

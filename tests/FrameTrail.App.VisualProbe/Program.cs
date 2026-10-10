@@ -74,6 +74,7 @@ internal static class Program
                 var darkPixels = CountDarkPixels(bitmap, left, 145, right, 169);
                 Check(darkPixels >= 12, theme + ": pastel effect clip contains dark, readable glyph pixels", new { darkPixels, left, right });
                 EditorControlProbe.Verify(window, theme, output, Check);
+                KeyboardFocusProbe.Verify(window, timeline, theme, output, Check);
             }
             var currentStyle = window.Style;
             window.ClearValue(FrameworkElement.StyleProperty);
