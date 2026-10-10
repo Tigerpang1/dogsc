@@ -11,12 +11,6 @@
           "NAudio.Core": "2.2.1"
         }
       },
-      "ScreenRecorderLib": {
-        "type": "Direct",
-        "requested": "[7.0.1, )",
-        "resolved": "7.0.1",
-        "contentHash": "QwDAc3IpTgjaRAw3HLLc+pnznQp+D5W3us9VckpPPasszpCOs5C1lAScc6AOGaEtssjSlKfHKHeI61p4djWXOA=="
-      },
       "NAudio.Core": {
         "type": "Transitive",
         "resolved": "2.2.1",

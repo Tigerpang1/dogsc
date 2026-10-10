@@ -42,8 +42,8 @@ try
       "title":"迁移验证工程",
       "createdAt":"2026-10-08T12:00:00Z",
       "media":{
-        "screen":{"relativePath":"media/screen-0001.mp4","sourceTimeScale":1.0},
-        "camera":{"relativePath":"media/camera-0001.mov","width":1920,"height":1080,"startOffset":0.1,"sourceStartTime":0.2,"sourceEndTime":3.8,"sourceTimeScale":1.2,"syncAnchors":[{"id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","sourceTime":1.0,"offset":0.1},{"id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","sourceTime":2.0,"offset":0.0}]},
+        "screen":{"relativePath":"media/screen-0001.mp4","sourceTimeScale":1.2},
+        "camera":{"relativePath":"media/camera-0001.mov","startOffset":0.1,"sourceStartTime":0.2,"sourceEndTime":3.8,"sourceTimeScale":1.2,"syncAnchors":[{"id":"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa","sourceTime":1.0,"offset":0.1},{"id":"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb","sourceTime":2.0,"offset":0.0}]},
         "microphone":{"relativePath":"media/microphone.m4a","startOffset":0.05,"sourceStartTime":0.1,"sourceEndTime":3.9,"sourceTimeScale":0.8,"syncAnchors":[{"id":"cccccccc-cccc-cccc-cccc-cccccccccccc","sourceTime":1.0,"offset":-0.05},{"id":"dddddddd-dddd-dddd-dddd-dddddddddddd","sourceTime":2.0,"offset":0.0}]},
         "pointerEvents":{"relativePath":"events/pointer.jsonl","startOffset":0.2,"sourceStartTime":0.4,"sourceTimeScale":1.2}
       },
@@ -76,7 +76,8 @@ try
     File.WriteAllText(manifest, sourceJson);
     var manifestHashBefore = SHA256.HashData(File.ReadAllBytes(manifest));
 
-    var result = DogScProjectImporter.Import(source, destination, new MediaAsset { Width = 1280, Height = 720, Duration = 4 });
+    // The ratio is supplied by the caller after probing the real copied media; it is not a DogSC schema field.
+    var result = DogScProjectImporter.Import(source, destination, new MediaAsset { Width = 1280, Height = 720, Duration = 4 }, cameraAspectRatio: 16d / 9);
     var loaded = FrameTrailProjectStore.Load(result.ProjectFilePath);
     Check(File.Exists(result.ProjectFilePath), "目标工程已保存为独立 FrameTrail 项目");
     Check(loaded.DisplayName == "迁移验证工程", "DogSC 项目标题映射到目标项目名称");
@@ -105,7 +106,7 @@ try
         "摄像头移动与裁首按piecewise SourceRate保持源时钟映射");
     Check(loaded.Camera?.Shape == CameraShape.Circle && loaded.Camera.Crop.Width < 1, "摄像头圆形布局和内部取景缩放映射");
     Check(loaded.Camera?.Layout == CameraMotionLayoutKind.Circle && loaded.Camera.CornerRadius == .75 && Math.Abs(loaded.Camera.AssetAspectRatio!.Value - 16d / 9) < 1e-9,
-        "摄像头原始roundness 0..1、基础形状和有来源依据的素材宽高比映射");
+        "摄像头原始roundness 0..1、基础形状和调用方探测的素材宽高比映射");
     Check(loaded.Camera?.ScaleDuringZoom == .62 && loaded.Camera.ShadowStrength == .42
         && !result.Report.Warnings.Any(x => x.Contains("摄像头随屏幕缩放联动", StringComparison.Ordinal) || x.Contains("DogSC 摄像头阴影", StringComparison.Ordinal)),
         "摄像头缩放联动和阴影强度导入，不再报告为丢失字段");
@@ -133,6 +134,18 @@ try
         "系统光标尺寸、倾斜开关和点击动画参数映射");
     Check(loaded.Settings.Spring.Mass == 1.9 && loaded.Settings.Spring.Stiffness == 320 && loaded.Settings.Spring.Damping == 36,
         "项目级 screen spring 参数映射");
+
+    var originalCameraSource = Path.Combine(temporaryRoot, "original-camera.dogscproject");
+    foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+        Write(originalCameraSource, Path.GetRelativePath(source, file), File.ReadAllBytes(file));
+    var originalCameraJson = sourceJson.Replace("\"shape\":\"circle\",\"position\":{\"x\":0.83", "\"shape\":\"original\",\"position\":{\"x\":0.83", StringComparison.Ordinal);
+    File.WriteAllText(Path.Combine(originalCameraSource, "project.json"), originalCameraJson);
+    var missingRatioImport = DogScProjectImporter.Import(originalCameraSource, Path.Combine(temporaryRoot, "original-camera.frametrail"),
+        new MediaAsset { Width = 1280, Height = 720, Duration = 4 });
+    var missingRatioProject = FrameTrailProjectStore.Load(missingRatioImport.ProjectFilePath);
+    Check(missingRatioProject.Camera?.Layout == CameraMotionLayoutKind.Original && missingRatioProject.Camera.AssetAspectRatio is null
+        && missingRatioImport.Report.Warnings.Any(w => w.Contains("Original", StringComparison.Ordinal)),
+        "DogSC 未保存摄像头尺寸时不伪造 Original 比例，并在导入报告提示调用方需探测素材");
     Check(loaded.ScreenMotions.Count == 1 && loaded.ScreenMotions[0].Focus?.Target == FocusEffectTarget.Pointer && loaded.ScreenMotions[0].Target.RotationY == -4
         && loaded.ScreenMotions[0].Easing == ZoomEasing.Custom && loaded.ScreenMotions[0].CustomCurve == new ZoomBezierCurve(.25, .1, .75, .9), "屏幕 3D 姿态、自定义曲线与指针聚焦效果映射");
     Check(loaded.CameraMotions.Count == 1 && loaded.CameraMotions[0].TargetSize == .32 && loaded.CameraMotions[0].TargetPosition.X == .72
@@ -150,13 +163,15 @@ try
         && !result.Report.Warnings.Any(x => x.Contains("背景/摄像头柔化", StringComparison.Ordinal) || x.Contains("开场", StringComparison.Ordinal)
             || x.Contains("边框宽度/颜色没有", StringComparison.Ordinal) || x.Contains("动画曲线 swift", StringComparison.Ordinal)), "贴图背景柔化完整导入，已迁移字段不再误报损失");
     Check(File.Exists(Path.Combine(destination, "dogsc-import-report.json")), "目标工程附带字段损失/未支持项报告");
+    Check(result.Report.Warnings.Any(w => w.Contains("主屏幕素材 sourceTimeScale 尚未映射", StringComparison.Ordinal)),
+        "主屏幕媒体时钟倍率未实现时在DogSC导入报告中明确提示");
     Check(SHA256.HashData(File.ReadAllBytes(manifest)).SequenceEqual(manifestHashBefore), "原 DogSC project.json 未发生改写");
 
     var spotlightSource = Path.Combine(temporaryRoot, "spotlight.dogscproject");
     foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
         Write(spotlightSource, Path.GetRelativePath(source, file), File.ReadAllBytes(file));
     File.WriteAllText(Path.Combine(spotlightSource, "project.json"), sourceJson.Replace("\"style\":\"blur\"", "\"style\":\"spotlight\"", StringComparison.Ordinal));
-    var spotlightResult = DogScProjectImporter.Import(spotlightSource, Path.Combine(temporaryRoot,"spotlight-import.frametrail"), new MediaAsset { Width=1280, Height=720, Duration=4 });
+    var spotlightResult = DogScProjectImporter.Import(spotlightSource, Path.Combine(temporaryRoot,"spotlight-import.frametrail"), new MediaAsset { Width=1280, Height=720, Duration=4 }, cameraAspectRatio: 16d / 9);
     var importedSpotlight = FrameTrailProjectStore.Load(spotlightResult.ProjectFilePath).BlurClips.Single();
     Check(importedSpotlight.Kind == BlurKind.Spotlight && importedSpotlight.SourceSpace && importedSpotlight.SpotlightDimming == .22
         && importedSpotlight.TransitionStyle == RegionTransitionStyle.Smooth && importedSpotlight.Rect == new NormalizedRect(.2,.25,.3,.2)
@@ -171,7 +186,7 @@ try
         var variantJson = sourceJson.Replace("\"assetID\":\"system.arrow\"", $"\"assetID\":\"{asset}\"", StringComparison.Ordinal)
             .Replace("\"playbackRate\":1.0", "\"playbackRate\":0.25", StringComparison.Ordinal);
         File.WriteAllText(Path.Combine(variant, "project.json"), variantJson);
-        var imported = DogScProjectImporter.Import(variant, Path.Combine(temporaryRoot, asset + ".frametrail"), new MediaAsset { Width = 1280, Height = 720, Duration = 4 });
+        var imported = DogScProjectImporter.Import(variant, Path.Combine(temporaryRoot, asset + ".frametrail"), new MediaAsset { Width = 1280, Height = 720, Duration = 4 }, cameraAspectRatio: 16d / 9);
         var saved = FrameTrailProjectStore.Load(imported.ProjectFilePath);
         Check(saved.Settings.Cursor?.Style == expected && saved.Timeline.Segments[1].PlaybackRate == .25
             && !imported.Report.Warnings.Any(w => w.Contains("光标资源", StringComparison.Ordinal)), $"{asset} 样式与 0.25x 慢放导入保存重开不降级");

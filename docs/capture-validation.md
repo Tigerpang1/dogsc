@@ -2,9 +2,9 @@
 
 ## 当前候选验收状态（0.2.3开发候选）
 
-0.2.3候选尚未完成发行包运行验收。当前QPC/设备帧位置映射的30秒区域实录在 `artifacts/validation/capture-audio-clock-appsync-30s-v1/validation-summary.json` 检出18/18 cue，raw P95绝对偏差54.736ms；扣除3个fixture cue中位偏差后的估计P95为21.885ms，该校正不是物理时钟校准。当前实现的30分钟端到端测量与完整诊断metadata随工程正向恢复尚未完成。设备时钟/位置复位边界已修正代码路径，并通过纯逻辑回归；物理设备复位尚未实测。此前v8长测仅匹配485/1080 cue，明确作为旧版失败记录。旧20秒交互样本为全SILENT，仅作历史诊断；当时端点未静音，但ffplay会话被静音，不能追溯解释其他版本。麦克风目前只有CLI构建和guard检查，没有物理设备实录。没有物理摄像头、第二显示器、真实Mac工程或clean machine验收。当前桌面设备测试在Esc中止，实机工作仍暂停。
+0.2.3候选尚未完成发行包运行验收。当前30秒区域实录 `artifacts/validation/capture-aligned-audio-clock-30s-v1/raw-analysis.json` 检出18/18 cue，原始 A−V 中位数−9.7205ms、绝对P95 35.22095ms、最大38.054ms，覆盖率100%。刺激来自独立生成的 `aligned-capture-stimulus-v2`，其解码音视频cue起始差为+0.020833ms；本次实录尚未扣除fixture偏差。现行分析器基线为−15ms，因此该短测按原始值通过；它不是30分钟或实际工程素材验收。音频位置复位边界已修正代码路径并通过纯逻辑回归，麦克风已有一次15秒物理设备采集及一次含暂停实录，细节和限制见下文；物理设备热插拔/复位尚未验证。此前v8长测仅匹配485/1080 cue，明确作为旧版失败记录。旧20秒交互样本为全SILENT，仅作历史诊断；不能据此解释其他版本。没有物理摄像头、第二显示器、真实Mac工程或clean machine验收。
 
-窗口目标观测结果不一致：产品同进程自录窗口探针v1有动态非黑输出，产品窗口v6及SLR子进程可见窗口探针出现黑帧。进程和静态/动态刺激条件混杂，不能归因进程边界；同一子窗口的raw WGC/SLR静态/动态矩阵仍待执行。
+窗口录制已有两类当前证据。`artifacts/validation/wgc-first-frame-matrix-v1/matrix-summary.json` 在同一toolchain下对比未修复与修复版：控制组静态窗口只有1帧raw callback、0个source preview帧，解码网格全黑；修复组静态窗口同样只有1帧raw callback，但有15个source preview帧且解码非黑。两组动态画面均正常，支持首帧修复结论。`artifacts/validation/window-wgc-patched-product-v2/target.target.json` 记录产品WGC窗口目标实录通过：目标被不透明窗口遮挡及移动/缩放后，解码样点仍为目标图案颜色；输出H.264 640×360、30fps、5.933秒/178帧，关闭和最小化时自动收尾也通过。该探针使用PerMonitorV2；较早v1黑帧记录中的探针坐标受DPI虚拟化影响，不能沿用为当前失败结论。产品目标探针实际输入bin为`capture-audio-clock-build-v5`，manifest可对应Recorder DLL SHA `3d366dd95eeddde20bf66b6c0cc8b10e5f9bf7c9489e8d0b5aaee0c838118151`，但报告未直接记录加载程序集哈希；下一版probe应写入assembly SHA。两项结果均未覆盖多显示器。
 
 统一后台回归日志 `artifacts/validation/net10-023-background-regression-v2.log` exit0，包含Capture纯逻辑回归；复位边界覆盖QPC倒退和无效时间戳回退，验证有效重锚tick不会早于已映射样本边界，停止映射帧数保持48000。此前漂移拟合由1.001切换到0.9995时，边界映射从1200480修正为1199760；QPC倒退至99秒或无效时间戳回退到99.5秒、而映射已到100.02秒时，停止帧数不再错误变为96960或72960。上述为源码和纯逻辑测试结果，不是物理设备复位测试。
 
@@ -16,7 +16,11 @@
 
 独立摄像头素材和独立音轨使用 `ICaptureTrackService`。摄像头输出 MP4，系统回环和麦克风各自输出 WAV；音频轨通过 NAudio 的 Core Audio 接口采集端点，不创建含屏幕画面的临时文件。`CaptureTrackHandle.MediaPath` 是 UI 应转换为项目相对路径的最终素材地址，`StartStopwatchTicks`/`StopwatchFrequency` 与 `CaptureTrackResult.StopStopwatchTicks` 提供单调时钟范围。摄像头 start tick 来自 ScreenRecorderLib Recording 状态回调，音轨 start tick 取 `StartRecording()` 前的单调时钟，作为 WAV 的时间零点。
 
-当前音频映射使用 `IAudioCaptureClient.GetBuffer` 的设备帧位置连续放置常规数据包；包首帧 QPC（100ns）用于设备帧时钟与 Stopwatch 的锚定、漂移估计及暂停边界换算。数据包QPC存在小幅抖动时不移动连续设备帧；时间戳无效或数据断续时按映射规则回退或重建锚点。复位时保留原始计时诊断值，同时以不早于已映射边界的有效tick重锚，避免停止时间映射回退；活动段按重锚分段，暂停边界保持冻结。此修正已通过代码审查和纯逻辑回归，物理设备复位尚未实测。20ms 时钟泵保留100ms重排窗口，按样本时钟补静音、裁掉启动前样本及停止后的尾包；暂停区间按样本位置剪除。暂停期间仍按源时钟排空输入队列，避免录音暂停越久内存越大。包缓冲在同一采集线程的 `finally` 中释放后才进入应用回调。API单位和缓冲规则依据 [Microsoft GetBuffer 文档](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)。音频WAV使用端点实际采样率、通道数及PCM/IEEE-float格式，UI不应假定固定48kHz PCM16。音频设备时钟不消除视频首帧观察、播放器和声卡的端到端误差。
+当前映射把 `IAudioCaptureClient.GetBuffer` 的device position视为其文档定义的音频帧计数。`IAudioClock.GetFrequency` 只作诊断记录，不拿来换算GetBuffer位置；两者并无已确认的通用单位对应关系。若GetBuffer位置与本次mix frame count持续不符，映射器经有界检查后切换到QPC fallback：QPC及包FrameCount用于锚定和放置，连续包不会因到达抖动被移动，真实缺口仍保留。首帧QPC（100ns）也用于Stopwatch锚定和暂停边界换算；复位时保存原始计时诊断，同时以不早于已映射边界的有效tick重锚，活动段按有效重锚分段，暂停边界保持冻结。`artifacts/validation/microphone-device-023-v3/default-microphone.wav.diagnostics.json` 的一次实录观察到每包device position约+441而FrameCount为480，AudioClock frequency为384000；模式为`qpc-fallback`，不是把这组frequency误当GetBuffer帧率。该实录支持QPC回退与暂停处理在此端点可用，不证明语音质量、热插拔或普适端点行为。对应逻辑复位测试位于 `artifacts/validation/net10-023-background-regression-v2.log`；它不替代设备复位实测。20ms时钟泵保留100ms重排窗口，按样本时钟补静音、裁掉启动前样本及停止后的尾包；暂停区间按样本位置剪除。暂停期间仍按源时钟排空输入队列，避免录音暂停越久内存越大。包缓冲在同一采集线程的`finally`中释放后才进入应用回调。单位与缓冲规则依据[Microsoft GetBuffer 文档](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)。音频WAV使用端点实际采样率、通道数及PCM/IEEE-float格式，UI不应假定固定48kHz PCM16。音频设备时钟不消除视频首帧观察、播放器和声卡的端到端误差。
+
+麦克风实录于 `artifacts/validation/microphone-device-023-v3/`：15.025秒墙钟录制，包含2.013秒暂停，WAV时长13.013秒，分成2个活动时钟段。诊断中1502个数据包、720954帧、0个timestamp错误/回退包，WAV有非零样本。这个结果只证明本次设备的数值采集、暂停裁切和QPC fallback，不是语音质量、设备热插拔或长期漂移认证。报告中的历史诊断字段名为`DevicePositionFrequency`和`ObservedPositionToMixRateRatio`，前者实际来自AudioClock frequency，后者按Mix/Observed比值计算；新诊断已改为更准确的字段名。
+
+另一次30秒音画短测使用独立fixture `artifacts/validation/aligned-capture-stimulus-v2/`，0.5、2.0、4.0秒各有一个画面/音调cue。分别解码视频和PCM确认fixture cue起始差为0.020833ms。实录结果见 `artifacts/validation/capture-aligned-audio-clock-30s-v1/raw-analysis.json`，18/18匹配，A−V原始P95 35.22095ms、最大38.054ms、中位−9.7205ms；这组数尚未扣除fixture偏差。旧fixture结果 `capture-audio-clock-appsync-30s-v2` 的raw P95 52.5704ms及其派生时钟结果保留为历史；采集代理仍在检查`atempo`派生路径，不能把该历史结果或新独立刺激短测写成现有工程导出音画同步通过。当前30秒测试不代替30分钟长测。
 
 ## 历史候选：QPC包时钟长测记录（v8）
 
@@ -141,8 +145,8 @@ NAudio `RecordingStopped` 收到异常时现在会立即将音轨状态置为 `F
 
 ## 附加验证：独立音轨与窗口目标
 
-独立系统音轨 `frametrail-wasapi-loopback-pause-test-v2.wav` 经 ffprobe 检查仅含 `pcm_f32le` 音频流，44.1kHz 双声道、2.920 秒、1,030,234 bytes；Probe 在约4秒墙钟时间内录制，并暂停约1秒，暂停区未写入 WAV。它捕获本机生成的低音量440Hz音调，`volumedetect` 报告 mean -35.1 dBFS、max -32.0 dBFS。音轨文件直接由 NAudio WASAPI 写入，不生成视频轨或屏幕临时文件。WASAPI 格式由端点决定，本样本为浮点 PCM；麦克风设备已枚举但未实际打开采集。暂停状态按 WASAPI 数据包丢弃，无法从公开回调拿到 packet 内样本的独立时间戳，停顿边界误差受最大 packet 时长限制，结果警告会报告本次测得的上限。
+独立系统音轨 `frametrail-wasapi-loopback-pause-test-v2.wav` 经 ffprobe 检查仅含 `pcm_f32le` 音频流，44.1kHz 双声道、2.920秒、1,030,234 bytes；Probe在约4秒墙钟时间内录制，并暂停约1秒，暂停区未写入WAV。它捕获本机生成的低音量440Hz音调，`volumedetect`报告mean -35.1dBFS、max -32.0dBFS。音轨文件直接由NAudio WASAPI写入，不生成视频轨或屏幕临时文件。WASAPI格式由端点决定，本样本为浮点PCM。该段最初记录时麦克风尚未实际打开；麦克风设备已在后续 `microphone-device-023-v3` 做15秒含暂停实录，详见当前候选状态段。暂停状态按WASAPI数据包丢弃，无法从公开回调拿到packet内样本的独立时间戳，停顿边界误差受最大packet时长限制，结果警告会报告本次测得的上限。
 
-历史窗口探针曾对同进程和独立目标观察到黑帧，之后产品同进程自录探针有动态非黑样本；v6产品窗口目标和SLR子进程探针仍记录黑帧。测试的静态/动态内容条件混杂，不能据此推成“所有WGC均黑”或“跨进程必黑”。当前产品窗口路径是ScreenRecorderLib `WindowRecordingSource`（Windows Graphics Capture），并不使用旧版“按DWM可见矩形裁切桌面”的实现；同一窗口raw WGC/SLR静态/动态矩阵未完成。旧窗口移动/关闭、区域 `(2400,1400,640,360)` 的120帧/4秒样片只证明其测试时的捕获路径，不能代替当前窗口实现验收。当前实现会在目标关闭、最小化或边界不可读时停止并收尾；WGC帧输出、遮挡和跨显示器行为需按同条件矩阵复测。所有关闭/最小化操作仅针对探针自建窗口。
+早期窗口探针的黑帧报告属于旧实现/旧探针。`wgc-first-frame-matrix-v1` 的同toolchain矩阵及 `window-wgc-patched-product-v2` 的PerMonitorV2产品探针见当前候选状态段，已证明该目标窗口在本次遮挡和移动/缩放场景下仍有正确画面，并在关闭/最小化时自动收尾。早期v1探针按物理坐标启动却未声明PerMonitorV2，坐标被再次DPI缩放，导致窗口刺激位置错误；v2已显式初始化PerMonitorV2。上述实测不覆盖多显示器和跨DPI显示器行为。所有窗口关闭/最小化操作仅针对探针自建窗口。
 
 `frametrail-independent-loopback-retry.mp4` 是旧 ScreenRecorderLib 音频实验遗留的诊断文件，虽然有 AAC 音轨，但 ffprobe 确认它也含真实桌面 H.264 画面；它和相邻的失败 `.mp4` 均不得作为独立音轨素材导入或发布。`frametrail-audio-wav-test.wav` 是切换 WASAPI 前 callback 验证的本地样本，不作为最终产品样片。

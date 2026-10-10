@@ -30,3 +30,11 @@
 - 1080p 素材到 960×540 预览，静态与 `testsrc2` 动态源各连续读取 60 帧，场景含网格背景、浏览器标题、开场、3D 运动、聚焦虚化、贴图、相机、光标和模糊区域。最近运行两路平均每帧约 1.6 ms，p95 为 1.98 ms / 1.74 ms，低于 30 fps 的 33.33 ms 预算。
 - 解码器标准输出暂停约 0.8 秒时，静态源 FFmpeg Private Bytes 从 179 MiB 到 179 MiB，动态源从 181 MiB 到 181 MiB；取消 seek 后进程已退出，下一次 seek 可恢复。
 - 长时采集/音画同步结果见 `validation-report.md` 和 `capture-validation.md`：本机正确区域30分钟试验P95绝对偏差70.790ms、最大94.123ms，达到长时100ms阈值；启动前20秒P95为65.623ms，未达到短时50ms阈值。系统回环音频可能混入桌面声源，不能视作纯净的独立输入。
+
+## 2026-10-09 音频时钟校正复核
+
+有声预览由 `MainWindow.Playback.cs` 生成 AudioOnly 代理，代理与正式导出都经 `ExportEngine`，因此共用 `MediaTools.AudioFilter`、`MediaTools.AudioTrackFilter` 和 `AudioTrack.SyncSegments/SourceRate` 映射；预览再由 WPF `MediaElement` 播放代理并按其播放位置校正画面时钟。这里没有另一条 NAudio 预览音频滤镜链。单位速率不再插入 `atempo=1`；设备时钟 `SourceRate` 在 ±1000 ppm 内经 192 kHz 中间采样率重采样校正，超出此范围按素材映射速率保留音高使用 `atempo`，用户时间线速度始终独立处理。
+
+在固定代码构建上，用 30 秒受控真实采集素材完成了保存、重载、AudioOnly M4A 导出和同一分析器的派生分析。原始 WAV 与导出 M4A 都配对 18/18 个事件；原始 P95 绝对 A−V 为 35.221 ms、最大 38.054 ms，工程映射成片 P95 为 32.917 ms、最大 40.000 ms。fixture 三个脉冲测得的中位偏差为 −15 ms，扣除后的 P95 估计分别为 20.695 ms 和 23.583 ms；这是短样本的估计，不能证明绝对物理同步精度，也不替代正在进行的长测。
+
+同一固定构建的滤镜脉冲探针覆盖 15 种速率与时长组合：时钟校正最大脉冲误差在 30 秒为 0.042 ms、1800 秒为 2.253 ms；用户 2× 速度保持 440 Hz 音高，单独记录其内容相关起点偏差，不套用时钟校正门槛。结果文件位于 `artifacts/validation/capture-aligned-audio-clock-30s-v1/project-output-source-rate-v1/validation-summary.json`。这些数据适用于该构建和本机探针素材，不代表其他采集设备或新的长时样本。

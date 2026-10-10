@@ -6,19 +6,28 @@
     <PlatformTarget>x64</PlatformTarget>
     <Platform Condition="'$(Platform)' == 'AnyCPU'">x64</Platform>
     <ScreenRecorderLibVersion>7.0.1</ScreenRecorderLibVersion>
+    <ScreenRecorderLibVendorPath>$(MSBuildProjectDirectory)/../../third_party/ScreenRecorderLib/prebuilt/ScreenRecorderLib.dll</ScreenRecorderLibVendorPath>
+    <ScreenRecorderLibVendorSha256>3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151</ScreenRecorderLibVendorSha256>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="NAudio.Wasapi" Version="2.2.1" />
-    <PackageReference Include="ScreenRecorderLib" Version="$(ScreenRecorderLibVersion)" ExcludeAssets="build;buildTransitive" />
     <Reference Include="ScreenRecorderLib">
-      <HintPath>$(NuGetPackageRoot)screenrecorderlib\$(ScreenRecorderLibVersion)\build\x64\ScreenRecorderLib.dll</HintPath>
+      <HintPath>$(ScreenRecorderLibVendorPath)</HintPath>
       <Private>true</Private>
     </Reference>
     <None Update="ScreenRecorderLib.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <None Update="NAudio.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+
+  <Target Name="VerifyScreenRecorderLibVendorBinary" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(ScreenRecorderLibVendorPath)')" Text="ScreenRecorderLib vendor DLL is missing: $(ScreenRecorderLibVendorPath)" />
+    <GetFileHash Files="$(ScreenRecorderLibVendorPath)" Algorithm="SHA256">
+      <Output TaskParameter="Items" ItemName="_ScreenRecorderLibVendorHash" />
+    </GetFileHash>
+    <Error Condition="'%(_ScreenRecorderLibVendorHash.FileHash)' != '$(ScreenRecorderLibVendorSha256)'" Text="ScreenRecorderLib vendor DLL SHA-256 mismatch. Expected $(ScreenRecorderLibVendorSha256), actual %(_ScreenRecorderLibVendorHash.FileHash). Review third_party/ScreenRecorderLib/provenance.json before updating the pin." />
+  </Target>
 
 </Project>

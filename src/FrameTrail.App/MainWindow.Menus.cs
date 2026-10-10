@@ -113,6 +113,7 @@ public partial class MainWindow
             var stem = SafeProjectStem(Path.GetFileNameWithoutExtension(source));
             var destination = Path.Combine(root, stem + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".frametrail");
             var imported = DogScProjectImporter.Import(source, destination, new MediaAsset { Width = info.Width, Height = info.Height, Duration = info.Duration });
+            imported = await DogScImportMetadata.ApplyCameraAspectRatioAsync(imported);
             await OpenProject(imported.ProjectFilePath);
             RecentProjects.Add(imported.ProjectFilePath);
             Status.Text = "已导入 DogSC 项目副本；原项目未修改。未映射字段请查看 dogsc-import-report.json。";

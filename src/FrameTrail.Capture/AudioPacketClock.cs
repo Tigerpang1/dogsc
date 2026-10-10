@@ -33,15 +33,18 @@ internal static class AudioPacketClock
 
 internal readonly record struct AudioPacketPlacement(long StartFrame, AudioPacketTiming Timing,
     bool DevicePositionMismatch, bool DevicePositionReset, bool ClockReanchored,
-    long ClockBoundaryStopwatchTicks, double? QpcResidualMilliseconds, double? DeviceClockDriftPpm);
+    long ClockBoundaryStopwatchTicks, double? QpcResidualMilliseconds, double? DeviceClockDriftPpm,
+    string DevicePositionMode);
 
 /// <summary>
-/// Uses WASAPI's stream-relative device frame position to place ordinary packets.
-/// QPC anchors the stream to Stopwatch and measures clock drift; packet-level QPC
-/// jitter does not move otherwise-contiguous samples around in the output file.
+/// Uses IAudioCaptureClient.GetBuffer's stream-relative frame position for ordinary
+/// packets. If that position persistently disagrees with packet frame counts, it
+/// switches to QPC placement; IAudioClock frequency is diagnostic-only because its
+/// documented units are paired with IAudioClock.GetPosition, not GetBuffer.
 /// </summary>
 internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampleRate, long stopwatchFrequency)
 {
+    private long _nonmatchingPositionPackets;
     private bool _hasPosition;
     private long _anchorDevicePosition;
     private long _anchorFrame;
@@ -62,8 +65,18 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
     private double _lastDriftPpm;
     private double _maxQpcResidualMilliseconds;
     private long _positionResetCount;
+    private bool _devicePositionTrusted;
+    private bool _devicePositionUnavailable;
+    private long _lastObservedDevicePosition;
+    private int _lastObservedFrameCount;
+    private long _repeatedPositionPackets;
+    private long _lastPacketClockTicks;
+    private int _lastPacketFrameCount;
+    private bool _hasLastPacketClock;
+    private bool _lastPacketClockReliable;
 
     internal long PositionResetCount => _positionResetCount;
+    internal string DevicePositionMode => _devicePositionUnavailable ? "qpc-fallback" : _devicePositionTrusted ? "device-position" : "undetermined";
     internal double? DeviceClockDriftPpm => HasMeasuredDrift ? _lastDriftPpm : null;
     internal double MaxQpcResidualMilliseconds => _maxQpcResidualMilliseconds;
 
@@ -82,7 +95,7 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
         // announce a stream-position discontinuity. Keep a contiguous device position;
         // DATA_DISCONTINUITY is the flag that invalidates correlation with the prior packet.
         var discontinuity = timing.DataDiscontinuity;
-        var mismatch = _hasPosition && devicePosition != _expectedDevicePosition;
+        var rawMismatch = _hasPosition && !IsNearExpectedPosition(devicePosition, _expectedDevicePosition);
         var reset = false;
         var clockReanchored = false;
         long startFrame;
@@ -96,11 +109,78 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
             _initialFrame = startFrame;
             _initialQpcTicks = qpcTicks;
             SetCurrentClockAnchor(qpcTicks, startFrame);
+            _lastObservedDevicePosition = devicePosition;
+            _lastObservedFrameCount = frameCount;
+            _lastPacketClockTicks = qpcTicks;
+            _lastPacketFrameCount = frameCount;
+            _hasLastPacketClock = true;
+            _lastPacketClockReliable = hasReliableQpc;
             if (hasReliableQpc)
             {
                 _hasQpcAnchor = true;
                 SetDriftAnchor(qpcTicks, startFrame);
             }
+        }
+        else if (_devicePositionUnavailable)
+        {
+            startFrame = MapWithoutDevicePosition(qpcTicks, discontinuity, hasReliableQpc, out clockReanchored);
+            if (clockReanchored)
+            {
+                SetCurrentClockAnchor(qpcTicks, startFrame);
+                ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
+            }
+        }
+        else if (!_devicePositionTrusted)
+        {
+            var expectedStep = _lastObservedFrameCount;
+            var expected = checked(_lastObservedDevicePosition + expectedStep);
+            var consecutive = IsNearExpectedPosition(devicePosition, expected);
+            if (consecutive)
+            {
+                _devicePositionTrusted = true;
+                _anchorDevicePosition = devicePosition;
+                _anchorFrame = discontinuity ? Math.Max(_logicalEndFrame, qpcFrame) : _logicalEndFrame;
+                startFrame = _anchorFrame;
+                if (discontinuity)
+                {
+                    SetCurrentClockAnchor(qpcTicks, startFrame);
+                    ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
+                    clockReanchored = true;
+                }
+            }
+            else
+            {
+                if (Math.Abs(devicePosition - _lastObservedDevicePosition) <= 1 && frameCount > 0 && qpcTicks > _lastPacketClockTicks)
+                    _repeatedPositionPackets++;
+                else
+                    _repeatedPositionPackets = 0;
+                _nonmatchingPositionPackets++;
+
+                // Some capture endpoints return a constant stream position without
+                // setting TIMESTAMP_ERROR. Do not treat every such packet as a reset.
+                // Require a sustained repeat before declaring the position unavailable.
+                if (_repeatedPositionPackets >= 8 || _nonmatchingPositionPackets >= 8)
+                {
+                    _devicePositionUnavailable = true;
+                    startFrame = MapWithoutDevicePosition(qpcTicks, discontinuity, hasReliableQpc, out clockReanchored);
+                    if (clockReanchored)
+                    {
+                        SetCurrentClockAnchor(qpcTicks, startFrame);
+                        ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
+                    }
+                }
+                else
+                {
+                    startFrame = MapWithoutDevicePosition(qpcTicks, discontinuity, hasReliableQpc, out clockReanchored);
+                    if (clockReanchored)
+                    {
+                        SetCurrentClockAnchor(qpcTicks, startFrame);
+                        ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
+                    }
+                }
+            }
+            _lastObservedDevicePosition = devicePosition;
+            _lastObservedFrameCount = frameCount;
         }
         else if (discontinuity)
         {
@@ -113,7 +193,7 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
             ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
             clockReanchored = true;
         }
-        else if (devicePosition < _expectedDevicePosition)
+        else if (devicePosition < _expectedDevicePosition - 1)
         {
             // A stream-relative position reset is different from an ordinary packet jitter.
             // Preserve monotonic output and use QPC to retain any real elapsed-time gap.
@@ -125,12 +205,14 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
             ResetDriftAnchor(qpcTicks, startFrame, hasReliableQpc);
             clockReanchored = true;
         }
-        else
+        else if (devicePosition > _expectedDevicePosition + 1)
         {
-            // Contiguous positions continue exactly at the previous end. A forward jump is
-            // retained as a real gap because the device reports missing stream frames.
-            startFrame = checked(_logicalEndFrame + (devicePosition - _expectedDevicePosition));
+            // GetBuffer documents devicePosition as the first packet frame's position
+            // from stream start, so a forward jump is a real missing-frame interval.
+            var missingFrames = devicePosition - _expectedDevicePosition;
+            startFrame = checked(_logicalEndFrame + missingFrames);
         }
+        else startFrame = _logicalEndFrame;
 
         // Keep packet diagnostics on the raw QPC/arrival timestamp, but do not let a
         // reset move the clock epoch behind the end boundary of samples already placed.
@@ -146,7 +228,9 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
 
         if (hasReliableQpc)
         {
-            var mappedFrame = _anchorFrame + (devicePosition - _anchorDevicePosition);
+            var mappedFrame = _devicePositionUnavailable || !_devicePositionTrusted
+                ? startFrame
+                : checked(_anchorFrame + (devicePosition - _anchorDevicePosition));
             var residualFrames = qpcNominalFrame - mappedFrame;
             var residualMs = residualFrames * 1000d / sampleRate;
             _maxQpcResidualMilliseconds = Math.Max(_maxQpcResidualMilliseconds, Math.Abs(residualMs));
@@ -166,16 +250,60 @@ internal sealed class AudioPacketPositionMapper(long audioStartTicks, long sampl
         }
 
         _logicalEndFrame = checked(startFrame + frameCount);
-        _expectedDevicePosition = checked(devicePosition + frameCount);
+        // Calculate the expected unit position from the epoch anchor instead of
+        // rounding every packet independently; fractional conversions must not
+        // accumulate into false gaps during long captures.
+        _expectedDevicePosition = checked(_anchorDevicePosition + Math.Max(0, _logicalEndFrame - _anchorFrame));
+        _lastPacketClockTicks = qpcTicks;
+        _lastPacketFrameCount = frameCount;
+        _hasLastPacketClock = true;
+        _lastPacketClockReliable = hasReliableQpc;
         var packetDurationTicks = checked((long)((decimal)frameCount * stopwatchFrequency / sampleRate));
         var packetEndTicks = checked(clockBoundaryTicks + packetDurationTicks);
         _lastClockBoundaryTicks = _hasClockBoundary ? Math.Max(_lastClockBoundaryTicks, packetEndTicks) : packetEndTicks;
         _hasClockBoundary = true;
-        return new AudioPacketPlacement(startFrame, timing, mismatch, reset, clockReanchored,
+        return new AudioPacketPlacement(startFrame, timing, rawMismatch, reset, clockReanchored,
             clockBoundaryTicks,
             hasReliableQpc ? (qpcNominalFrame - startFrame) * 1000d / sampleRate : null,
-            DeviceClockDriftPpm);
+            DeviceClockDriftPpm, DevicePositionMode);
     }
+
+    private long MapWithoutDevicePosition(long clockTicks, bool discontinuity, bool hasReliableQpc,
+        out bool reanchored)
+    {
+        reanchored = false;
+        if (discontinuity)
+        {
+            reanchored = true;
+            return Math.Max(_logicalEndFrame, StopwatchTicksToSourceFrame(clockTicks));
+        }
+
+        // Arrival fallback timestamps include callback scheduling delay. Only
+        // infer missing audio frames from an interval bounded by two reliable
+        // QPC packet timestamps; a discontinuity flag remains authoritative above.
+        if (hasReliableQpc && _hasLastPacketClock && _lastPacketClockReliable && clockTicks > _lastPacketClockTicks)
+        {
+            var deltaTicks = clockTicks - _lastPacketClockTicks;
+            var expectedTicks = checked((long)((decimal)_lastPacketFrameCount * stopwatchFrequency / sampleRate));
+            var toleranceTicks = Math.Max(stopwatchFrequency / 333, expectedTicks / 2); // 3 ms or half a packet.
+            if (deltaTicks > expectedTicks + toleranceTicks)
+            {
+                var missingTicks = deltaTicks - expectedTicks;
+                var missingFrames = checked((long)Math.Round((double)missingTicks * sampleRate / stopwatchFrequency));
+                if (missingFrames > 0)
+                {
+                    reanchored = true;
+                    return checked(_logicalEndFrame + missingFrames);
+                }
+            }
+        }
+
+        // QPC/arrival jitter below the gap threshold does not disturb contiguous
+        // samples. This is also the safe path for endpoints with unusable positions.
+        return _logicalEndFrame;
+    }
+
+    private static bool IsNearExpectedPosition(long actual, long expected) => Math.Abs(actual - expected) <= 1;
 
     /// <summary>Maps a Stopwatch boundary into the same source-frame domain as captured packets.</summary>
     internal long StopwatchTicksToSourceFrame(long stopwatchTicks)

@@ -1,4 +1,5 @@
 using FrameTrail.Capture;
+using NAudio.CoreAudioApi;
 using System.Text.Json;
 
 internal static class AudioPacketDiagnosticsProbe
@@ -43,6 +44,10 @@ internal static class AudioPacketDiagnosticsProbe
         Require(json.RootElement.GetProperty("PacketCount").GetInt64() == 3 &&
             json.RootElement.GetProperty("Buckets").GetArrayLength() == 3, "sidecar JSON fields are serializable and retained");
         var positionDiagnostics = new AudioPacketDiagnostics(start, frequency, bucketSeconds: 10, maximumBuckets: 3);
+        for (var index = 1; index <= 64; index++)
+            positionDiagnostics.PositionSample(index, 0, 480, start + index * 100_000, start + index * 120_000,
+                AudioClientBufferFlags.None, "qpc-fallback");
+        positionDiagnostics.SetDevicePositionMode("qpc-fallback");
         positionDiagnostics.Packet(start + 1_000_000, 480, false, 0, false, false, false, false,
             qpcPositionResidualMs: 0.25, deviceClockDriftPpm: 100);
         positionDiagnostics.Packet(start + 2_000_000, 480, false, 0, false, false, true, true,
@@ -58,6 +63,21 @@ internal static class AudioPacketDiagnosticsProbe
         Require(positionSnapshot.Buckets.Any(bucket => bucket.DevicePositionResets == 1 &&
                     bucket.DeviceClockDriftPpmMin == -50 && bucket.DeviceClockDriftPpmMax == 100),
             "per-bucket reset and device clock drift range");
+        Require(positionSnapshot.DevicePositionMode == "qpc-fallback" && positionSnapshot.PositionSamples.Count == 48 &&
+                positionSnapshot.PositionSamples[0].DevicePosition == 0 && positionSnapshot.PositionSamples[^1].PacketIndex == 64,
+            "raw WASAPI position/QPC metadata is retained in a bounded first-and-last packet sample");
+        var resampledUnitsDiagnostics = new AudioPacketDiagnostics(start, frequency);
+        resampledUnitsDiagnostics.SetAudioClockFrequency(352_800, null);
+        resampledUnitsDiagnostics.SetStreamFormat(48_000, 8, 2, 32);
+        for (var index = 0; index < 32; index++)
+            resampledUnitsDiagnostics.PositionSample(index + 1, index * 441L, 480,
+                start + index * 100_000L, start + index * 120_000L, AudioClientBufferFlags.None, "qpc-fallback");
+        var resampledUnitsSnapshot = resampledUnitsDiagnostics.Snapshot(start + 4_000_000);
+        Require(Math.Abs(resampledUnitsSnapshot.ObservedDevicePositionUnitsPerSecond!.Value - 44_100) < 0.01 &&
+                Math.Abs(resampledUnitsSnapshot.ObservedPositionRateToMixRateRatio!.Value - 44_100d / 48_000) < 1e-9 &&
+                Math.Abs(resampledUnitsSnapshot.AudioClockFrequencyToObservedPositionRateRatio!.Value - 8) < 1e-9 &&
+                Math.Abs(resampledUnitsSnapshot.AudioClockBlockAlignAdjustedFrequencyToObservedPositionRateRatio!.Value - 1) < 1e-9,
+            "diagnostics compare GetBuffer position slope, mix format, IAudioClock frequency, and block alignment without using clock frequency for mapping");
         Console.WriteLine("Audio packet diagnostics pure test passed: silent endpoint packets, missing-packet fill, overlap drops, QPC/arrival range, discontinuity flags, last packet time, and ring bound.");
     }
 

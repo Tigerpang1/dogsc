@@ -15,11 +15,6 @@
           "NAudio.Core": "2.2.1"
         }
       },
-      "ScreenRecorderLib": {
-        "type": "Transitive",
-        "resolved": "7.0.1",
-        "contentHash": "QwDAc3IpTgjaRAw3HLLc+pnznQp+D5W3us9VckpPPasszpCOs5C1lAScc6AOGaEtssjSlKfHKHeI61p4djWXOA=="
-      },
       "SharpGen.Runtime": {
         "type": "Transitive",
         "resolved": "2.4.2-beta",
@@ -86,8 +81,7 @@
       "frametrail.capture": {
         "type": "Project",
         "dependencies": {
-          "NAudio.Wasapi": "[2.2.1, )",
-          "ScreenRecorderLib": "[7.0.1, )"
+          "NAudio.Wasapi": "[2.2.1, )"
         }
       },
       "frametrail.core": {

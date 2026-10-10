@@ -29,9 +29,23 @@ internal sealed class TimestampedWasapiCapture : IDisposable
             audioClient.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, waveFormat, Guid.Empty);
             audioClient.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
             captureClient = audioClient.AudioCaptureClient;
+            long? positionFrequency = null;
+            string? positionFrequencyError = null;
+            try
+            {
+                var reportedFrequency = audioClient.AudioClockClient.Frequency;
+                if (reportedFrequency is > 0 and <= long.MaxValue) positionFrequency = (long)reportedFrequency;
+                else positionFrequencyError = $"IAudioClock.GetFrequency returned an unusable value: {reportedFrequency}.";
+            }
+            catch (Exception ex)
+            {
+                positionFrequencyError = $"IAudioClock.GetFrequency failed: {ex.Message}";
+            }
             _audioClient = audioClient;
             _captureClient = captureClient;
             WaveFormat = waveFormat;
+            AudioClockFrequency = positionFrequency;
+            AudioClockFrequencyError = positionFrequencyError;
             _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "FrameTrail WASAPI timestamped capture" };
         }
         catch
@@ -44,6 +58,8 @@ internal sealed class TimestampedWasapiCapture : IDisposable
     }
 
     internal WaveFormat WaveFormat { get; }
+    internal long? AudioClockFrequency { get; }
+    internal string? AudioClockFrequencyError { get; }
     internal event Action<byte[], int, long, long, long, AudioClientBufferFlags>? PacketAvailable;
     internal event Action<Exception?>? RecordingStopped;
 

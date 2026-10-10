@@ -7,6 +7,12 @@ namespace FrameTrail.Media;
 public sealed record MediaInfo(int Width, int Height, double Duration, double FrameRate, bool HasAudio);
 public static class MediaTools
 {
+    // SourceRate values inside this band are treated as device-clock drift and
+    // corrected by resampling; larger rates describe media/timeline mapping and
+    // retain pitch through atempo. PlaybackRate is always user-controlled tempo.
+    private const double SourceClockCorrectionLimitPpm = 1_000;
+    private const int SourceClockIntermediateRate = 192_000;
+
     public static string Ffmpeg => Locate("ffmpeg.exe");
     public static string Ffprobe => Locate("ffprobe.exe");
     public static string Number(double value) => value.ToString("0.#########", CultureInfo.InvariantCulture);
@@ -83,8 +89,9 @@ public static class MediaTools
             var s = timeline.Segments[i]; var gain = s.AudioOverrides?.SystemVolume ?? volume; var isMuted = s.AudioOverrides?.SystemMuted ?? muted; var rate = s.PlaybackRate; var tempo = new List<string>();
             while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
             while (rate < .5) { tempo.Add("atempo=0.5"); rate *= 2; }
-            tempo.Add("atempo=" + Number(rate));
-            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{string.Join(',',tempo)},volume={Number(isMuted ? 0 : gain)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
+            if (Math.Abs(rate - 1) > 1e-12) tempo.Add("atempo=" + Number(rate));
+            var tempoFilter = tempo.Count == 0 ? "" : string.Join(',', tempo) + ",";
+            filters.Add($"[{(n == 1 ? "0:a" : $"s{i}")}]atrim=start={Number(s.SourceStart)}:end={Number(s.SourceEnd)},asetpts=PTS-STARTPTS,{tempoFilter}volume={Number(isMuted ? 0 : gain)},apad,atrim=duration={Number(s.OutputDuration)}[a{i}]");
         }
         filters.Add(string.Concat(Enumerable.Range(0,n).Select(i => $"[a{i}]")) + (n > 1 ? $"concat=n={n}:v=0:a=1" : "anull") + "[out]");
         return string.Join(';', filters);
@@ -125,7 +132,7 @@ public static class MediaTools
             var mappings = track.SyncSegments is { Count: > 0 } syncSegments
                 ? syncSegments
                 : [new CameraSyncSegment(track.SourceStart, track.OffsetSeconds, track.Duration, track.SourceRate)];
-            var samples = new List<(double AssetStart, double AssetEnd, double OutputStart, double Tempo, double Gain)>();
+            var samples = new List<(double AssetStart, double AssetEnd, double OutputStart, double PlaybackRate, double SourceRate, double Gain)>();
             for (var segmentIndex = 0; segmentIndex < timeline.Segments.Count; segmentIndex++)
             {
                 var segment = timeline.Segments[segmentIndex];
@@ -139,8 +146,7 @@ public static class MediaTools
                     var assetStart = mapping.SourceStart + (sourceStart - mapping.TimelineStart) * mapping.SourceRate;
                     var assetEnd = mapping.SourceStart + (sourceEnd - mapping.TimelineStart) * mapping.SourceRate;
                     var outputStart = outputStarts[segmentIndex] + (sourceStart - segment.SourceStart) / segment.PlaybackRate;
-                    var tempo = segment.PlaybackRate * mapping.SourceRate;
-                    samples.Add((assetStart, assetEnd, outputStart, tempo, gain));
+                    samples.Add((assetStart, assetEnd, outputStart, segment.PlaybackRate, mapping.SourceRate, gain));
                 }
             }
             if (samples.Count == 0) continue;
@@ -155,13 +161,31 @@ public static class MediaTools
             {
                 var sample = samples[sampleIndex];
                 var delayMs = Math.Max(0, (int)Math.Round(sample.OutputStart * 1000));
-                var rate = sample.Tempo; var tempo = new List<string>();
+                var clockRate = sample.SourceRate;
+                var playbackRate = sample.PlaybackRate;
+                var clockCorrection = "";
+                var isDeviceClockDrift = Math.Abs(clockRate - 1) * 1_000_000 <= SourceClockCorrectionLimitPpm + 1e-6;
+                var rate = playbackRate;
+                if (isDeviceClockDrift)
+                {
+                    var correctedRate = checked((int)Math.Round(SourceClockIntermediateRate * clockRate, MidpointRounding.AwayFromZero));
+                    if (correctedRate != SourceClockIntermediateRate)
+                        clockCorrection = $"aresample={SourceClockIntermediateRate},asetrate={correctedRate},aresample=48000,";
+                }
+                else
+                {
+                    // Non-clock mapping rates can encode meaningful content speed;
+                    // preserve its pitch instead of shifting it with asetrate.
+                    rate *= clockRate;
+                }
+                var tempo = new List<string>();
                 while (rate > 2) { tempo.Add("atempo=2"); rate /= 2; }
-                while (rate < .5) { tempo.Add("atempo=0.5"); rate /= .5; }
-                tempo.Add("atempo=" + Number(rate));
+                while (rate < .5) { tempo.Add("atempo=0.5"); rate *= 2; }
+                if (Math.Abs(rate - 1) > 1e-12) tempo.Add("atempo=" + Number(rate));
+                var tempoFilter = tempo.Count == 0 ? "" : string.Join(',', tempo) + ",";
                 var source = samples.Count == 1 ? $"{input}:a" : prefixes[sampleIndex];
                 var label = $"track{labelNumber++}";
-                filters.Add($"[{source}]atrim=start={Number(sample.AssetStart)}:end={Number(sample.AssetEnd)},asetpts=PTS-STARTPTS,{string.Join(',', tempo)},volume={Number(sample.Gain)},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,adelay={delayMs}:all=1[{label}]");
+                filters.Add($"[{source}]atrim=start={Number(sample.AssetStart)}:end={Number(sample.AssetEnd)},asetpts=PTS-STARTPTS,{clockCorrection}{tempoFilter}volume={Number(sample.Gain)},aformat=sample_fmts=fltp:sample_rates=48000:channel_layouts=stereo,adelay={delayMs}:all=1[{label}]");
                 outputLabels.Add(label);
             }
         }

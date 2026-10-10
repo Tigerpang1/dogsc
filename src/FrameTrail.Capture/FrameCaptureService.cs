@@ -133,7 +133,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
             {
                 try
                 {
-                    _inputSampler = new InputSampler(tracking, () => ResolveTargetBounds(request.Target), evt => InputEventRecorded?.Invoke(this, evt), ex => ErrorOccurred?.Invoke(this,new CaptureError("鼠标事件记录已中断，已写入的数据保留。",ex)));
+                    _inputSampler = new InputSampler(tracking, () => ResolveTargetBounds(request.Target), evt => InputEventRecorded?.Invoke(this, evt), ex => OnWindowInputFailure(request.Target, ex));
                     _inputSampler.Start();
                 }
                 catch (Exception ex)
@@ -572,6 +572,18 @@ public sealed class FrameCaptureService : IFrameCaptureService
         {
             FailWindowTarget("Window capture tracking failed; recording is being finalized.", ex);
         }
+    }
+
+    private void OnWindowInputFailure(CaptureTarget target, Exception exception)
+    {
+        // Input sampling can notice target loss before the 100 ms window monitor.
+        // Route that normal end condition through the same one-shot finalization.
+        if (exception is ArgumentException && !WindowsNative.IsWindow(target.WindowHandle))
+            FailWindowTarget("The captured window was closed; recording is being finalized.");
+        else if (exception is ArgumentException && WindowsNative.IsIconic(target.WindowHandle))
+            FailWindowTarget("The captured window was minimized; recording is being finalized.");
+        else
+            ErrorOccurred?.Invoke(this, new CaptureError("鼠标事件记录已中断，已写入的数据保留。", exception));
     }
 
     private void FailWindowTarget(string message, Exception? exception = null)

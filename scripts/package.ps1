@@ -3,7 +3,7 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.3',
+    [string]$Version = '0.2.4',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'FrameTrail.exe',
     [switch]$WithoutFfmpeg,
@@ -23,6 +23,15 @@ $ffmpegOutput = Join-Path $portableRoot 'tools/ffmpeg'
 $zipPath = Join-Path $releaseRoot "FrameTrail-$Version-win-x64.zip"
 $installerPath = Join-Path $releaseRoot "FrameTrail-Setup-$Version-win-x64.exe"
 $upstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
+$screenRecorderLibVendor = Join-Path $repoRoot 'third_party/ScreenRecorderLib'
+$screenRecorderLibVendorDll = Join-Path $screenRecorderLibVendor 'prebuilt/ScreenRecorderLib.dll'
+$screenRecorderLibVendorArchive = Join-Path $screenRecorderLibVendor 'ScreenRecorderLib-v7.0.1-source.zip'
+$screenRecorderLibVendorPatch = Join-Path $screenRecorderLibVendor 'first-frame-wgc.patch'
+$screenRecorderLibVendorLicense = Join-Path $screenRecorderLibVendor 'LICENSE'
+$screenRecorderLibDllSha256 = '3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151'
+$screenRecorderLibPatchSha256 = '4FB260DCADD8FDE129A06D4380AE19ECA7A3EA985FEDE4D19E430DAA7C2C7C3F'
+$screenRecorderLibSourceArchiveSha256 = '31435BB4F5D159D5D943AE5E31BD4DE6A9C5E8476AFA9691E7DC8E51A5FA27E0'
+$screenRecorderLibLicenseSha256 = '9AAD4239954F3F4B1BAE22011CA72E00FE5AD9218068CD44375A1A5306F7CF32'
 . (Join-Path $PSScriptRoot 'source-provenance.ps1')
 $null = Get-FrameTrailSourceProvenance -RepositoryRoot $repoRoot -UpstreamBaseSha $upstreamBaseSha
 
@@ -30,6 +39,13 @@ if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
     throw "应用项目尚未集成：$project"
 }
 if (-not (Test-Path -LiteralPath $licenseRoot -PathType Container)) { throw "许可证目录缺失：$licenseRoot" }
+foreach ($requiredFile in @($screenRecorderLibVendorDll, $screenRecorderLibVendorArchive, $screenRecorderLibVendorPatch, $screenRecorderLibVendorLicense)) {
+    if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) { throw "ScreenRecorderLib 固定材料缺失：$requiredFile" }
+}
+if ((Get-FileHash -LiteralPath $screenRecorderLibVendorDll -Algorithm SHA256).Hash.ToUpperInvariant() -ne $screenRecorderLibDllSha256) { throw 'ScreenRecorderLib 预构建 DLL 哈希不匹配。' }
+if ((Get-FileHash -LiteralPath $screenRecorderLibVendorArchive -Algorithm SHA256).Hash.ToUpperInvariant() -ne $screenRecorderLibSourceArchiveSha256) { throw 'ScreenRecorderLib 上游源码 ZIP 哈希不匹配。' }
+if ((Get-FileHash -LiteralPath $screenRecorderLibVendorPatch -Algorithm SHA256).Hash.ToUpperInvariant() -ne $screenRecorderLibPatchSha256) { throw 'ScreenRecorderLib WGC 补丁哈希不匹配。' }
+if ((Get-FileHash -LiteralPath $screenRecorderLibVendorLicense -Algorithm SHA256).Hash.ToUpperInvariant() -ne $screenRecorderLibLicenseSha256) { throw 'ScreenRecorderLib MIT 许可证哈希不匹配。' }
 
 $null = New-Item -ItemType Directory -Path $releaseRoot -Force
 $releaseBoundary = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd('\') + '\'
@@ -79,6 +95,15 @@ finally {
     }
 }
 
+$publishedScreenRecorderLib = Join-Path $portableRoot 'ScreenRecorderLib.dll'
+if (-not (Test-Path -LiteralPath $publishedScreenRecorderLib -PathType Leaf)) {
+    throw '自包含发布目录缺少 ScreenRecorderLib.dll。'
+}
+$publishedScreenRecorderLibSha256 = (Get-FileHash -LiteralPath $publishedScreenRecorderLib -Algorithm SHA256).Hash.ToUpperInvariant()
+if ($publishedScreenRecorderLibSha256 -ne $screenRecorderLibDllSha256) {
+    throw "发布目录 ScreenRecorderLib.dll 哈希不匹配。期望 $screenRecorderLibDllSha256，实际 $publishedScreenRecorderLibSha256。"
+}
+
 $applicationExe = Join-Path $portableRoot $ApplicationExeName
 if (-not (Test-Path -LiteralPath $applicationExe -PathType Leaf)) {
     throw "发布目录中未找到应用主程序 $ApplicationExeName。检查 App 项目的 AssemblyName 后再运行 package.ps1。"
@@ -92,6 +117,14 @@ foreach ($name in @('README.md', 'LICENSE')) {
 $docsSource = Join-Path $repoRoot 'docs'
 if (-not (Test-Path -LiteralPath $docsSource -PathType Container)) { throw "文档目录缺失：$docsSource" }
 Copy-Item -LiteralPath $docsSource -Destination $publishRoot -Recurse -Force
+
+$screenRecorderLibLicenseOutput = Join-Path $licenseOutput 'ScreenRecorderLib-source'
+$null = New-Item -ItemType Directory -Path $screenRecorderLibLicenseOutput -Force
+foreach ($sourceName in @('ScreenRecorderLib-v7.0.1-source.zip', 'first-frame-wgc.patch', 'README.md', 'provenance.json', 'LICENSE')) {
+    $sourcePath = Join-Path $screenRecorderLibVendor $sourceName
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "ScreenRecorderLib 对应材料缺失：$sourcePath" }
+    Copy-Item -LiteralPath $sourcePath -Destination $screenRecorderLibLicenseOutput -Force
+}
 
 $sampleStaging = Join-Path $env:TEMP ("FrameTrail-sample-$Version-$PID-" + [guid]::NewGuid().ToString('N'))
 $sampleNames = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md')
@@ -168,6 +201,10 @@ $buildInfo = @"
 FrameTrail 源码提交：$gitHead
 DogSC 上游审计基线：$upstreamBaseSha
 打包时工作区：$workingTreeState
+ScreenRecorderLib：7.0.1，本地 WGC 首帧补丁构建
+ScreenRecorderLib DLL SHA-256：$publishedScreenRecorderLibSha256
+ScreenRecorderLib 上游源码 ZIP SHA-256：$screenRecorderLibSourceArchiveSha256
+ScreenRecorderLib 补丁 SHA-256：$screenRecorderLibPatchSha256
 "@
 $buildInfo | Set-Content -LiteralPath (Join-Path $publishRoot 'BUILD-INFO.txt') -Encoding utf8
 

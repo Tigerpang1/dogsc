@@ -1,0 +1,43 @@
+diff --git a/ScreenRecorderLibNative/WindowsGraphicsCapture.cpp b/ScreenRecorderLibNative/WindowsGraphicsCapture.cpp
+index d80deec..e0df1f0 100644
+--- a/ScreenRecorderLibNative/WindowsGraphicsCapture.cpp
++++ b/ScreenRecorderLibNative/WindowsGraphicsCapture.cpp
+@@ -537,14 +537,6 @@ HRESULT WindowsGraphicsCapture::GetNextFrame(_In_ DWORD timeoutMillis, _Inout_ G
+ 
+ 				measureGetFrame.SetName(L"WindowsGraphicsManager::GetNextFrame recreated");
+ 
+-				//Some times the size of the first frame is wrong when recording windows, so we just skip it and get a new after resizing the frame pool.
+-				if (m_RecordingSource->Type == RecordingSourceType::Window
+-					&& !m_HaveDeliveredFirstFrame)
+-				{
+-					m_HaveDeliveredFirstFrame = true;
+-					frame.Close();
+-					return GetNextFrame(timeoutMillis, pData);
+-				}
+ 			}
+ 
+ 			D3D11_TEXTURE2D_DESC desc;
+@@ -553,12 +545,14 @@ HRESULT WindowsGraphicsCapture::GetNextFrame(_In_ DWORD timeoutMillis, _Inout_ G
+ 			D3D11_BOX sourceRegion;
+ 			RtlZeroMemory(&sourceRegion, sizeof(sourceRegion));
+ 			sourceRegion.left = 0;
+-			sourceRegion.right = min(frame.ContentSize().Width, (int)desc.Width);
+ 			sourceRegion.top = 0;
+-			sourceRegion.bottom = min(frame.ContentSize().Height, (int)desc.Height);
+ 			sourceRegion.front = 0;
+ 			sourceRegion.back = 1;
+ 			auto surfaceTexture = Graphics::Capture::Util::GetDXGIInterfaceFromObject<ID3D11Texture2D>(frame.Surface());
++			D3D11_TEXTURE2D_DESC sourceDesc;
++			surfaceTexture->GetDesc(&sourceDesc);
++			sourceRegion.right = min(frame.ContentSize().Width, min((int)desc.Width, (int)sourceDesc.Width));
++			sourceRegion.bottom = min(frame.ContentSize().Height, min((int)desc.Height, (int)sourceDesc.Height));
+ 			m_DeviceContext->CopySubresourceRegion(pData->Frame, 0, 0, 0, 0, surfaceTexture.get(), 0, &sourceRegion);
+ 			m_HaveDeliveredFirstFrame = true;
+ 			QueryPerformanceCounter(&pData->Timestamp);
+@@ -578,4 +572,4 @@ HRESULT WindowsGraphicsCapture::GetNextFrame(_In_ DWORD timeoutMillis, _Inout_ G
+ 		hr = HRESULT_FROM_WIN32(dwErr);
+ 	}
+ 	return hr;
+-}
+\ No newline at end of file
++}

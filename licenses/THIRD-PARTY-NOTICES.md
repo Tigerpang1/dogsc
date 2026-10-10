@@ -7,7 +7,7 @@ FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随�
 | DogSC 上游源代码 | `e207d11b111c5e58152238fb64115b2009850547` | MIT | 迁移参考来源；完整上游许可见 [`DogSC-MIT.txt`](DogSC-MIT.txt)。Windows 程序不沿用 DogSC 品牌或图标。 |
 | dogscwindows Windows 适配参考 | `3bdcf00d4eb12a107c093e98aac7a894aedd2843` | MIT | 参考并移植自动镜头弹簧跟随、系统光标形态/热点处理，参考颜色往返测量方法；来源 [xiaoying8666/dogscwindows](https://github.com/xiaoying8666/dogscwindows)，完整原仓库许可及署名见 [`DogSCWindows-MIT.txt`](DogSCWindows-MIT.txt)。Windows 适配由该仓库维护者贡献，不表示原作者参与 FrameTrail。 |
 | Alibaba PuHuiTi 3.0 Regular / Medium / SemiBold | 上游锁定 OTF 文件 | 阿里巴巴普惠体使用许可 | 界面字体，未经修改嵌入应用；完整声明见 [`Alibaba-PuHuiTi-3-LICENSE.txt`](Alibaba-PuHuiTi-3-LICENSE.txt)。原文件及校验值保存在 `upstream/dogsc/Resources/Fonts`。 |
-| ScreenRecorderLib | 7.0.1 | MIT | 录制依赖；[NuGet 包](https://www.nuget.org/packages/ScreenRecorderLib/7.0.1)，许可文本见 [`ScreenRecorderLib-MIT.txt`](ScreenRecorderLib-MIT.txt)。依赖 Visual C++ Redistributable 与 Windows Media Foundation。 |
+| ScreenRecorderLib | 7.0.1，固定上游提交 `646383234187efd3854e6b1069612b80c3ab9981`，含 WGC 首帧补丁 | MIT | 录制依赖。实际使用本仓库 [`third_party/ScreenRecorderLib/prebuilt/ScreenRecorderLib.dll`](../third_party/ScreenRecorderLib/prebuilt/ScreenRecorderLib.dll)，SHA-256 `3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151`；源码 ZIP、统一补丁和重建脚本见 [`third_party/ScreenRecorderLib/README.md`](../third_party/ScreenRecorderLib/README.md)。许可文本见 [`ScreenRecorderLib-MIT.txt`](ScreenRecorderLib-MIT.txt)。依赖 Visual C++ Redistributable 与 Windows Media Foundation。 |
 | NAudio.Wasapi | 2.2.1 | MIT | WASAPI 系统回环与麦克风独立 WAV 采集；[NuGet 包](https://www.nuget.org/packages/NAudio.Wasapi/2.2.1)，许可文本见 [`NAudio-MIT.txt`](NAudio-MIT.txt)。依赖 Windows Core Audio（WASAPI），不附带本机二进制。 |
 | Vortice.Direct3D11 | 3.8.3 | MIT | Direct3D 11 绑定；[NuGet 包](https://www.nuget.org/packages/Vortice.Direct3D11/3.8.3)。许可文本见 [`Vortice.Windows-MIT.txt`](Vortice.Windows-MIT.txt)。 |
 | Vortice.D3DCompiler | 3.8.3 | MIT | shader 编译绑定；[NuGet 包](https://www.nuget.org/packages/Vortice.D3DCompiler/3.8.3)，同属 Vortice.Windows 仓库。 |
@@ -19,4 +19,4 @@ FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随�
 | Microsoft Visual C++ 2015–2022 Redistributable (x64) | 系统预装组件 | Microsoft 许可条款 | ScreenRecorderLib 的运行依赖。本安装包不捆绑、不安装、不更新它；用户从[微软官方页面](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)自行获取。 |
 | FFmpeg（Gyan Windows full static build） | 8.1.1，FFmpeg commit `239f2c733d` | GPLv3 build | 仅本机验证包。随发布候选包的许可证和源代码准备见 [`FFmpeg-GPLv3.txt`](FFmpeg-GPLv3.txt)、[`FFmpeg-CORRESPONDING-SOURCE.md`](FFmpeg-CORRESPONDING-SOURCE.md) 与 [`../scripts/fetch-ffmpeg-corresponding-source.ps1`](../scripts/fetch-ffmpeg-corresponding-source.ps1)。公开发布仍须确认完整对应源代码覆盖和 GPL 合规。 |
 
-依赖许可标识以 NuGet 版本页面及各上游仓库许可为审计依据。NuGet 锁文件改动、包升级、构建配置变更或发布介质变化时，必须重新生成并审阅此清单。此文件不是法律意见。
+NuGet 锁文件列出实际通过 NuGet 引入的包；ScreenRecorderLib 的版本、源码提交、补丁及本地 DLL 哈希以 [`third_party/ScreenRecorderLib/provenance.json`](../third_party/ScreenRecorderLib/provenance.json) 为准。锁文件、供应来源、构建配置或发布介质变化时，必须重新审阅此清单。此文件不是法律意见。

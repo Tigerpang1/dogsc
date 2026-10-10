@@ -1,0 +1,4 @@
+*.zip binary
+*.dll binary
+LICENSE binary
+*.patch text eol=lf -whitespace

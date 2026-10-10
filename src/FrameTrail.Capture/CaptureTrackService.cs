@@ -154,6 +154,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                                 session.AudioSegmentStartOutputFrame = boundaryOutputFrame;
                             }
                             session.AudioDiagnostics ??= new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
+                            session.AudioDiagnostics.PositionSample(session.AudioPacketCount + 1, devicePosition, frames,
+                                qpcPosition, arrivalTicks, flags, placement.DevicePositionMode);
                             session.AudioDiagnostics.Packet(arrivalTicks, frames, (flags & AudioClientBufferFlags.Silent) != 0,
                                 timing.ArrivalLatencyMilliseconds, timing.UsedArrivalFallback, timing.TimestampError,
                                 timing.DataDiscontinuity, placement.DevicePositionMismatch, placement.DevicePositionReset,
@@ -200,6 +202,11 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 session.AudioPositionMapper = new AudioPacketPositionMapper(session.AudioStartTicks,
                     audioCapture.WaveFormat.SampleRate, Stopwatch.Frequency);
                 session.AudioDiagnostics = new AudioPacketDiagnostics(session.AudioStartTicks, Stopwatch.Frequency);
+                session.AudioDiagnostics.SetAudioClockFrequency(audioCapture.AudioClockFrequency,
+                    audioCapture.AudioClockFrequencyError);
+                session.AudioDiagnostics.SetStreamFormat(audioCapture.WaveFormat.SampleRate,
+                    audioCapture.WaveFormat.BlockAlign, audioCapture.WaveFormat.Channels,
+                    audioCapture.WaveFormat.BitsPerSample);
                 audioCapture.StartRecording();
                 var startedTicks = session.AudioStartTicks;
                 session.Handle = new CaptureTrackHandle(session.Id, kind, session.OutputPath, startedTicks, Stopwatch.Frequency);
@@ -309,6 +316,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
                 }
                 if (session.AudioDiagnostics is { } diagnostics)
                 {
+                    diagnostics.SetDevicePositionMode(session.AudioPositionMapper?.DevicePositionMode);
                     var diagnosticsPath = session.OutputPath + ".diagnostics.json";
                     var diagnosticTicks = Stopwatch.GetTimestamp();
                     var totals = diagnostics.Snapshot(diagnosticTicks);
@@ -322,8 +330,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                     }
                 }
                 if (session.PausedIntervals.Count > 0)
-                    session.Warnings.Add($"Audio pause boundaries were mapped into WASAPI device sample time using the measured QPC clock rate; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
-                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
+                    session.Warnings.Add($"Audio pause boundaries were mapped using {session.AudioPositionMapper?.DevicePositionMode ?? "unknown"} timing; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
+                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, positionMode={session.AudioPositionMapper?.DevicePositionMode ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
             }
             else
             {

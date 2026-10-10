@@ -1,4 +1,5 @@
 using System.Text.Json;
+using NAudio.CoreAudioApi;
 
 namespace FrameTrail.Capture;
 
@@ -7,6 +8,8 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
 {
     private readonly object _gate = new();
     private readonly SortedDictionary<long, MutableBucket> _buckets = new();
+    private readonly List<AudioPacketPositionSample> _firstPositionSamples = [];
+    private readonly Queue<AudioPacketPositionSample> _lastPositionSamples = new();
     private long _packetCount, _packetFrames, _silentFrames, _silentSourceFramesWritten, _packetSourceFramesWritten, _actuallyWrittenFrames, _overlapDroppedFrames;
     private long _pumpSilenceFrames, _packetGapSilenceFrames, _finalizationSilenceFrames;
     private long _timestampFallbackPackets, _timestampErrorPackets, _discontinuities, _devicePositionMismatches, _droppedBuckets;
@@ -16,6 +19,10 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
     private long _pauseBoundaryNominalOffsetMaxFrames;
     private double? _deviceClockDriftPpmLatest;
     private double? _predictedClockDifferenceMs;
+    private string? _devicePositionMode;
+    private long? _audioClockFrequency;
+    private string? _audioClockFrequencyError;
+    private int? _mixSampleRate, _mixBlockAlign, _mixChannels, _mixBitsPerSample;
     private long? _lastPacketTicks;
     private double _latencyMin = double.PositiveInfinity, _latencyMax = double.NegativeInfinity;
 
@@ -86,6 +93,44 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
             _predictedClockDifferenceMs = double.IsFinite(predictedDifferenceMs) ? predictedDifferenceMs : null;
         }
     }
+    internal void SetDevicePositionMode(string? mode)
+    {
+        lock (_gate) _devicePositionMode = mode;
+    }
+    internal void SetAudioClockFrequency(long? frequency, string? error)
+    {
+        lock (_gate)
+        {
+            _audioClockFrequency = frequency;
+            _audioClockFrequencyError = error;
+        }
+    }
+    internal void SetStreamFormat(int sampleRate, int blockAlign, int channels, int bitsPerSample)
+    {
+        lock (_gate)
+        {
+            _mixSampleRate = sampleRate > 0 ? sampleRate : null;
+            _mixBlockAlign = blockAlign > 0 ? blockAlign : null;
+            _mixChannels = channels > 0 ? channels : null;
+            _mixBitsPerSample = bitsPerSample > 0 ? bitsPerSample : null;
+        }
+    }
+    internal void PositionSample(long packetIndex, long devicePosition, int frameCount, long qpcPosition100Nanoseconds,
+        long arrivalTicks, AudioClientBufferFlags flags, string mode)
+    {
+        lock (_gate)
+        {
+            var sample = new AudioPacketPositionSample(packetIndex, devicePosition, frameCount,
+                qpcPosition100Nanoseconds, arrivalTicks, (int)flags, mode);
+            if (_firstPositionSamples.Count < 32)
+                _firstPositionSamples.Add(sample);
+            else
+            {
+                _lastPositionSamples.Enqueue(sample);
+                while (_lastPositionSamples.Count > 16) _lastPositionSamples.Dequeue();
+            }
+        }
+    }
     internal void OverlapDropped(long eventTicks, long frames) { if (frames <= 0) return; lock (_gate) { GetBucket(eventTicks).OverlapDroppedFrames += frames; _overlapDroppedFrames += frames; } }
     internal void SilenceWritten(long eventTicks, long frames, AudioSilenceSource source)
     {
@@ -109,6 +154,13 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
         lock (_gate)
         {
             var buckets = _buckets.Values.Select(ToImmutable).ToArray();
+            var observedPositionRate = EstimatePositionUnitsPerSecond(_firstPositionSamples);
+            var observedPositionRateToMixRate = observedPositionRate is > 0 && _mixSampleRate is > 0
+                ? observedPositionRate.Value / _mixSampleRate.Value : (double?)null;
+            var audioClockToObservedRate = observedPositionRate is > 0 && _audioClockFrequency is > 0
+                ? _audioClockFrequency.Value / observedPositionRate.Value : (double?)null;
+            var audioClockBlockFrameToObservedRate = observedPositionRate is > 0 && _audioClockFrequency is > 0 && _mixBlockAlign is > 0
+                ? _audioClockFrequency.Value / (double)_mixBlockAlign.Value / observedPositionRate.Value : (double?)null;
             return new AudioPacketDiagnosticsSnapshot(
                 BucketSeconds: bucketSeconds, MaximumRetainedBuckets: maximumBuckets, RetainedBucketCount: buckets.Length,
                 DroppedBuckets: _droppedBuckets, PacketCount: _packetCount,
@@ -122,11 +174,53 @@ internal sealed class AudioPacketDiagnostics(long startTicks, long stopwatchFreq
                 DevicePositionResets: _devicePositionResets, QpcPositionResidualAbsMaxMs: _qpcPositionResidualAbsMaxMs,
                 PauseBoundaryCount: _pauseBoundaryCount, PauseBoundaryNominalOffsetMaxFrames: _pauseBoundaryNominalOffsetMaxFrames,
                 DeviceClockDriftPpmLatest: _deviceClockDriftPpmLatest, PredictedClockDifferenceMs: _predictedClockDifferenceMs,
+                DevicePositionMode: _devicePositionMode,
+                AudioClockFrequency: _audioClockFrequency,
+                AudioClockFrequencyError: _audioClockFrequencyError,
+                MixSampleRate: _mixSampleRate,
+                MixBlockAlign: _mixBlockAlign,
+                MixChannels: _mixChannels,
+                MixBitsPerSample: _mixBitsPerSample,
+                ObservedDevicePositionUnitsPerSecond: observedPositionRate,
+                ObservedPositionRateToMixRateRatio: observedPositionRateToMixRate,
+                AudioClockFrequencyToObservedPositionRateRatio: audioClockToObservedRate,
+                AudioClockBlockAlignAdjustedFrequencyToObservedPositionRateRatio: audioClockBlockFrameToObservedRate,
                 ArrivalLatencyMinMs: double.IsFinite(_latencyMin) ? _latencyMin : null,
                 ArrivalLatencyMaxMs: double.IsFinite(_latencyMax) ? _latencyMax : null,
                 LastPacketElapsedMs: _lastPacketTicks is long last ? (last - startTicks) * 1000d / stopwatchFrequency : null,
-                ObservedElapsedMs: (nowTicks - startTicks) * 1000d / stopwatchFrequency, Buckets: buckets);
+                ObservedElapsedMs: (nowTicks - startTicks) * 1000d / stopwatchFrequency, Buckets: buckets,
+                PositionSamples: _firstPositionSamples.Concat(_lastPositionSamples).ToArray());
         }
+    }
+
+    private static double? EstimatePositionUnitsPerSecond(IReadOnlyList<AudioPacketPositionSample> samples)
+    {
+        var ordered = samples.Where(sample => sample.QpcPosition100Nanoseconds > 0)
+            .OrderBy(sample => sample.PacketIndex).ToArray();
+        if (ordered.Length < 8) return null;
+        if (ordered.Zip(ordered.Skip(1), (left, right) =>
+                right.QpcPosition100Nanoseconds > left.QpcPosition100Nanoseconds &&
+                right.DevicePosition >= left.DevicePosition).Any(valid => !valid))
+            return null;
+
+        var originQpc = ordered[0].QpcPosition100Nanoseconds;
+        var originPosition = ordered[0].DevicePosition;
+        var xs = ordered.Select(sample => (sample.QpcPosition100Nanoseconds - originQpc) / 10_000_000d).ToArray();
+        var ys = ordered.Select(sample => (double)(sample.DevicePosition - originPosition)).ToArray();
+        if (xs[^1] < 0.05) return null;
+        var meanX = xs.Average();
+        var meanY = ys.Average();
+        var covariance = 0d;
+        var variance = 0d;
+        for (var index = 0; index < xs.Length; index++)
+        {
+            var dx = xs[index] - meanX;
+            covariance += dx * (ys[index] - meanY);
+            variance += dx * dx;
+        }
+        if (variance <= 0) return null;
+        var rate = covariance / variance;
+        return double.IsFinite(rate) && rate > 0 ? rate : null;
     }
 
     internal async Task WriteJsonAsync(string path, long nowTicks, CancellationToken cancellationToken = default)
@@ -183,9 +277,18 @@ internal sealed record AudioPacketDiagnosticsSnapshot(int BucketSeconds, int Max
     long FinalizationSilenceFrames, long TimestampFallbackPackets, long TimestampErrorPackets, long DataDiscontinuities,
     long DevicePositionMismatches, long DevicePositionResets, double QpcPositionResidualAbsMaxMs,
     long PauseBoundaryCount, long PauseBoundaryNominalOffsetMaxFrames, double? DeviceClockDriftPpmLatest,
-    double? PredictedClockDifferenceMs,
+    double? PredictedClockDifferenceMs, string? DevicePositionMode,
+    long? AudioClockFrequency, string? AudioClockFrequencyError,
+    int? MixSampleRate, int? MixBlockAlign, int? MixChannels, int? MixBitsPerSample,
+    double? ObservedDevicePositionUnitsPerSecond, double? ObservedPositionRateToMixRateRatio,
+    double? AudioClockFrequencyToObservedPositionRateRatio,
+    double? AudioClockBlockAlignAdjustedFrequencyToObservedPositionRateRatio,
     double? ArrivalLatencyMinMs, double? ArrivalLatencyMaxMs,
-    double? LastPacketElapsedMs, double ObservedElapsedMs, IReadOnlyList<AudioPacketDiagnosticBucket> Buckets);
+    double? LastPacketElapsedMs, double ObservedElapsedMs, IReadOnlyList<AudioPacketDiagnosticBucket> Buckets,
+    IReadOnlyList<AudioPacketPositionSample> PositionSamples);
+
+internal sealed record AudioPacketPositionSample(long PacketIndex, long DevicePosition, int FrameCount,
+    long QpcPosition100Nanoseconds, long ArrivalStopwatchTicks, int Flags, string MapperMode);
 
 internal sealed record AudioPacketDiagnosticBucket(long Index, double StartElapsedMs, long PacketCount,
     long PacketFrames, long SilentFlagFrames, long TimestampFallbackPackets, long TimestampErrorPackets,

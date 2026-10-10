@@ -21,13 +21,15 @@ public static class DogScProjectImporter
 
     /// <summary>
     /// Imports a recorded .dogscproject folder. Callers must probe the original
-    /// screen recording first and supply its dimensions and duration. The
-    /// destination folder must not exist.
+    /// screen recording first and supply its dimensions and duration. Camera
+    /// aspect ratio is optional because DogSC does not store it in the manifest;
+    /// callers may supply a probed value. The destination folder must not exist.
     /// </summary>
     public static DogScProjectImportResult Import(
         string sourcePackageDirectory,
         string destinationDirectory,
-        MediaAsset screenMedia)
+        MediaAsset screenMedia,
+        double? cameraAspectRatio = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePackageDirectory);
         ArgumentException.ThrowIfNullOrWhiteSpace(destinationDirectory);
@@ -49,6 +51,8 @@ public static class DogScProjectImporter
             throw new InvalidDataException("导入目标不能覆盖原项目包或其父目录。");
         if (!ValidMediaInfo(screenMedia))
             throw new InvalidDataException("主屏幕视频的媒体信息无效。");
+        if (cameraAspectRatio is { } aspect && (!double.IsFinite(aspect) || aspect is <= 0 or > 20))
+            throw new InvalidDataException("摄像头素材宽高比无效。");
 
         var manifestPath = Path.Combine(sourceRoot, "project.json");
         if (!File.Exists(manifestPath))
@@ -81,6 +85,12 @@ public static class DogScProjectImporter
         try
         {
             var warnings = new List<string>();
+            if (Get(screen, "sourceTimeScale").ValueKind is not (JsonValueKind.Undefined or JsonValueKind.Null))
+            {
+                var screenRate = Number(screen, "sourceTimeScale", double.NaN);
+                if (!double.IsFinite(screenRate) || screenRate <= 0 || Math.Abs(screenRate - 1) > 1e-9)
+                    warnings.Add("DogSC 主屏幕素材 sourceTimeScale 尚未映射；导入时间线仍按 sourceSequence 的源时刻编辑。");
+            }
             var displayName = String(root, "title").Trim();
             if (displayName.Length > 240)
             {
@@ -104,7 +114,7 @@ public static class DogScProjectImporter
             MapOpening(root, project, warnings);
             MapCursor(root, project, warnings);
             MapAnimationSpring(root, project);
-            MapCameraAndAudio(root, sourceRoot, staging, media, project, screenMedia.Duration, warnings);
+            MapCameraAndAudio(root, sourceRoot, staging, media, project, screenMedia.Duration, cameraAspectRatio, warnings);
 
             var projectFile = Path.Combine(staging, "project.frametrail");
             FrameTrailProjectStore.Save(projectFile, project);
@@ -326,13 +336,6 @@ public static class DogScProjectImporter
         "fullscreen" => CameraMotionLayoutKind.Fullscreen,
         _ => null
     };
-
-    private static double? ReadAspectRatio(JsonElement cameraRef, JsonElement camera)
-    {
-        var width = Number(cameraRef, "width", Number(camera, "width", 0));
-        var height = Number(cameraRef, "height", Number(camera, "height", 0));
-        return width > 0 && height > 0 && double.IsFinite(width / height) ? width / height : null;
-    }
 
     private static void MapMosaics(JsonElement clips, FrameTrailProject project, List<string> warnings)
     {
@@ -834,7 +837,7 @@ public static class DogScProjectImporter
 
     private static void MapCameraAndAudio(
         JsonElement root, string sourceRoot, string staging, JsonElement media,
-        FrameTrailProject project, double screenDuration, List<string> warnings)
+        FrameTrailProject project, double screenDuration, double? cameraAspectRatio, List<string> warnings)
     {
         var cameraRef = Get(media, "camera");
         if (cameraRef.ValueKind == JsonValueKind.Object && !string.IsNullOrWhiteSpace(String(cameraRef, "relativePath")))
@@ -882,13 +885,15 @@ public static class DogScProjectImporter
                     ShadowStrength = Math.Clamp(Number(camera, "shadowStrength", .25), 0, 1),
                     Shape = shape.Contains("circle", StringComparison.OrdinalIgnoreCase) ? CameraShape.Circle : CameraShape.RoundedRectangle,
                     Layout = cameraLayout,
-                    AssetAspectRatio = ReadAspectRatio(cameraRef, camera),
+                    AssetAspectRatio = cameraAspectRatio,
                     Crop = crop,
                     Opacity = Bool(camera, "isHidden", false) ? 0 : 1,
                     Volume = 1,
                     Muted = true,
                     Mirrored = Bool(camera, "isMirrored", true)
                 };
+                if (cameraLayout == CameraMotionLayoutKind.Original && cameraAspectRatio is null)
+                    warnings.Add("DogSC 摄像头布局使用 Original，但无法读取摄像头素材宽高比；FrameTrail 将按默认画幅显示。请检查导入报告并重新定位可读素材后再导入。");
             }
             else if ((sourceRate != 1 || cameraAnchors.Count > 0) && cameraMappings.Count == 0)
                 warnings.Add("DogSC 摄像头时钟校正没有生成可用的正向素材片段；摄像头画面已跳过。");

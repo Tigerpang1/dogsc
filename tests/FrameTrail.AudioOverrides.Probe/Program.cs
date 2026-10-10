@@ -14,6 +14,13 @@ if (args.Length > 0 && string.Equals(args[0], "--captured-project", StringCompar
     await CapturedProjectProbe.RunAsync(args[1], args[2]);
     return;
 }
+if (args.Length > 0 && string.Equals(args[0], "--source-rate-probe", StringComparison.OrdinalIgnoreCase))
+{
+    if (args.Length != 2)
+        throw new ArgumentException("Usage: FrameTrail.AudioOverrides.Probe --source-rate-probe <fresh-outdir>");
+    await AudioSourceRateProbe.RunAsync(args[1]);
+    return;
+}
 
 var outputDirectory = args.Length > 0 ? Path.GetFullPath(args[0]) : Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "audio-overrides");
 Directory.CreateDirectory(outputDirectory);

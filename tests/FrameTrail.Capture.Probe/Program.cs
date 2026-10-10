@@ -3,6 +3,10 @@ using System.Runtime.InteropServices;
 using FrameTrail.Capture;
 
 if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException();
+// Capture requests and test-window bounds use physical pixels on every thread.
+// Set this before creating any HWND; otherwise Windows virtualizes child-window
+// coordinates and moves high-DPI targets partly outside the display.
+System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
 Console.OutputEncoding = new System.Text.UTF8Encoding(false);
 if (args.Length == 1 && args[0] == "--microphone-clock-segment-test")
 {

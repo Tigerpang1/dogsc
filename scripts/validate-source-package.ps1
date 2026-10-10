@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.3',
+    [string]$Version = '0.2.4',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]
@@ -38,6 +38,7 @@ $run = [ordered]@{
     sourceMetadata = $null
     sourceArchiveLayout = $null
     noGitMetadataVerified = $false
+    screenRecorderLib = $null
     steps = @()
     buildInfo = $null
     error = $null
@@ -121,6 +122,21 @@ function Invoke-LoggedProcess(
     return [pscustomobject]$record
 }
 
+function Get-NormalizedSourceSha256([string]$Path) {
+    $text = [IO.File]::ReadAllText($Path)
+    $text = $text.Replace("`r`n", "`n")
+    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($text)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [Convert]::ToHexString($sha.ComputeHash($bytes)) }
+    finally { $sha.Dispose() }
+}
+
+function Assert-FileHash([string]$Path, [string]$Expected, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { throw "$Label is missing: $Path" }
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToUpperInvariant()
+    if ($actual -ne $Expected.ToUpperInvariant()) { throw "$Label SHA-256 mismatch. Expected $Expected, actual $actual." }
+}
+
 try {
     $null = New-Item -ItemType Directory -Path $resultDirectory -Force
     $null = New-Item -ItemType Directory -Path $logsDirectory -Force
@@ -152,6 +168,77 @@ try {
     }
     $run.sourceMetadata = $metadata
 
+    $screenRecorderLibRoot = Join-Path $repoRoot 'third_party/ScreenRecorderLib'
+    $screenRecorderLibProvenancePath = Join-Path $screenRecorderLibRoot 'provenance.json'
+    if (-not (Test-Path -LiteralPath $screenRecorderLibProvenancePath -PathType Leaf)) {
+        throw 'Missing third_party/ScreenRecorderLib/provenance.json.'
+    }
+    $screenRecorderLibProvenance = Get-Content -LiteralPath $screenRecorderLibProvenancePath -Raw | ConvertFrom-Json
+    if ($screenRecorderLibProvenance.schemaVersion -ne 1 -or
+        $screenRecorderLibProvenance.version -ne '7.0.1' -or
+        $screenRecorderLibProvenance.source.commit -ne '646383234187efd3854e6b1069612b80c3ab9981' -or
+        $screenRecorderLibProvenance.patch.sourceSha256AfterNormalizedLfUtf8 -ne '643F7AEE810E5C57467DF3620808F72576EBDB05DB466D0F77F9218E3669D61D' -or
+        $screenRecorderLibProvenance.prebuilt.sha256 -ne '3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151') {
+        throw 'ScreenRecorderLib provenance does not match the audited version, source, patch, and tested binary.'
+    }
+    $screenRecorderLibArchive = Join-Path $screenRecorderLibRoot ([string]$screenRecorderLibProvenance.source.archive)
+    $screenRecorderLibPatch = Join-Path $screenRecorderLibRoot ([string]$screenRecorderLibProvenance.patch.file)
+    $screenRecorderLibLicense = Join-Path $screenRecorderLibRoot ([string]$screenRecorderLibProvenance.source.licenseFile)
+    $screenRecorderLibDll = Join-Path $screenRecorderLibRoot ([string]$screenRecorderLibProvenance.prebuilt.file)
+    Assert-FileHash $screenRecorderLibArchive ([string]$screenRecorderLibProvenance.source.archiveSha256) 'ScreenRecorderLib source archive'
+    Assert-FileHash $screenRecorderLibPatch ([string]$screenRecorderLibProvenance.patch.sha256) 'ScreenRecorderLib patch'
+    Assert-FileHash $screenRecorderLibLicense ([string]$screenRecorderLibProvenance.source.licenseSha256) 'ScreenRecorderLib upstream license'
+    Assert-FileHash $screenRecorderLibDll ([string]$screenRecorderLibProvenance.prebuilt.sha256) 'ScreenRecorderLib tested DLL'
+
+    $captureProject = Join-Path $repoRoot 'src/FrameTrail.Capture/FrameTrail.Capture.csproj'
+    $captureProjectText = Get-Content -LiteralPath $captureProject -Raw
+    if ($captureProjectText -notmatch 'ScreenRecorderLibVendorPath' -or
+        $captureProjectText -notmatch 'VerifyScreenRecorderLibVendorBinary' -or
+        $captureProjectText -match '<PackageReference\s+Include="ScreenRecorderLib"') {
+        throw 'Capture project is not configured to build against the pinned local ScreenRecorderLib binary.'
+    }
+    $lockFiles = @(Get-ChildItem -LiteralPath (Join-Path $repoRoot 'src'), (Join-Path $repoRoot 'tests') -Recurse -File -Filter 'packages.lock.json')
+    foreach ($lockFile in $lockFiles) {
+        $lock = Get-Content -LiteralPath $lockFile.FullName -Raw | ConvertFrom-Json
+        foreach ($framework in $lock.dependencies.PSObject.Properties) {
+            if ($framework.Value.PSObject.Properties.Name -contains 'ScreenRecorderLib') {
+                throw "NuGet lock still lists ScreenRecorderLib as a package: $($lockFile.FullName) [$($framework.Name)]"
+            }
+        }
+    }
+
+    $screenRecorderLibPatchApplyVerified = $false
+    $screenRecorderLibSourceCheck = Join-Path $tempRoot 'screenrecorderlib-source-check'
+    New-Item -ItemType Directory -Path $screenRecorderLibSourceCheck | Out-Null
+    Expand-Archive -LiteralPath $screenRecorderLibArchive -DestinationPath $screenRecorderLibSourceCheck
+    $screenRecorderLibExtractedRoot = Join-Path $screenRecorderLibSourceCheck 'ScreenRecorderLib-7.0.1'
+    $screenRecorderLibSourceFile = Join-Path $screenRecorderLibExtractedRoot ([string]$screenRecorderLibProvenance.patch.filePath)
+    Assert-FileHash $screenRecorderLibSourceFile ([string]$screenRecorderLibProvenance.patch.sourceSha256Before) 'ScreenRecorderLib upstream WGC source'
+    $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $gitCommand) { throw 'Git is required to verify that the ScreenRecorderLib source patch applies.' }
+    & $gitCommand.Source -C $screenRecorderLibExtractedRoot apply --check $screenRecorderLibPatch
+    if ($LASTEXITCODE -ne 0) { throw 'ScreenRecorderLib patch does not apply cleanly to the pinned source archive.' }
+    & $gitCommand.Source -C $screenRecorderLibExtractedRoot apply $screenRecorderLibPatch
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to apply the ScreenRecorderLib patch to the pinned source archive.' }
+    $appliedSourceHash = Get-NormalizedSourceSha256 $screenRecorderLibSourceFile
+    if ($appliedSourceHash -ne [string]$screenRecorderLibProvenance.patch.sourceSha256AfterNormalizedLfUtf8) {
+        throw "ScreenRecorderLib patched source SHA-256 mismatch: $appliedSourceHash"
+    }
+    $screenRecorderLibPatchApplyVerified = $true
+    $run.screenRecorderLib = [ordered]@{
+        version = [string]$screenRecorderLibProvenance.version
+        sourceCommit = [string]$screenRecorderLibProvenance.source.commit
+        sourceArchiveSha256 = (Get-FileHash -LiteralPath $screenRecorderLibArchive -Algorithm SHA256).Hash.ToUpperInvariant()
+        patchSha256 = (Get-FileHash -LiteralPath $screenRecorderLibPatch -Algorithm SHA256).Hash.ToUpperInvariant()
+        testedDllSha256 = (Get-FileHash -LiteralPath $screenRecorderLibDll -Algorithm SHA256).Hash.ToUpperInvariant()
+        patchAppliesToPinnedSource = $screenRecorderLibPatchApplyVerified
+        captureProjectUsesPinnedLocalBinary = $true
+        publishedDllPath = $null
+        publishedDllSha256 = $null
+        publishedDllMatches = $false
+        publishedMaterialsVerified = $false
+    }
+
     $pwshPath = Join-Path $PSHOME 'pwsh.exe'
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
     $utf8Bootstrap = Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'
@@ -171,6 +258,27 @@ try {
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $PackageTimeoutSeconds
+
+    $publishedScreenRecorderLib = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/app/ScreenRecorderLib.dll"
+    if (Test-Path -LiteralPath $publishedScreenRecorderLib -PathType Leaf) {
+        $publishedScreenRecorderLibHash = (Get-FileHash -LiteralPath $publishedScreenRecorderLib -Algorithm SHA256).Hash.ToUpperInvariant()
+        $run.screenRecorderLib.publishedDllPath = $publishedScreenRecorderLib
+        $run.screenRecorderLib.publishedDllSha256 = $publishedScreenRecorderLibHash
+        $run.screenRecorderLib.publishedDllMatches = $publishedScreenRecorderLibHash -eq $run.screenRecorderLib.testedDllSha256
+        $publishedMaterials = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/licenses/ScreenRecorderLib-source"
+        $publishedNames = @('ScreenRecorderLib-v7.0.1-source.zip', 'first-frame-wgc.patch', 'README.md', 'provenance.json', 'LICENSE')
+        $publishedMaterialsPassed = $true
+        foreach ($name in $publishedNames) {
+            $candidate = Join-Path $publishedMaterials $name
+            if (!(Test-Path -LiteralPath $candidate -PathType Leaf)) { $publishedMaterialsPassed = $false; break }
+            $original = Join-Path $screenRecorderLibRoot $name
+            if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash) {
+                $publishedMaterialsPassed = $false
+                break
+            }
+        }
+        $run.screenRecorderLib.publishedMaterialsVerified = $publishedMaterialsPassed
+    }
 
     $buildInfoPath = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/BUILD-INFO.txt"
     if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
@@ -195,7 +303,9 @@ try {
     $stepResults = @($testResult, $buildResult, $packageResult)
     $stepsPassed = $stepResults.Count -eq 3 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
     $buildInfoPassed = $run.buildInfo.sourceKindCorrect -and $run.buildInfo.frameTrailCommitCorrect -and $run.buildInfo.upstreamCommitCorrect
-    $run.status = if ($stepsPassed -and $buildInfoPassed) { 'passed' } else { 'failed' }
+    $screenRecorderLibPassed = $screenRecorderLibPatchApplyVerified -and $run.screenRecorderLib.publishedDllMatches -and $run.screenRecorderLib.publishedMaterialsVerified
+    $run.screenRecorderLib.passed = $screenRecorderLibPassed
+    $run.status = if ($stepsPassed -and $buildInfoPassed -and $screenRecorderLibPassed) { 'passed' } else { 'failed' }
 }
 catch {
     $run.status = 'failed'

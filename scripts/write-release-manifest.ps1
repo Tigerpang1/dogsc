@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.3', [switch]$Candidate)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.4', [switch]$Candidate)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo 'artifacts/release'
@@ -53,7 +53,7 @@ $manifest = [ordered]@{
     frameTrailCommit=$head; upstreamDogScCommit=$source.sourceMetadata.upstreamDogScCommit
     packageValidationScope=$package.Scope; packageValidatedUtc=$package.CompletedUtc; sourceValidatedUtc=$source.completedUtc
     artifacts=$entries
-    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头/麦克风与多显示器矩阵未验收。','设备帧位置拼接的较早固定候选通过30秒18/18个视听cue短测，原始绝对P95为54.736ms；后续重锚边界修复有纯逻辑回归，当前包仍需新短测、30分钟同步及录制回工程成片验收。','窗口录制跨进程探针仍出现黑帧；同进程动态窗口成功，静态/动态影响尚待区分。','浅深主题与浮层已有局部实机证据；完整同包视觉、100%/200% DPI与系统高对比模式尚未验收。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
+    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头与多显示器矩阵未验收；麦克风已有含暂停的实采证据，物理拔插及多设备同时录制尚未覆盖。','采集与音画同步的局部测试不替代完整发行包工作流；具体样本、数值及版本边界见docs/capture-validation.md。','窗口首帧补丁已通过静态/动态对照及遮挡、移动、缩放、关闭回归；其他驱动和多显示器仍需覆盖。','浅深主题与浮层已有局部实机证据；完整同包视觉、100%/200% DPI与系统高对比模式尚未验收。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
 }
 if ($Candidate) { $manifest.limitations += '当前候选仅完成后台包内容检查；最终全量UIA、发行包实际播放录制和安装卸载待主机交互时段验证。' }
 $manifestJson = $manifest | ConvertTo-Json -Depth 6

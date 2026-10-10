@@ -29,8 +29,12 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "共享GPU/媒体测试失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --timeline-assets
         if ($LASTEXITCODE -ne 0) { throw "时间线缩略图与波形测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --dogsc-camera-import
+        if ($LASTEXITCODE -ne 0) { throw "DogSC 摄像头素材比例与保存失败回归失败，退出码 $LASTEXITCODE" }
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
         if ($LASTEXITCODE -ne 0) { throw "逐片段音量与辅助媒体时钟测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- --source-rate-probe (Join-Path $repoRoot ('artifacts/validation/source-rate-' + [guid]::NewGuid().ToString('N')))
+        if ($LASTEXITCODE -ne 0) { throw "辅助音频短时/长时时钟滤镜回归失败，退出码 $LASTEXITCODE" }
     }
     if ($IncludeIntegration) {
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration

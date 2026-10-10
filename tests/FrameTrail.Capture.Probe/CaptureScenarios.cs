@@ -291,6 +291,11 @@ internal static class CaptureScenarios
     private static async Task RunTargetTestAsync(ProbeOptions options)
     {
         var output = RequireOutput(options);
+        static object BinaryFile(string path) => new { Path = path,
+            Sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))) };
+        var binaryEvidence = new { Probe = BinaryFile(typeof(CaptureScenarios).Assembly.Location),
+            Capture = BinaryFile(typeof(FrameCaptureService).Assembly.Location),
+            Recorder = BinaryFile(System.Reflection.Assembly.Load("ScreenRecorderLib").Location) };
         await using var capture = new FrameCaptureService();
         var display = (await capture.EnumerateDisplaysAsync()).First(x => x.IsPrimary);
         var width = Math.Min(640, display.Bounds.Width - 160);
@@ -299,8 +304,13 @@ internal static class CaptureScenarios
         var start = new Point(display.Bounds.X + Math.Max(80, Math.Min(2400, display.Bounds.Width - width - 80)),
             display.Bounds.Y + Math.Max(80, Math.Min(1400, display.Bounds.Height - height - 80)));
         await using var window = await PatternWindowHost.StartAsync(new Rectangle(start.X, start.Y, width, height), colorBars: true);
+        var expectedSourceBounds = new Rectangle(start.X, start.Y, width, height);
+        var displayBounds = new Rectangle(display.Bounds.X, display.Bounds.Y, display.Bounds.Width, display.Bounds.Height);
+        if (window.Bounds != expectedSourceBounds || !displayBounds.Contains(window.Bounds))
+            throw new InvalidOperationException($"The controlled source must occupy its requested physical rectangle entirely on the display; requested={expectedSourceBounds}, actual={window.Bounds}, display={displayBounds}.");
         capture.StateChanged += (_, e) => { Console.WriteLine($"{DateTimeOffset.UtcNow:O} {e.State} ticks={e.StopwatchTicks} detail={e.Detail}"); Console.Out.Flush(); };
-        capture.ErrorOccurred += (_, e) => { Console.WriteLine($"ErrorOccurred={e.Message}"); Console.Out.Flush(); };
+        var captureErrors = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        capture.ErrorOccurred += (_, e) => { captureErrors.Enqueue(e.Message); Console.WriteLine($"ErrorOccurred={e.Message}"); Console.Out.Flush(); };
         string? completedEventPath = null;
         var completedCount = 0;
         capture.RecordingCompleted += result => { completedEventPath = result.OutputPath; Interlocked.Increment(ref completedCount); Console.WriteLine($"RecordingCompleted={result.OutputPath}"); Console.Out.Flush(); };
@@ -316,7 +326,7 @@ internal static class CaptureScenarios
         {
             var item = new { Name = name, ElapsedSeconds = testTimer.Elapsed.TotalSeconds, Utc = DateTimeOffset.UtcNow, Details = details };
             phaseLog.Add(item);
-            var progress = new { Utc = DateTimeOffset.UtcNow, Test = "WindowRecordingSource遮挡/移动/缩放验收", PhaseLog = phaseLog };
+            var progress = new { Utc = DateTimeOffset.UtcNow, Test = "WindowRecordingSource遮挡/移动/缩放验收", BinaryEvidence = binaryEvidence, PhaseLog = phaseLog };
             File.WriteAllText(targetSummaryPath, JsonSerializer.Serialize(progress, new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine(JsonSerializer.Serialize(item)); Console.Out.Flush();
         }
@@ -414,7 +424,7 @@ internal static class CaptureScenarios
         if (!string.Equals(completedEventPath, result.OutputPath, StringComparison.OrdinalIgnoreCase)) failures.Add("RecordingCompleted did not report the same output as StopAsync.");
         var targetSummary = new
         {
-            Utc = DateTimeOffset.UtcNow, OperatingSystem = Environment.OSVersion.VersionString,
+            Utc = DateTimeOffset.UtcNow, OperatingSystem = Environment.OSVersion.VersionString, BinaryEvidence = binaryEvidence,
             SourceType = "ScreenRecorderLib.WindowRecordingSource", SourceHandle = $"0x{window.Handle.ToInt64():X}",
             WdaNone = affinityNone,
             InitialBounds = new Rectangle(start.X, start.Y, width, height), CoverBounds = coverBounds, FinalBounds = windowRect,
@@ -427,6 +437,7 @@ internal static class CaptureScenarios
         Console.WriteLine($"Window WGC target report={targetSummaryPath}; duration={duration:F3}s; probe={videoProbe}; samples={JsonSerializer.Serialize(phaseSamples)}.");
         if (failures.Count > 0) throw new InvalidOperationException("Window WGC target test failed: " + string.Join(" | ", failures));
 
+        string? expectedClosedTargetError = null;
         try
         {
             var invalidPath = Path.ChangeExtension(output, ".closed-window.mp4");
@@ -438,6 +449,7 @@ internal static class CaptureScenarios
         {
             if (!ex.Message.Contains("Window handle is no longer valid or is minimized", StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("The closed-window start failed for an unrelated reason, so handle rejection was not verified.", ex);
+            expectedClosedTargetError = ex.Message;
             Phase("closed-target-rejected", new { ExceptionType = ex.GetType().Name, Message = ex.Message });
         }
 
@@ -489,10 +501,13 @@ internal static class CaptureScenarios
         if (!File.Exists(regionOutput) || new FileInfo(regionOutput).Length == 0 || !HasExpectedVideoProbe(regionProbe, width, height)
             || GetMediaDuration(regionOutput) < 4 || !string.Equals(completedEventPath, regionOutput, StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException($"Region DDA regression did not produce the expected decodable video: {regionProbe}");
+        var unexpectedErrors = captureErrors.Where(message => message != "The captured window was closed; recording is being finalized."
+            && message != "The captured window was minimized; recording is being finalized."
+            && message != expectedClosedTargetError).ToArray();
         var finalTargetSummary = new
         {
             Utc = DateTimeOffset.UtcNow, OperatingSystem = Environment.OSVersion.VersionString,
-            Test = "ScreenRecorderLib WindowRecordingSource with controlled pattern and red occlusion window",
+            Test = "ScreenRecorderLib WindowRecordingSource with controlled pattern and red occlusion window", BinaryEvidence = binaryEvidence,
             WindowCapture = new { Output = output, SourceHandle = $"0x{window.Handle.ToInt64():X}", InitialBounds = new Rectangle(start.X, start.Y, width, height),
                 WdaNone = affinityNone,
                 CoverBounds = coverBounds, FinalBounds = windowRect, Move = moved, Resize = new { Width = width - 40, Height = height - 20 },
@@ -500,9 +515,12 @@ internal static class CaptureScenarios
                 RecordingCompletedOutput = windowOutputEvent, Failures = failures },
             ClosedTargetRejected = true, ClosedDuringRecording = new { Output = closedResult.OutputPath, Event = closedOutputEvent },
             MinimizedDuringRecording = new { Output = minimizedResult.OutputPath, Event = minimizedOutputEvent },
-            RegionRegression = new { Output = regionResult.OutputPath, regionResult.Width, regionResult.Height, Probe = regionProbe }, PhaseLog = phaseLog
+            RegionRegression = new { Output = regionResult.OutputPath, regionResult.Width, regionResult.Height, Probe = regionProbe },
+            CaptureErrors = captureErrors.ToArray(), UnexpectedErrors = unexpectedErrors, PhaseLog = phaseLog
         };
         await File.WriteAllTextAsync(targetSummaryPath, JsonSerializer.Serialize(finalTargetSummary, new JsonSerializerOptions { WriteIndented = true }));
+        if (unexpectedErrors.Length > 0)
+            throw new InvalidOperationException("Window target test reported unrelated capture failures: " + string.Join(" | ", unexpectedErrors));
     }
 
     private static bool HasExpectedVideoProbe(string probe, int width, int height)

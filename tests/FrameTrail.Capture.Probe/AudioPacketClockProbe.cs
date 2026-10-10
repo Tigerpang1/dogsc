@@ -58,6 +58,96 @@ internal static class AudioPacketClockProbe
         Require(resetPosition.DevicePositionReset && resetMapper.PositionResetCount == 1 && resetPosition.StartFrame >= 9_600,
             "position reset is counted and reanchored without overwriting earlier samples");
 
+        // Some real capture endpoints return devicePosition=0 on every packet while
+        // QPC remains valid. That is an unavailable position source, not 1,500 resets.
+        const long constantPositionStart = 25_000_000_000;
+        var constantPositionMapper = new FrameTrail.Capture.AudioPacketPositionMapper(constantPositionStart, 48_000, frequency);
+        var constantPositionPackets = new List<FrameTrail.Capture.AudioPacketPlacement>();
+        for (var index = 0; index < 20; index++)
+        {
+            var qpcTicks = constantPositionStart + (long)index * 100_000;
+            constantPositionPackets.Add(constantPositionMapper.Map(0, 480,
+                checked(qpcTicks / (frequency / FrameTrail.Capture.AudioPacketClock.QpcUnitsPerSecond)),
+                qpcTicks + 120_000, AudioClientBufferFlags.None));
+        }
+        Require(constantPositionMapper.DevicePositionMode == "qpc-fallback" && constantPositionMapper.PositionResetCount == 0,
+            "a sustained constant device position is diagnosed as unavailable without inventing position resets");
+        Require(constantPositionPackets.Select((packet, index) => packet.StartFrame == index * 480L).All(value => value),
+            "QPC fallback keeps ordinary constant-position packets contiguous");
+        var qpcGapTicks = constantPositionStart + 2_200_000;
+        var qpcGap = constantPositionMapper.Map(0, 480,
+            checked(qpcGapTicks / (frequency / FrameTrail.Capture.AudioPacketClock.QpcUnitsPerSecond)),
+            qpcGapTicks + 120_000, AudioClientBufferFlags.None);
+        Require(qpcGap.StartFrame == 20 * 480L + 960 && qpcGap.ClockReanchored &&
+                constantPositionMapper.StopwatchTicksToSourceFrame(qpcGapTicks + 100_000) == qpcGap.StartFrame + 480,
+            "QPC fallback preserves a real 20ms missing-packet interval and maps pause boundaries through it");
+        const long delayedFallbackStart = 26_000_000_000;
+        var delayedFallbackMapper = new FrameTrail.Capture.AudioPacketPositionMapper(delayedFallbackStart, 48_000, frequency);
+        for (var index = 0; index < 10; index++)
+        {
+            var qpcTicks = delayedFallbackStart + (long)index * 100_000;
+            _ = delayedFallbackMapper.Map(0, 480, qpcTicks, qpcTicks + 120_000, AudioClientBufferFlags.None);
+        }
+        Require(delayedFallbackMapper.DevicePositionMode == "qpc-fallback", "delayed-arrival fixture enters QPC fallback mode");
+        var beforeDelayedArrival = delayedFallbackMapper.Map(0, 480,
+            delayedFallbackStart + 1_000_000, delayedFallbackStart + 1_120_000, AudioClientBufferFlags.None);
+        var delayedTimestampError = delayedFallbackMapper.Map(0, 480, 0,
+            delayedFallbackStart + 1_420_000, AudioClientBufferFlags.TimestampError);
+        Require(beforeDelayedArrival.StartFrame == 10 * 480L &&
+                delayedTimestampError.StartFrame == beforeDelayedArrival.StartFrame + 480 &&
+                !delayedTimestampError.ClockReanchored && delayedTimestampError.Timing.UsedArrivalFallback,
+            "a 20 ms callback delay on a continuous timestamp-error packet does not create synthetic missing frames in QPC fallback mode");
+        var afterDelayedTimestampError = delayedFallbackMapper.Map(0, 480,
+            delayedFallbackStart + 1_100_000, delayedFallbackStart + 1_220_000, AudioClientBufferFlags.None);
+        Require(afterDelayedTimestampError.StartFrame == delayedTimestampError.StartFrame + 480 &&
+                !afterDelayedTimestampError.ClockReanchored,
+            "a reliable packet after arrival fallback does not infer a gap across the unreliable boundary");
+        var fallbackDiscontinuity = delayedFallbackMapper.Map(0, 480, 0,
+            delayedFallbackStart + 1_620_000,
+            AudioClientBufferFlags.TimestampError | AudioClientBufferFlags.DataDiscontinuity);
+        Require(fallbackDiscontinuity.ClockReanchored && fallbackDiscontinuity.Timing.DataDiscontinuity,
+            "DataDiscontinuity remains authoritative even when its packet timestamp falls back to callback arrival");
+        var recoveringPositionMapper = new FrameTrail.Capture.AudioPacketPositionMapper(constantPositionStart + 5_000_000, 48_000, frequency);
+        _ = recoveringPositionMapper.Map(0, 480, constantPositionStart + 5_000_000, constantPositionStart + 5_120_000,
+            AudioClientBufferFlags.None);
+        _ = recoveringPositionMapper.Map(0, 480, constantPositionStart + 5_100_000, constantPositionStart + 5_220_000,
+            AudioClientBufferFlags.None);
+        _ = recoveringPositionMapper.Map(480, 480, constantPositionStart + 5_200_000, constantPositionStart + 5_320_000,
+            AudioClientBufferFlags.None);
+        var recoveredPosition = recoveringPositionMapper.Map(960, 480, constantPositionStart + 5_300_000,
+            constantPositionStart + 5_420_000, AudioClientBufferFlags.None);
+        Require(recoveringPositionMapper.DevicePositionMode == "device-position" &&
+                recoveringPositionMapper.PositionResetCount == 0 && recoveredPosition.StartFrame == 1_440,
+            "device-position tracking can recover from a short startup stall without discarding samples or declaring a reset");
+        Console.WriteLine("Audio position fallback regression passed: constant device position, QPC-contiguous packets, real QPC gap, and retained reliable-position reset coverage.");
+
+        // GetBuffer positions are documented in stream frames. When they persistently
+        // disagree with the returned packet frame count, do not infer units from
+        // IAudioClock.GetFrequency; use the reliable QPC clock and preserve real gaps.
+        const long resampledClockStart = 27_000_000_000;
+        const int outputSampleRate = 48_000;
+        const int packetFrames = 480;
+        var resampledClockMapper = new FrameTrail.Capture.AudioPacketPositionMapper(resampledClockStart, outputSampleRate, frequency);
+        var resampledPlacements = new List<FrameTrail.Capture.AudioPacketPlacement>();
+        for (var index = 0; index < 40; index++)
+        {
+            var qpcTicks = resampledClockStart + (long)index * 100_000;
+            resampledPlacements.Add(resampledClockMapper.Map(index * 441L, packetFrames,
+                qpcTicks, qpcTicks + 120_000, AudioClientBufferFlags.None));
+        }
+        Require(resampledClockMapper.DevicePositionMode == "qpc-fallback" &&
+                resampledClockMapper.PositionResetCount == 0,
+            "persistent GetBuffer position/frame-count disagreement is diagnosed and safely falls back to QPC without inventing resets");
+        Require(resampledPlacements.Select((packet, index) => packet.StartFrame == index * 480L).All(value => value) &&
+                resampledClockMapper.MaxQpcResidualMilliseconds < 0.1,
+                "QPC fallback keeps 48 kHz mix frames contiguous without treating raw device position as output frames");
+        var qpcFallbackGap = resampledClockMapper.Map(40 * 441L, packetFrames,
+            resampledClockStart + 4_200_000, resampledClockStart + 4_320_000, AudioClientBufferFlags.None);
+        Require(qpcFallbackGap.StartFrame == 40 * 480L + 960 && qpcFallbackGap.ClockReanchored &&
+                resampledClockMapper.StopwatchTicksToSourceFrame(resampledClockStart + 4_300_000) == qpcFallbackGap.StartFrame + 480,
+            "QPC fallback retains a measured 20 ms packet gap and maps pause boundaries in the 48 kHz mix-frame domain");
+        Console.WriteLine("WASAPI position-unit regression passed: undocumented GetBuffer/Frequency relationship falls back to QPC while preserving real gaps.");
+
         // Exercise the production mapper and pause packet splitter together. QPC has
         // small packet jitter, the stream position resets at the pause end, and a
         // separate forward position jump after resume must remain a real silent gap.

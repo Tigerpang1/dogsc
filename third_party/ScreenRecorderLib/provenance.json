@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "component": "ScreenRecorderLib",
+  "version": "7.0.1",
+  "source": {
+    "repository": "https://github.com/sskodje/ScreenRecorderLib",
+    "tag": "v7.0.1",
+    "commit": "646383234187efd3854e6b1069612b80c3ab9981",
+    "archive": "ScreenRecorderLib-v7.0.1-source.zip",
+    "archiveSha256": "31435BB4F5D159D5D943AE5E31BD4DE6A9C5E8476AFA9691E7DC8E51A5FA27E0",
+    "license": "MIT",
+    "licenseFile": "LICENSE",
+    "licenseSha256": "9AAD4239954F3F4B1BAE22011CA72E00FE5AD9218068CD44375A1A5306F7CF32"
+  },
+  "patch": {
+    "file": "first-frame-wgc.patch",
+    "sha256": "4FB260DCADD8FDE129A06D4380AE19ECA7A3EA985FEDE4D19E430DAA7C2C7C3F",
+    "filePath": "ScreenRecorderLibNative/WindowsGraphicsCapture.cpp",
+    "sourceSha256Before": "17AECF2A85D49BAF5848AC97FD315A5FE311B6F8A8ADF64ED63FDE10EEB0BA1A",
+    "sourceSha256AfterNormalizedLfUtf8": "643F7AEE810E5C57467DF3620808F72576EBDB05DB466D0F77F9218E3669D61D",
+    "purpose": "Keep the first valid WGC frame after a window frame-pool resize and clamp source-copy dimensions to the source texture, destination texture, and frame content."
+  },
+  "prebuilt": {
+    "file": "prebuilt/ScreenRecorderLib.dll",
+    "sha256": "3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151",
+    "fileVersion": "7.0.1.0",
+    "configuration": "Release x64",
+    "toolchain": "Visual Studio 2022 Community MSBuild 17.14.14+a129329f1; v143 / MSVC 14.44.35207; Windows SDK 10.0.26100.0",
+    "runtimeEvidence": {
+      "matrix": "artifacts/validation/wgc-first-frame-matrix-v1/matrix-summary.json",
+      "interpretation": "Patched static-window case decoded nonblack pixels; unpatched control decoded all black. Both animated cases decoded normally.",
+      "productTargetTest": {
+        "report": "artifacts/validation/window-wgc-patched-product-v2/target.target.json",
+        "dllSnapshot": "artifacts/validation/capture-audio-clock-build-v5/snapshot-provenance.json",
+        "loadedDllSha256": "3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151",
+        "result": "passed: three pattern colors remained visible before, during full opaque overlap, and after move/resize; closed target was rejected; close/minimize finalized recordings; DDA region regression completed.",
+        "scopeNote": "Local Windows 11 test snapshot with pending working-tree audio/DPI changes; not the final release build or broad device certification."
+      }
+    }
+  },
+  "independentRebuild": {
+    "result": "success",
+    "configuration": "Release x64",
+    "outputDllSha256": "3650538CC7F8F90F88DB653191FA658A3B09630CF65BBC008C97BB656ED235AF",
+    "toolchain": "Visual Studio 2022 Community MSBuild 17.14.14.31908; v143 / MSVC 14.44.35207; Windows SDK 10.0.26100.0",
+    "buildWarning": "Upstream AudioManager.cpp:313 emitted C4018 (signed/unsigned comparison); the WGC patch translation unit built without warnings.",
+    "note": "A separately rebuilt PE can have a different hash; the verified prebuilt remains the fixed 3D366... binary above."
+  },
+  "rebuild": {
+    "script": "scripts/rebuild-screenrecorderlib.ps1",
+    "outputPolicy": "Writes a fresh output directory under artifacts/validation and records the resulting binary hash. PE bytes are not promised to be deterministic."
+  }
+}
