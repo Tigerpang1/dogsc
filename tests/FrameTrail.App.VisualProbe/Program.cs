@@ -22,11 +22,13 @@ internal static class Program
         var windowSourceFilterOnly = args.FirstOrDefault() == "--window-source-filter";
         var microphoneAccessOnly = args.FirstOrDefault() == "--microphone-access-recovery";
         var bundledResourcesOnly = args.FirstOrDefault() == "--bundled-resources";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var errorRecoveryOnly = args.FirstOrDefault() == "--error-recovery";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
+            : errorRecoveryOnly ? "artifacts/validation/error-recovery-offscreen"
             : bundledResourcesOnly ? "artifacts/validation/bundled-resource-locator-offscreen"
             : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
@@ -39,6 +41,19 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (errorRecoveryOnly)
+            {
+                AppErrorPresentationProbe.Verify(output, Check);
+                MemoSaveRecoveryProbe.Verify(output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "全局错误壳与重入保护、备忘录写盘失败和恢复；临时夹具和浅深主题离屏窗口，不替代实机关闭重开或录屏排除验收",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} error recovery checks; {output}");
+                return 0;
+            }
             if (bundledResourcesOnly)
             {
                 BundledResourceLocatorProbe.Verify(Check);

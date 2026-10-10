@@ -4,9 +4,15 @@ using System.Windows;
 namespace FrameTrail.App;
 public partial class App : Application
 {
+    private readonly UnhandledErrorPresenter unhandledErrors = new(Log, UnhandledErrorPresenter.Show);
+
     protected override void OnStartup(StartupEventArgs e)
     {
-        DispatcherUnhandledException += (_, args) => { Log(args.Exception); MessageBox.Show(args.Exception.Message, "FrameTrail · 操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); args.Handled = true; };
+        DispatcherUnhandledException += (_, args) =>
+        {
+            args.Handled = true;
+            unhandledErrors.Report(args.Exception);
+        };
         base.OnStartup(e);
     }
     public static void Log(Exception ex)

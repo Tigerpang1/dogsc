@@ -99,19 +99,163 @@ public sealed class RecordingBar : Window
 }
 public sealed class MemoWindow : Window
 {
-    private readonly string file=System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"FrameTrail","memo.txt");
+    private const string SaveFailureTitle = "备忘录保存失败";
+    private const string SaveFailureMessage = "备忘录正文或外观设置未能保存，窗口仍会保持打开，当前文字也会保留在窗口中。请检查文件权限或磁盘空间，然后再次关闭窗口重试。";
+    private readonly string file;
+    private readonly string preferences;
+    private readonly TextBox input;
+    private readonly TextBlock saveStatus;
+    private readonly DispatcherTimer timer;
+    private readonly Action<Window, string, string> showSaveFailure;
+    private readonly Action<Exception> errorLog;
+
     public MemoWindow()
+        : this(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "memo.txt"),
+            (owner, message, title) => SurfaceDialog.Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Warning)) { }
+
+    internal MemoWindow(string filePath, Action<Window, string, string>? showSaveFailure = null, Action<Exception>? errorLog = null)
     {
-        Title="FrameTrail · 本机备忘录"; Width=410; Height=320; Topmost=true; Opacity=.93;
-        var input=new TextBox { AcceptsReturn=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,FontSize=18,Margin=new(10),Text=File.Exists(file)?File.ReadAllText(file):"录制提纲…" };
-        var preferences=file+".settings.json";try{if(File.Exists(preferences)){var p=System.Text.Json.JsonSerializer.Deserialize<double[]>(File.ReadAllText(preferences));if(p is {Length:>=4}){input.FontSize=Math.Clamp(p[0],12,48);Opacity=Math.Clamp(p[1],.25,1);Width=Math.Clamp(p[2],280,1000);Height=Math.Clamp(p[3],180,1000);if(p.Length>=6){WindowStartupLocation=WindowStartupLocation.Manual;Left=Math.Clamp(p[4],SystemParameters.VirtualScreenLeft,SystemParameters.VirtualScreenLeft+Math.Max(0,SystemParameters.VirtualScreenWidth-Width));Top=Math.Clamp(p[5],SystemParameters.VirtualScreenTop,SystemParameters.VirtualScreenTop+Math.Max(0,SystemParameters.VirtualScreenHeight-Height));}}}}catch(Exception ex){App.Log(ex);}
-        var root=new DockPanel();var controls=new StackPanel{Orientation=Orientation.Horizontal,Margin=new(12,5,12,0)};controls.Children.Add(new TextBlock{Text="字号",VerticalAlignment=VerticalAlignment.Center});var size=new Slider{Minimum=12,Maximum=48,Value=input.FontSize,Width=100,Margin=new(8,0,12,0)};size.ValueChanged+=(_,_)=>input.FontSize=size.Value;controls.Children.Add(size);controls.Children.Add(new TextBlock{Text="透明度",VerticalAlignment=VerticalAlignment.Center});var opacity=new Slider{Minimum=.25,Maximum=1,Value=Opacity,Width=90,Margin=new(8,0,0,0)};opacity.ValueChanged+=(_,_)=>Opacity=opacity.Value;controls.Children.Add(opacity);DockPanel.SetDock(controls,Dock.Top);root.Children.Add(controls);root.Children.Add(input);
-        SurfaceWindow.Configure(this, resizable:true, centerOnOwner:false);
-        Content=SurfaceWindow.WrapContent(this,root,"本机备忘录");
-        var timer=new DispatcherTimer { Interval=TimeSpan.FromMilliseconds(600) }; timer.Tick+=(_,_)=>{ timer.Stop(); Directory.CreateDirectory(System.IO.Path.GetDirectoryName(file)!); File.WriteAllText(file,input.Text); };
-        input.TextChanged+=(_,_)=>{ timer.Stop();timer.Start(); }; Closed+=(_,_)=>{ timer.Stop();Directory.CreateDirectory(System.IO.Path.GetDirectoryName(file)!);File.WriteAllText(file,input.Text); };
-        SourceInitialized+=(_,_)=>NativeWindows.Exclude(this);
-        Closed+=(_,_)=>{Directory.CreateDirectory(System.IO.Path.GetDirectoryName(preferences)!);File.WriteAllText(preferences,System.Text.Json.JsonSerializer.Serialize(new[]{input.FontSize,Opacity,Width,Height,Left,Top}));};
+        ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
+        file = filePath;
+        preferences = MemoStorage.SettingsPath(file);
+        this.showSaveFailure = showSaveFailure ?? ((owner, message, title) =>
+            SurfaceDialog.Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Warning));
+        this.errorLog = errorLog ?? App.Log;
+
+        Title = "FrameTrail · 本机备忘录";
+        Width = 410;
+        Height = 320;
+        Topmost = true;
+        Opacity = .93;
+        input = new TextBox
+        {
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            VerticalContentAlignment = VerticalAlignment.Top,
+            FontSize = 18,
+            Margin = new Thickness(10),
+            Text = File.Exists(file) ? File.ReadAllText(file) : "录制提纲…"
+        };
+        try
+        {
+            if (File.Exists(preferences))
+            {
+                var saved = System.Text.Json.JsonSerializer.Deserialize<double[]>(File.ReadAllText(preferences));
+                if (saved is { Length: >= 4 })
+                {
+                    input.FontSize = Math.Clamp(saved[0], 12, 48);
+                    Opacity = Math.Clamp(saved[1], .25, 1);
+                    Width = Math.Clamp(saved[2], 280, 1000);
+                    Height = Math.Clamp(saved[3], 180, 1000);
+                    if (saved.Length >= 6)
+                    {
+                        WindowStartupLocation = WindowStartupLocation.Manual;
+                        Left = Math.Clamp(saved[4], SystemParameters.VirtualScreenLeft,
+                            SystemParameters.VirtualScreenLeft + Math.Max(0, SystemParameters.VirtualScreenWidth - Width));
+                        Top = Math.Clamp(saved[5], SystemParameters.VirtualScreenTop,
+                            SystemParameters.VirtualScreenTop + Math.Max(0, SystemParameters.VirtualScreenHeight - Height));
+                    }
+                }
+            }
+        }
+        catch (Exception ex) { this.errorLog(ex); }
+
+        var root = new DockPanel();
+        var controls = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 5, 12, 0) };
+        controls.Children.Add(new TextBlock { Text = "字号", VerticalAlignment = VerticalAlignment.Center });
+        var size = new Slider { Minimum = 12, Maximum = 48, Value = input.FontSize, Width = 100, Margin = new Thickness(8, 0, 12, 0) };
+        size.ValueChanged += (_, _) => input.FontSize = size.Value;
+        controls.Children.Add(size);
+        controls.Children.Add(new TextBlock { Text = "透明度", VerticalAlignment = VerticalAlignment.Center });
+        var opacity = new Slider { Minimum = .25, Maximum = 1, Value = Opacity, Width = 90, Margin = new Thickness(8, 0, 0, 0) };
+        opacity.ValueChanged += (_, _) => Opacity = opacity.Value;
+        controls.Children.Add(opacity);
+        DockPanel.SetDock(controls, Dock.Top);
+        root.Children.Add(controls);
+
+        saveStatus = new TextBlock
+        {
+            FontSize = 11,
+            Margin = new Thickness(14, 3, 14, 0),
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Visibility = Visibility.Collapsed
+        };
+        saveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
+        System.Windows.Automation.AutomationProperties.SetName(saveStatus, "备忘录保存状态");
+        DockPanel.SetDock(saveStatus, Dock.Top);
+        root.Children.Add(saveStatus);
+        root.Children.Add(input);
+
+        SurfaceWindow.Configure(this, resizable: true, centerOnOwner: false);
+        Content = SurfaceWindow.WrapContent(this, root, "本机备忘录");
+
+        timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+        timer.Tick += (_, _) => SaveTextAfterEdit();
+        input.TextChanged += (_, _) =>
+        {
+            timer.Stop();
+            timer.Start();
+        };
+        Closing += (_, args) => SaveBeforeClose(args);
+        SourceInitialized += (_, _) => NativeWindows.Exclude(this);
+    }
+
+    private void SaveTextAfterEdit()
+    {
+        timer.Stop();
+        try
+        {
+            MemoStorage.SaveText(file, input.Text);
+            ClearSaveStatus();
+        }
+        catch (Exception ex)
+        {
+            errorLog(ex);
+            SetSaveStatus("自动保存失败，关闭备忘录时可重试。", ex.Message);
+        }
+    }
+
+    private void SaveBeforeClose(CancelEventArgs args)
+    {
+        timer.Stop();
+        try
+        {
+            MemoStorage.SaveSnapshot(file, input.Text, [input.FontSize, Opacity, Width, Height, Left, Top]);
+            ClearSaveStatus();
+        }
+        catch (Exception ex)
+        {
+            args.Cancel = true;
+            errorLog(ex);
+            SetSaveStatus("保存失败，窗口仍打开；再次关闭可重试。", ex.Message);
+            showSaveFailure(this, SaveFailureMessage, SaveFailureTitle);
+        }
+    }
+
+    private void SetSaveStatus(string message, string detail)
+    {
+        saveStatus.Text = message;
+        saveStatus.ToolTip = detail;
+        saveStatus.Visibility = Visibility.Visible;
+    }
+
+    private void ClearSaveStatus()
+    {
+        saveStatus.Text = string.Empty;
+        saveStatus.ToolTip = null;
+        saveStatus.Visibility = Visibility.Collapsed;
+    }
+
+    internal TextBox EditorForProbe => input;
+    internal TextBlock SaveStatusForProbe => saveStatus;
+    internal bool AutoSaveTimerEnabledForProbe => timer.IsEnabled;
+    internal void SaveTextForProbe() => SaveTextAfterEdit();
+    internal bool TryCloseForProbe()
+    {
+        var args = new CancelEventArgs();
+        SaveBeforeClose(args);
+        return !args.Cancel;
     }
 }
 public sealed class RegionSelector : Window
