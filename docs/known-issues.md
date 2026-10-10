@@ -1,6 +1,6 @@
 # 已知问题与兼容边界
 
-此页描述 0.2.3 开发候选和验收中的真实边界。Windows 分支吸收结果见 `windows-port-integration.md`。
+此页保留 0.2.3 开发候选的历史问题，不能直接作为当前待办：其中长录同步、窗口遮挡捕获、麦克风采集和安装流程后来已有实测。当前收尾顺序与完成门槛见 [95% 收尾计划](95-percent-plan.md)，0.2.5 证据见 [迁移差距登记](migration-gap-register.md)，0.2.6 界面增量见 [UI 验收记录](ui-craft-validation.md)。Windows 分支吸收结果见 `windows-port-integration.md`。
 
 ## 采集验收
 
