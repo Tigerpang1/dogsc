@@ -21,11 +21,13 @@ internal static class Program
         var recordingHotKeyOnly = args.FirstOrDefault() == "--recording-hotkey";
         var windowSourceFilterOnly = args.FirstOrDefault() == "--window-source-filter";
         var microphoneAccessOnly = args.FirstOrDefault() == "--microphone-access-recovery";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var bundledResourcesOnly = args.FirstOrDefault() == "--bundled-resources";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
+            : bundledResourcesOnly ? "artifacts/validation/bundled-resource-locator-offscreen"
             : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
         if (Directory.Exists(output)) throw new IOException("Use a fresh directory for visual evidence.");
@@ -37,6 +39,18 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (bundledResourcesOnly)
+            {
+                BundledResourceLocatorProbe.Verify(Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "仅验证安装版与便携包资源路径、缺失和空许可证处理；使用临时夹具，不打开文件管理器或系统 UI",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} bundled resource locator checks; {output}");
+                return 0;
+            }
             if (microphoneAccessOnly)
             {
                 MicrophoneAccessRecoveryProbe.Verify(output, Check);

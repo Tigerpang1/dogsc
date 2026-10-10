@@ -52,6 +52,9 @@ try {
         $microphoneRecoveryOutput = Join-Path $repoRoot ('artifacts/validation/microphone-recovery-offscreen-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --microphone-access-recovery $microphoneRecoveryOutput
         if ($LASTEXITCODE -ne 0) { throw "离屏麦克风访问恢复提示检查失败，退出码 $LASTEXITCODE" }
+        $bundledResourceOutput = Join-Path $repoRoot ('artifacts/validation/bundled-resource-locator-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --bundled-resources $bundledResourceOutput
+        if ($LASTEXITCODE -ne 0) { throw "随包资源路径纯逻辑检查失败，退出码 $LASTEXITCODE" }
         Write-Host 'WPF离屏检查完成，未创建桌面窗口或访问采集设备；真实交互仍须单独验收。'
     }
 

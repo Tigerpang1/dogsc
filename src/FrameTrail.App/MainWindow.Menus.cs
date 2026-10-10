@@ -511,7 +511,7 @@ public partial class MainWindow
             SurfaceDialog.Show(this, $"FrameTrail {versionText}\nWindows 屏幕录制与视频编辑工具\n\n本项目以 DogSC 上游 MIT 版本为迁移基线，并使用 FrameTrail 自有名称与图标。", "关于", MessageBoxButton.OK, MessageBoxImage.Information);
         });
         AddMenu(menu, "版本与手动更新说明", () => OpenReleaseNotes());
-        AddMenu(menu, "源码与许可证", () => OpenLocalPath(Path.Combine(AppContext.BaseDirectory, "licenses")));
+        AddMenu(menu, "源码与许可证", () => OpenBundledLicenses());
         AddMenu(menu, "反馈与问题报告", () => SurfaceDialog.Show(this,
             "当前版本未配置在线更新或公开反馈服务。请通过获取此安装包时使用的发行渠道联系维护者。\n\n反馈时建议附上 FrameTrail 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
             "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
@@ -523,8 +523,8 @@ public partial class MainWindow
 
     private void OpenReleaseNotes()
     {
-        var documentation = Path.Combine(AppContext.BaseDirectory, "docs", "build-and-release.md");
-        if (File.Exists(documentation))
+        var documentation = BundledResourceLocator.FindFile(AppContext.BaseDirectory, "docs", "build-and-release.md");
+        if (documentation is not null)
         {
             Process.Start(new ProcessStartInfo(documentation) { UseShellExecute = true });
             return;
@@ -532,6 +532,20 @@ public partial class MainWindow
         SurfaceDialog.Show(this,
             "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 FrameTrail 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
             "手动更新", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
+
+    private void OpenBundledLicenses()
+    {
+        var licenses = BundledResourceLocator.FindDirectory(AppContext.BaseDirectory, "licenses", "DogSC-MIT.txt");
+        if (licenses is not null)
+        {
+            Process.Start(new ProcessStartInfo(licenses) { UseShellExecute = true });
+            return;
+        }
+
+        SurfaceDialog.Show(this,
+            "此构建没有找到随包提供的许可证文件。请从获取 FrameTrail 的原发行渠道索取对应许可证材料。",
+            "源码与许可证", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
     private sealed class UserPreferences
