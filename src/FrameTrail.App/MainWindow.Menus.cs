@@ -518,6 +518,9 @@ public partial class MainWindow
         AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\n" + RecordingMarkerShortcutHelp + "\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
         AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
         AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
+        menu.Items.Add(new Separator());
+        AddMenu(menu, "口播提词器", () => ShowMemoForDesktop());
+        AddMenu(menu, "退出 FrameTrail", RequestDesktopExitAsync);
         menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
     }
 
@@ -630,7 +633,7 @@ public partial class MainWindow
 
     private void ShowUserPreferences()
     {
-        CreateUserPreferencesDialog(this).ShowDialog();
+        CreateUserPreferencesDialog(DesktopDialogOwner()).ShowDialog();
     }
 
     private Window CreateUserPreferencesDialog(Window? owner = null)
@@ -920,7 +923,7 @@ public partial class MainWindow
         root.Children.Add(new ScrollViewer { Content = text, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         var helpTitle = firstRun ? "录制权限与准备" : "录制与权限帮助";
         var dialog = new Window { Title = helpTitle, Width = 560, Height = 532, MinWidth = 480, MinHeight = 422, ShowInTaskbar = false };
-        SurfaceWindow.Configure(dialog, this, resizable: true);
+        SurfaceWindow.Configure(dialog, DesktopDialogOwner(), resizable: true);
         dialog.Content = SurfaceWindow.WrapContent(dialog, root, helpTitle);
         close.Click += (_, _) => dialog.DialogResult = true;
         dialog.ShowDialog();

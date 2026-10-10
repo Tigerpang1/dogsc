@@ -75,6 +75,7 @@ public partial class MainWindow : Window
         capture.RecordingCompleted += result=>Dispatcher.BeginInvoke(async()=>{if(recordingFinalizing||recordingFolder==null)return;recordingFinalizing=true;try{await Guard(()=>CompleteRecording(result));}finally{recordingFinalizing=false;}});
         capture.StateChanged += (_, state) => Dispatcher.BeginInvoke(async () =>
         {
+            UpdateDesktopRecordingState();
             if (state.State == CaptureState.Recording && recordingStart==0) recordingStart = state.StopwatchTicks;
             if (state.State == CaptureState.Faulted)
             {
@@ -90,6 +91,7 @@ public partial class MainWindow : Window
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
+        if (desktopResident) return;
         await Guard(RefreshDevices);
         ApplyUserPreferencesOnStartup(showFirstRunHelp: !Environment.GetCommandLineArgs().Any(a=>a.StartsWith("--")));
         var handle = new WindowInteropHelper(this).Handle;
@@ -163,13 +165,13 @@ public partial class MainWindow : Window
         {
             App.Log(ex);
             Status.Text = "Windows 拒绝访问麦克风。检查权限后可重新开始录制。";
-            MicrophoneAccessRecovery.Show(this);
+            MicrophoneAccessRecovery.Show(DesktopDialogOwner());
         }
-        catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(this, ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(DesktopDialogOwner(), ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     private async Task RefreshDevices()
     {
-        if (!IsLoaded) return;
+        if (!IsLoaded && !desktopResident) return;
         var oldMicrophone=(MicDevices.SelectedItem as AudioDeviceInfo)?.Id;var oldCamera=(CameraDevices.SelectedItem as CameraInfo)?.Id;
         var list = new List<TargetItem>();
         if (CaptureKind.SelectedIndex == 1)
@@ -309,6 +311,7 @@ public partial class MainWindow : Window
             await AttachRecordedTracks(created,result,extraTracks);
             created.ZoomClips = AutoZoomPlanner.Plan(created.PointerEvents);
             var path = Path.Combine(recordingFolder!, "project.frametrail"); FrameTrailProjectStore.Save(path, created);
+            if (desktopResident && !desktopExiting) ShowEditorForDesktop();
             await OpenProject(path);
             var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
             Status.Text = (recordingTrackWarnings.Count>0?$"录制已保留，有 {recordingTrackWarnings.Count} 项素材警告，详情见 recording-warnings.txt。 ":"")+$"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
@@ -592,12 +595,12 @@ public partial class MainWindow : Window
         finally { operationCancellation.Dispose(); operationCancellation=null; CancelButton.Visibility=Visibility.Collapsed; Progress.Visibility=Visibility.Collapsed; ExportButton.IsEnabled=true; PlayButton.IsEnabled=true; }
     }
     private void CancelClick(object sender,RoutedEventArgs e) => operationCancellation?.Cancel();
-    private void MemoClick(object sender,RoutedEventArgs e) => new MemoWindow().Show();
+    private void MemoClick(object sender,RoutedEventArgs e) => ShowMemoForDesktop();
     private async void RecoverRecordingClick(object sender,RoutedEventArgs e) => await Guard(async()=>
     {
         var root=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),"FrameTrail");
         var dialog=new OpenFileDialog { Title="选择未完成录制目录里的 recording-recovery.json",Filter="未完成录制记录|recording-recovery.json",InitialDirectory=root };
-        if(dialog.ShowDialog(this)!=true)return;var path=await RecoverReadableRecording(Path.GetDirectoryName(dialog.FileName)!);await OpenProject(path);Status.Text="已恢复可读素材，恢复说明保存在项目旁的 .recovery.txt 文件。";
+        if(dialog.ShowDialog(DesktopDialogOwner())!=true)return;var path=await RecoverReadableRecording(Path.GetDirectoryName(dialog.FileName)!);if(desktopResident)ShowEditorForDesktop();await OpenProject(path);Status.Text="已恢复可读素材，恢复说明保存在项目旁的 .recovery.txt 文件。";
     });
     private void WindowKeyDown(object sender,KeyEventArgs e)
     {
@@ -606,6 +609,15 @@ public partial class MainWindow : Window
     private async void WindowClosing(object? sender,CancelEventArgs e)
     {
         if(closeReady) return; e.Cancel=true;
+        if(desktopResident)
+        {
+            if(!desktopExiting)
+            {
+                if(desktopTrayAvailable) await Guard(() => { SaveProject(); StopPlayback(); Hide(); return Task.CompletedTask; });
+                else await RequestDesktopExitAsync();
+            }
+            return;
+        }
         if(closingInProgress) return;
         if(capture.State is CaptureState.Recording or CaptureState.Starting or CaptureState.Paused) { SurfaceDialog.Show(this,"请先结束录制，确保素材完成封装。","录制进行中"); return; }
         if(operationCancellation!=null) { operationCancellation.Cancel(); Status.Text="正在取消处理，请稍后关闭。"; return; }
@@ -614,18 +626,7 @@ public partial class MainWindow : Window
         {
             await Guard(async()=>
             {
-                SaveProject(); seekCancellation?.Cancel(); assetsCancellation?.Cancel(); StopPlayback(); Player.Close();
-                markerHotKey.Dispose();
-                await capture.DisposeAsync(); await trackCapture.DisposeAsync();
-                // A cancelled seek may still be decoding a layer. Let it leave the preview critical section first.
-                await previewGate.WaitAsync();
-                try
-                {
-                    previewAssets?.Dispose(); previewAssets=null;
-                    previewRenderer?.Dispose(); previewRenderer=null;
-                }
-                finally { previewGate.Release(); }
-                closeReady=true; Application.Current.Shutdown();
+                await ReleaseApplicationAsync();
             });
         }
         finally { if(!closeReady) closingInProgress=false; }

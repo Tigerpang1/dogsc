@@ -62,10 +62,10 @@ public partial class MainWindow
  private void MaximizeClick(object sender,RoutedEventArgs e)=>WindowState=WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
  private void CloseWindowClick(object sender,RoutedEventArgs e)=>Close();
  private void ToolbarDrag(object sender,MouseButtonEventArgs e){if(e.OriginalSource is Border or Grid or DockPanel){if(e.ClickCount==2)MaximizeClick(sender,e);else DragMove();}}
- private void ShowRecorderClick(object sender,RoutedEventArgs e)=>_=Guard(ShowFloatingRecorder);
+ private void ShowRecorderClick(object sender,RoutedEventArgs e)=>_=Guard(ActivateDesktopRecorderAsync);
  private void HideRecorderClick(object sender,RoutedEventArgs e)=>RecorderOverlay.Visibility=Visibility.Collapsed;
  private void RecorderModeClick(object sender,RoutedEventArgs e)=>CaptureKind.SelectedIndex=int.Parse((string)((Button)sender).Tag);
- private void RecordingFolderClick(object sender,RoutedEventArgs e){var d=new OpenFolderDialog{Title="选择录制保存目录"};if(d.ShowDialog(this)==true)preferredRecordingRoot=d.FolderName;}
+ private void RecordingFolderClick(object sender,RoutedEventArgs e){var d=new OpenFolderDialog{Title="选择录制保存目录"};if(d.ShowDialog(DesktopDialogOwner())==true)preferredRecordingRoot=d.FolderName;}
  private void InspectorTabClick(object sender,RoutedEventArgs e){inspectorTab=(string)((Button)sender).Tag;BuildInspector();}
  private void CanvasControlsClick(object sender,RoutedEventArgs e){inspectorTab="frame";frameTab="layout";BuildInspector();}
  private void CropClick(object sender,RoutedEventArgs e){inspectorTab="crop";BuildInspector();}

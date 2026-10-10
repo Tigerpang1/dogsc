@@ -23,7 +23,9 @@ internal static class Program
         var microphoneAccessOnly = args.FirstOrDefault() == "--microphone-access-recovery";
         var bundledResourcesOnly = args.FirstOrDefault() == "--bundled-resources";
         var errorRecoveryOnly = args.FirstOrDefault() == "--error-recovery";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var desktopInstanceOnly = args.FirstOrDefault() == "--desktop-instance";
+        var desktopSurfacesOnly = args.FirstOrDefault() == "--desktop-surfaces";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -41,10 +43,35 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (desktopSurfacesOnly)
+            {
+                DesktopSurfacesProbe.Verify(output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "独立录制浮窗真实工厂的浅深布局、入口、无Owner与无HWND检查；不代表托盘或真实录制验收",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} desktop surface checks; {output}");
+                return 0;
+            }
+            if (desktopInstanceOnly)
+            {
+                DesktopInstanceProbe.Verify(Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "隔离会话标识的单实例 IPC、参数与确认、无效请求超时和恢复；不创建托盘或桌面窗口",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} desktop IPC checks; {output}");
+                return 0;
+            }
             if (errorRecoveryOnly)
             {
                 AppErrorPresentationProbe.Verify(output, Check);
                 MemoSaveRecoveryProbe.Verify(output, Check);
+                MemoTeleprompterProbe.Verify(output, Check);
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     Passed = true,

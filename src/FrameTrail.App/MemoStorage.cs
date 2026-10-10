@@ -8,6 +8,23 @@ internal static class MemoStorage
 {
     internal static string SettingsPath(string textPath) => textPath + ".settings.json";
 
+    // The first six values are the legacy layout: font, background opacity, width, height, left, top.
+    // New readers accept both that layout and the appended mode/speed values.
+    internal static double[] CreateSettings(double fontSize, double backgroundOpacity, double width, double height,
+        double left, double top, bool isEditing, double scrollSpeed) =>
+        [FiniteOr(fontSize, 18), FiniteOr(backgroundOpacity, .92), FiniteOr(width, 410), FiniteOr(height, 400),
+            FiniteOr(left, 0), FiniteOr(top, 0), isEditing ? 1 : 0, FiniteOr(scrollSpeed, 45)];
+
+    private static double FiniteOr(double value, double fallback) => double.IsFinite(value) ? value : fallback;
+
+    internal static (bool IsEditing, double ScrollSpeed) ReadTeleprompterSettings(double[]? values, bool defaultEditing, double defaultSpeed)
+    {
+        if (values is not { Length: >= 8 }) return (defaultEditing, defaultSpeed);
+        var editing = double.IsFinite(values[6]) ? values[6] >= .5 : defaultEditing;
+        var speed = double.IsFinite(values[7]) ? Math.Clamp(values[7], 8, 180) : defaultSpeed;
+        return (editing, speed);
+    }
+
     internal static void SaveText(string textPath, string text) => WriteAtomically(textPath, text);
 
     internal static void SaveSnapshot(string textPath, string text, double[] preferences)

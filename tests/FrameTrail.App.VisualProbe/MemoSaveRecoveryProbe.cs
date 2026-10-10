@@ -101,8 +101,8 @@ internal static class MemoSaveRecoveryProbe
             check(File.ReadAllText(textPath) == pendingText,
                 $"{ThemeName(dark)}: retry saves pending body text", File.ReadAllText(textPath));
             var actualSettings = JsonSerializer.Deserialize<double[]>(File.ReadAllText(settingsPath));
-            var expectedSettings = new[] { memo.EditorForProbe.FontSize, memo.Opacity, memo.Width, memo.Height, memo.Left, memo.Top };
-            check(actualSettings is { Length: 6 } && actualSettings.SequenceEqual(expectedSettings),
+            var expectedSettings = new[] { memo.EditorForProbe.FontSize, memo.BackgroundOpacityForProbe, memo.Width, memo.Height, memo.Left, memo.Top, memo.IsEditingForProbe ? 1d : 0d, memo.ScrollSpeedForProbe };
+            check(actualSettings is { Length: >= 8 } && actualSettings.SequenceEqual(expectedSettings),
                 $"{ThemeName(dark)}: retry saves the current appearance and position", actualSettings);
             check(notifications.Count == 1,
                 $"{ThemeName(dark)}: successful retry does not show another failure dialog", notifications.Count);
@@ -131,13 +131,13 @@ internal static class MemoSaveRecoveryProbe
               && bounds.Left >= 0 && bounds.Top >= 0
               && bounds.Right <= root.ActualWidth + .5 && bounds.Bottom <= root.ActualHeight + .5,
             $"{ThemeName(dark)}: inline save failure status is readable and stays within the memo layout", new { status.Text, bounds, root.ActualWidth, root.ActualHeight });
-        var background = (root as Border)?.Background as SolidColorBrush;
+        var background = status.Background as SolidColorBrush;
         var foreground = status.Foreground as SolidColorBrush;
         var contrast = background is not null && foreground is not null
             ? ContrastRatio(foreground.Color, background.Color)
             : 0;
-        check(contrast >= 4.5,
-            $"{ThemeName(dark)}: inline save status contrast is at least 4.5:1 against its actual surface", contrast);
+        check(background is { Color.A: 255 } && contrast >= 4.5,
+            $"{ThemeName(dark)}: inline save status has an opaque theme surface and at least 4.5:1 contrast", new { contrast, background = background?.Color, foreground = foreground?.Color });
         var untrimmed = new TextBlock
         {
             Text = status.Text,

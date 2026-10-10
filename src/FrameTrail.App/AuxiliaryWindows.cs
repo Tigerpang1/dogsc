@@ -106,8 +106,27 @@ public sealed class MemoWindow : Window
     private readonly TextBox input;
     private readonly TextBlock saveStatus;
     private readonly DispatcherTimer timer;
+    private readonly DispatcherTimer scrollTimer;
+    private readonly ScrollViewer readerScroll;
+    private readonly TextBlock readerText;
+    private readonly TextBlock speedLabel;
+    private readonly Slider speedSlider;
+    private readonly Border shell;
+    private readonly Border backdrop;
+    private readonly Grid footer;
+    private readonly Button scrollButton;
+    private readonly Button editButton;
+    private readonly Button readButton;
+    private readonly Button rewindButton;
     private readonly Action<Window, string, string> showSaveFailure;
     private readonly Action<Exception> errorLog;
+    private bool isEditing = true;
+    private bool isScrolling;
+    private long lastScrollTimestamp;
+    private double memoBackgroundOpacity = .92;
+    private double scrollSpeed = DefaultScrollSpeed;
+    private bool hideAfterSave;
+    private const double DefaultScrollSpeed = 45;
 
     public MemoWindow()
         : this(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail", "memo.txt"),
@@ -122,11 +141,14 @@ public sealed class MemoWindow : Window
             SurfaceDialog.Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Warning));
         this.errorLog = errorLog ?? App.Log;
 
-        Title = "FrameTrail · 本机备忘录";
+        Title = "FrameTrail · 口播提词器";
         Width = 410;
-        Height = 320;
+        Height = 400;
+        MinWidth = 390;
+        MinHeight = 330;
         Topmost = true;
-        Opacity = .93;
+        ShowInTaskbar = false;
+        Opacity = 1;
         input = new TextBox
         {
             AcceptsReturn = true,
@@ -145,9 +167,9 @@ public sealed class MemoWindow : Window
                 if (saved is { Length: >= 4 })
                 {
                     input.FontSize = Math.Clamp(saved[0], 12, 48);
-                    Opacity = Math.Clamp(saved[1], .25, 1);
-                    Width = Math.Clamp(saved[2], 280, 1000);
-                    Height = Math.Clamp(saved[3], 180, 1000);
+                    memoBackgroundOpacity = Math.Clamp(saved[1], .55, 1);
+                    Width = Math.Clamp(saved[2], 390, 1000);
+                    Height = Math.Clamp(saved[3], 330, 1000);
                     if (saved.Length >= 6)
                     {
                         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -156,6 +178,10 @@ public sealed class MemoWindow : Window
                         Top = Math.Clamp(saved[5], SystemParameters.VirtualScreenTop,
                             SystemParameters.VirtualScreenTop + Math.Max(0, SystemParameters.VirtualScreenHeight - Height));
                     }
+                    var teleprompter = MemoStorage.ReadTeleprompterSettings(saved,
+                        input.Text.Length == 0 || input.Text == "录制提纲…", DefaultScrollSpeed);
+                    isEditing = teleprompter.IsEditing;
+                    scrollSpeed = teleprompter.ScrollSpeed;
                 }
             }
         }
@@ -164,41 +190,288 @@ public sealed class MemoWindow : Window
         var root = new DockPanel();
         var controls = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(12, 5, 12, 0) };
         controls.Children.Add(new TextBlock { Text = "字号", VerticalAlignment = VerticalAlignment.Center });
-        var size = new Slider { Minimum = 12, Maximum = 48, Value = input.FontSize, Width = 100, Margin = new Thickness(8, 0, 12, 0) };
-        size.ValueChanged += (_, _) => input.FontSize = size.Value;
+        var size = new Slider { Minimum = 16, Maximum = 40, Value = Math.Clamp(input.FontSize, 16, 40), Width = 90, Margin = new Thickness(8, 0, 9, 0), IsSnapToTickEnabled = true, TickFrequency = 1 };
+        var sizeLabel = new TextBlock { Text = ((int)size.Value).ToString(), Width = 22, VerticalAlignment = VerticalAlignment.Center };
+        input.FontSize = size.Value;
+        size.ValueChanged += (_, _) => { input.FontSize = size.Value; if (readerText is not null) { readerText.FontSize = size.Value; readerText.LineHeight = size.Value * 1.45; } sizeLabel.Text = ((int)size.Value).ToString(); };
         controls.Children.Add(size);
-        controls.Children.Add(new TextBlock { Text = "透明度", VerticalAlignment = VerticalAlignment.Center });
-        var opacity = new Slider { Minimum = .25, Maximum = 1, Value = Opacity, Width = 90, Margin = new Thickness(8, 0, 0, 0) };
-        opacity.ValueChanged += (_, _) => Opacity = opacity.Value;
-        controls.Children.Add(opacity);
+        controls.Children.Add(sizeLabel);
+        var mode = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 0, 0) };
+        editButton = CreateModeButton("编辑");
+        readButton = CreateModeButton("阅读");
+        editButton.Click += (_, _) => SetEditingMode(true);
+        readButton.Click += (_, _) => SetEditingMode(false);
+        mode.Children.Add(editButton);
+        mode.Children.Add(readButton);
+        controls.Children.Add(mode);
         DockPanel.SetDock(controls, Dock.Top);
         root.Children.Add(controls);
+
+        var opacityRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(14, 0, 14, 3), VerticalAlignment = VerticalAlignment.Center };
+        opacityRow.Children.Add(new TextBlock { Text = "背景不透明度", VerticalAlignment = VerticalAlignment.Center });
+        var opacitySlider = new Slider { Minimum = .55, Maximum = 1, Value = Math.Clamp(memoBackgroundOpacity, .55, 1), Width = 145, Margin = new Thickness(8, 0, 5, 0) };
+        var opacityLabel = new TextBlock { Text = $"{opacitySlider.Value:P0}", MinWidth = 34, VerticalAlignment = VerticalAlignment.Center };
+        opacitySlider.ValueChanged += (_, _) => { memoBackgroundOpacity = opacitySlider.Value; opacityLabel.Text = $"{opacitySlider.Value:P0}"; ApplyBackgroundOpacity(); };
+        opacityRow.Children.Add(opacitySlider);
+        opacityRow.Children.Add(opacityLabel);
+        DockPanel.SetDock(opacityRow, Dock.Top);
+        root.Children.Add(opacityRow);
+
+        readerText = new TextBlock
+        {
+            Text = input.Text,
+            FontSize = input.FontSize,
+            TextWrapping = TextWrapping.Wrap,
+            LineHeight = input.FontSize * 1.45,
+            Margin = new Thickness(12),
+            Focusable = false
+        };
+        readerScroll = new ScrollViewer
+        {
+            Content = readerText,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+            CanContentScroll = false,
+            Focusable = true,
+            Margin = new Thickness(10),
+            Visibility = isEditing ? Visibility.Collapsed : Visibility.Visible
+        };
+        input.Visibility = isEditing ? Visibility.Visible : Visibility.Collapsed;
+        var textHost = new Grid();
+        textHost.Children.Add(readerScroll);
+        textHost.Children.Add(input);
+
+        footer = new Grid { Margin = new Thickness(12, 3, 12, 8) };
+        footer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        footer.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Left };
+        scrollButton = CreateModeButton("开始滚动");
+        scrollButton.MinWidth = 82;
+        scrollButton.Click += (_, _) => ToggleScrolling();
+        rewindButton = CreateModeButton("回到开头");
+        rewindButton.Margin = new Thickness(5, 0, 0, 0);
+        rewindButton.Click += (_, _) => Rewind();
+        actions.Children.Add(scrollButton);
+        actions.Children.Add(rewindButton);
+        Grid.SetRow(actions, 0);
+        footer.Children.Add(actions);
+        var speedRow = new Grid { Margin = new Thickness(3, 5, 3, 0) };
+        speedRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        speedRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        speedRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var speedTitle = new TextBlock { Text = "速度", VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(0, 0, 8, 0) };
+        speedSlider = new Slider { Minimum = 8, Maximum = 180, Value = scrollSpeed, MinWidth = 100, Margin = new Thickness(0, 0, 8, 0), IsSnapToTickEnabled = false, VerticalAlignment = VerticalAlignment.Center, ToolTip = "拖动调整提词器滚动速度" };
+        speedLabel = new TextBlock { Text = $"{speedSlider.Value:0}", MinWidth = 34, VerticalAlignment = VerticalAlignment.Center, ToolTip = "滚动速度，数值越大越快" };
+        speedSlider.ValueChanged += (_, _) => speedLabel.Text = $"{speedSlider.Value:0}";
+        System.Windows.Automation.AutomationProperties.SetName(speedSlider, "提词器速度");
+        Grid.SetColumn(speedTitle, 0);
+        Grid.SetColumn(speedSlider, 1);
+        Grid.SetColumn(speedLabel, 2);
+        speedRow.Children.Add(speedTitle);
+        speedRow.Children.Add(speedSlider);
+        speedRow.Children.Add(speedLabel);
+        Grid.SetRow(speedRow, 1);
+        footer.Children.Add(speedRow);
+        DockPanel.SetDock(footer, Dock.Bottom);
+        root.Children.Add(footer);
 
         saveStatus = new TextBlock
         {
             FontSize = 11,
             Margin = new Thickness(14, 3, 14, 0),
+            Padding = new Thickness(5, 2, 5, 2),
             TextTrimming = TextTrimming.CharacterEllipsis,
             Visibility = Visibility.Collapsed
         };
-        saveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Secondary");
+        saveStatus.SetResourceReference(TextBlock.ForegroundProperty, "Ink");
+        saveStatus.SetResourceReference(TextBlock.BackgroundProperty, "Chrome");
         System.Windows.Automation.AutomationProperties.SetName(saveStatus, "备忘录保存状态");
         DockPanel.SetDock(saveStatus, Dock.Top);
         root.Children.Add(saveStatus);
-        root.Children.Add(input);
-
-        SurfaceWindow.Configure(this, resizable: true, centerOnOwner: false);
-        Content = SurfaceWindow.WrapContent(this, root, "本机备忘录");
+        root.Children.Add(textHost);
+        SurfaceWindow.Configure(this, resizable: true, centerOnOwner: false, closeOnEscape: false);
+        WindowStyle = WindowStyle.None;
+        AllowsTransparency = true;
+        Background = Brushes.Transparent;
+        shell = (Border)SurfaceWindow.WrapContent(this, root, "FrameTrail · 口播提词器");
+        Content = shell;
+        shell.Background = Brushes.Transparent;
+        var shellGrid = (Grid)shell.Child;
+        backdrop = new Border { CornerRadius = new CornerRadius(8), IsHitTestVisible = false };
+        backdrop.SetResourceReference(Border.BackgroundProperty, "Chrome");
+        Grid.SetRowSpan(backdrop, shellGrid.RowDefinitions.Count);
+        Grid.SetZIndex(backdrop, -1);
+        shellGrid.Children.Insert(0, backdrop);
+        ApplyBackgroundOpacity();
 
         timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
         timer.Tick += (_, _) => SaveTextAfterEdit();
         input.TextChanged += (_, _) =>
         {
+            readerText.Text = input.Text;
             timer.Stop();
             timer.Start();
         };
+        scrollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
+        scrollTimer.Tick += (_, _) => AdvanceScroll();
+        IsVisibleChanged += (_, _) =>
+        {
+            if (!IsVisible && !hideAfterSave)
+            {
+                StopScrolling();
+                timer.Stop();
+                SaveSnapshotSafely(showFailureDialog: false);
+            }
+        };
         Closing += (_, args) => SaveBeforeClose(args);
+        PreviewKeyDown += HandleTeleprompterKey;
         SourceInitialized += (_, _) => NativeWindows.Exclude(this);
+        Closed += (_, _) =>
+        {
+            timer.Stop();
+            scrollTimer.Stop();
+            isScrolling = false;
+        };
+        UpdateModeButtons();
+    }
+
+    private Button CreateModeButton(string label)
+    {
+        var button = new Button
+        {
+            Content = label,
+            MinWidth = 54,
+            Height = 28,
+            Padding = new Thickness(8, 2, 8, 2),
+            Margin = new Thickness(2, 0, 2, 0),
+            Background = new SolidColorBrush(Color.FromArgb(42, 255, 255, 255)),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(90, 150, 160, 165)),
+            Foreground = (Brush)Application.Current.FindResource("Ink")
+        };
+        button.SetResourceReference(Control.ForegroundProperty, "Ink");
+        return button;
+    }
+
+    private void UpdateModeButtons()
+    {
+        editButton.FontWeight = isEditing ? FontWeights.Bold : FontWeights.Normal;
+        readButton.FontWeight = isEditing ? FontWeights.Normal : FontWeights.Bold;
+    }
+
+    internal void SetEditingMode(bool editing)
+    {
+        if (isEditing == editing) return;
+        StopScrolling();
+        isEditing = editing;
+        input.Visibility = editing ? Visibility.Visible : Visibility.Collapsed;
+        readerScroll.Visibility = editing ? Visibility.Collapsed : Visibility.Visible;
+        if (!editing) readerText.Text = input.Text;
+        UpdateModeButtons();
+        SaveSnapshotSafely(showFailureDialog: false);
+        if (!editing) Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Input, new Action(() => readerScroll.Focus()));
+    }
+
+    internal bool TryHideMemo()
+    {
+        StopScrolling();
+        if (!SaveSnapshotSafely(showFailureDialog: true)) return false;
+        hideAfterSave = true;
+        Hide();
+        hideAfterSave = false;
+        return true;
+    }
+
+    private void ToggleScrolling()
+    {
+        if (isEditing) SetEditingMode(false);
+        if (isScrolling) StopScrolling();
+        else
+        {
+            if (readerScroll.ScrollableHeight - readerScroll.VerticalOffset <= .5) Rewind();
+            isScrolling = true;
+            lastScrollTimestamp = System.Diagnostics.Stopwatch.GetTimestamp();
+            scrollTimer.Start();
+        }
+        scrollButton.Content = isScrolling ? "暂停" : "开始滚动";
+    }
+
+    private void StopScrolling()
+    {
+        isScrolling = false;
+        scrollTimer.Stop();
+        lastScrollTimestamp = 0;
+        scrollButton.Content = "开始滚动";
+    }
+
+    private void AdvanceScroll()
+    {
+        if (!isScrolling || !IsVisible || isEditing) { StopScrolling(); return; }
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var elapsed = System.Diagnostics.Stopwatch.GetElapsedTime(lastScrollTimestamp, now).TotalSeconds;
+        lastScrollTimestamp = now;
+        var advance = MemoAutoScroll.Advance(readerScroll.VerticalOffset, readerScroll.ScrollableHeight, speedSlider.Value, elapsed);
+        if (advance.ReachedEnd)
+        {
+            readerScroll.ScrollToVerticalOffset(advance.Offset);
+            StopScrolling();
+            return;
+        }
+        readerScroll.ScrollToVerticalOffset(advance.Offset);
+    }
+
+    private void Rewind()
+    {
+        StopScrolling();
+        readerScroll.ScrollToTop();
+    }
+
+    private void HandleTeleprompterKey(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (isEditing || !readerScroll.IsKeyboardFocusWithin || e.IsRepeat) return;
+        if (e.Key == System.Windows.Input.Key.Space)
+        {
+            ToggleScrolling();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Home)
+        {
+            Rewind();
+            e.Handled = true;
+        }
+        else if (e.Key == System.Windows.Input.Key.Escape)
+        {
+            StopScrolling();
+        }
+    }
+
+    private void ApplyBackgroundOpacity()
+    {
+        backdrop.Opacity = memoBackgroundOpacity;
+    }
+
+    private bool SaveSnapshotSafely(bool showFailureDialog)
+    {
+        timer.Stop();
+        try
+        {
+            if (!double.IsFinite(Left) || !double.IsFinite(Top))
+            {
+                var workArea = SurfaceWindow.WorkArea(this);
+                if (!double.IsFinite(Left)) Left = workArea.Left + Math.Max(0, (workArea.Width - Width) / 2);
+                if (!double.IsFinite(Top)) Top = workArea.Top + Math.Max(0, (workArea.Height - Height) / 2);
+            }
+            MemoStorage.SaveSnapshot(file, input.Text, MemoStorage.CreateSettings(
+                input.FontSize, memoBackgroundOpacity, Width, Height, Left, Top, isEditing, speedSlider?.Value ?? scrollSpeed));
+            ClearSaveStatus();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            errorLog(ex);
+            SetSaveStatus("保存失败，文字仍保留；再次操作可重试。", ex.Message);
+            if (showFailureDialog) showSaveFailure(this, SaveFailureMessage, SaveFailureTitle);
+            return false;
+        }
     }
 
     private void SaveTextAfterEdit()
@@ -218,19 +491,8 @@ public sealed class MemoWindow : Window
 
     private void SaveBeforeClose(CancelEventArgs args)
     {
-        timer.Stop();
-        try
-        {
-            MemoStorage.SaveSnapshot(file, input.Text, [input.FontSize, Opacity, Width, Height, Left, Top]);
-            ClearSaveStatus();
-        }
-        catch (Exception ex)
-        {
-            args.Cancel = true;
-            errorLog(ex);
-            SetSaveStatus("保存失败，窗口仍打开；再次关闭可重试。", ex.Message);
-            showSaveFailure(this, SaveFailureMessage, SaveFailureTitle);
-        }
+        StopScrolling();
+        if (!SaveSnapshotSafely(showFailureDialog: true)) args.Cancel = true;
     }
 
     private void SetSaveStatus(string message, string detail)
@@ -250,6 +512,16 @@ public sealed class MemoWindow : Window
     internal TextBox EditorForProbe => input;
     internal TextBlock SaveStatusForProbe => saveStatus;
     internal bool AutoSaveTimerEnabledForProbe => timer.IsEnabled;
+    internal bool IsScrollingForProbe => isScrolling;
+    internal double ScrollSpeedForProbe => speedSlider.Value;
+    internal double BackgroundOpacityForProbe => memoBackgroundOpacity;
+    internal bool IsEditingForProbe => isEditing;
+    internal FrameworkElement FooterForProbe => footer;
+    internal Button ScrollButtonForProbe => scrollButton;
+    internal Button RewindButtonForProbe => rewindButton;
+    internal Slider SpeedSliderForProbe => speedSlider;
+    internal TextBlock SpeedLabelForProbe => speedLabel;
+    internal ScrollViewer ReaderForProbe => readerScroll;
     internal void SaveTextForProbe() => SaveTextAfterEdit();
     internal bool TryCloseForProbe()
     {

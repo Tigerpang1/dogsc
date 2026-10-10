@@ -14,7 +14,7 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | FT-04 | 设备来源 | 打开来源选择器，核对显示器、窗口、音频端点的枚举类型与可选状态。 | 单机有限场景通过：旧候选 AA1 的 `artifacts/validation/marker-hotkey-fix/source-menus/{display,microphone}.txt` 核对显示器及麦克风（含关闭状态）枚举和可用状态，相关菜单实现未变；窗口过滤使用 19d19f1 候选，`artifacts/validation/manual-closeout-028/source-menus/result.json` 与 `windows-fixed.txt/.jpg` 记录13项外部窗口，过滤掉应用主窗和录制浮窗。证据不声明所有外部窗口均能成功采集，也不覆盖多设备或正式包。 | 通过 |
 | FT-05 | 摄像头、麦克风、系统声音同录 | 同一真实会话独立启停摄像头、麦克风、loopback；导出三轨并核对解码和起止时间。 | 现有实测证明 loopback 和麦克风端点映射；没有物理摄像头设备及三轨同录证据，摄像头条件本轮延期。 | 延期 |
 | FT-06 | 授权和首次引导 | 拒绝一次采集权限，检查说明与恢复入口，再授权并成功开始录制。 | 0.2.8 源码已补麦克风 WASAPI 启动边界的访问拒绝映射、应用内说明及打开系统麦克风设置的明确按钮。`artifacts/validation/microphone-access-recovery/capture-probe.log` 验证麦克风 COM/Unauthorized 拒绝映射及系统回环、取消、其他错误不误报；`offscreen-v2/result.json` 的40项检查覆盖浅深主题布局、按钮动作和既有对话框默认行为，不打开设备或设置。初次离屏夹具因未显示的 Owner 失败，日志保留于 `offscreen-v1.log`，修正为无 Owner 离屏布局后通过。真实拒绝、设置入口及再授权录制仍未验。 | 待验 |
-| FT-07 | 浮动录制条与备忘录 | 移动备忘录、改字号/透明度、重启检查保存值；录屏核对浮条和备忘录排除。 | `ui-memo-audit-v24.json`、`artifacts/validation/recording-isolation-v4/`；但共享控件样式已变，当前界面场景需复验。 | 待验 |
+| FT-07 | 独立录制工具、托盘与提词器 | 普通启动显示独立录制工具；关闭编辑器后常驻托盘且不中断录制；托盘找回窗口和重复启动召回同一实例；提词器编辑/阅读、自动滚动/暂停、字号/背景透明度与重启保存；录屏排除辅助浮窗。 | 用户指出旧版窗口依附和后台入口缺失，旧 `ui-memo-audit-v24.json`、`artifacts/validation/recording-isolation-v4/` 不覆盖完整生命周期。当前分支已接入实现，`artifacts/validation/desktop-residency/ipc-v1/result.json` 的6项检查验证隔离单实例通信、确认及恢复；布局、滚动与真实桌面流程继续收尾，见 [`desktop-residency.md`](desktop-residency.md)。 | 待修 |
 | FT-08 | 录制标记 | 录制中用按钮和可用全局快捷键写标记；首选 `Ctrl+Alt+M`，系统占用时显示并使用 `Ctrl+Alt+Shift+M`。保存重开核对时间，导出抽帧确认无标记绘制。 | 0.2.7 首次人工录制仅保存一条，首选键被其他应用占用；初次记录见 `artifacts/validation/package-0.2.7/recording-markers/initial-result.json`。本机 0.2.8 测试候选以备用键完成补验：`artifacts/validation/marker-hotkey-fix/recording-proof/desktop-result.json` 记录用户确认的按钮1次、热键2次，正常关闭并从最近项目 UI 重开；三个标记 sourceTime 为 2.5939237、11.2726287、14.2698502，逐条与 origin 日志一致，重开前后 Project SHA 均为 `29AE09B6C37D57C778CDADBACAA2DC0BA977502DB7F5C32405022F4A18F80C23`。`saved-menu-0.jpg`、`saved-menu-1.jpg`、`reopened-menu-0.jpg`、`reopened-menu-1.jpg` 留存界面证据。`recording-proof/probe/result.json` 以真实 ExportEngine 比较有/无3条标记的短区间输出，3个时点均在选区内，解码后380帧逐帧像素相同，原录制与输出均完整解码、退出码0。该运行时 App DLL SHA 为 `AA1A8ED9D46FC5334ABAE2177DFF823311336F97C5403B4FF75D22C6AEFD4AF6`；仅覆盖此备用键冲突和实机录制，不代表最终 0.2.8 包或所有系统组合。历史探针曾观察到381帧送入编码器、380帧解码；源码修复由 `artifacts/validation/fractional-frame-fix/result.json`、Core tests 日志及 Integration 结果验证。原真实录制同一区间的当前工作树 Core/Media DLL 复验见 `artifacts/validation/marker-hotkey-fix/recording-proof/probe-fixed-tail/result.json`：有/无标记输出均381帧且 framemd5 相同；`input-hash-compare.json` 确认原录制12个文件哈希和大小未变。此为 `aba0b8f+dirty` 源码探针，不是新版 `19d19f1` 自包含包验收。 | 通过 |
 | FT-09 | 录制时继续编辑和排除编辑器 | 主显示器 DDA 录制时编辑既有工程并保存重开；对比编辑器/浮条/备忘录排除前后像素及停止后窗口状态。 | `artifacts/validation/recording-isolation-v4/recording-isolation-smoke.json`、`driver-result.json`。 | 通过 |
 | FT-10 | 保存、自动保存、恢复和最近项目 | 以文件锁触发编辑保存失败，核对画面/历史仍与磁盘一致、控件恢复；解除占用后重试，并取消一次素材重定位事务核对清理。用户明确确认恢复损坏项目的备份后，恢复到原路径是单独接受的恢复动作；之后取消素材定位不回滚该恢复。 | `artifacts/validation/noncamera-closeout-v3/recovery/locked-edit-result.json`、`success-result.json`、`cancel-result.json` 覆盖文件锁编辑失败且 SHA 不变、解锁后重试/撤销，以及普通素材定位取消清理；`main-media-coverage/result.json` 覆盖主素材时长恢复校验。新增 `artifacts/validation/noncamera-closeout-v4/backup-recovery/result.json`（FrameTrail-0.2.7-menu，Runtime DLL SHA `445AADB4C819E8A24A9761DCBEBBA91DE3FAFDA966A74006AB4EB9E8691CBF2B`）及 `confirm.jpg`、`relocation-after-restore.jpg`、`canceled.jpg` 记录用户确认备份恢复后取消缺失主素材定位。恢复后工程 SHA 与备份均为 `337B4933…EC937D64`，保留1份 damaged 文件（SHA `E5CADB37…0DEF7FA`），无 relocated 副本，证明取消未回滚已接受恢复。 | 通过 |
@@ -47,8 +47,8 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | 通过 | 28项 | 仅台账定义的有限场景有证据，不等同于全部功能或全硬件覆盖。此数是证据销账数，不是功能迁移完成率。 |
-| 待修 | 0项 | 台账内暂未另列待修状态。短区间末端帧边界已在源码和0.2.8包内Core/Media复验通过；包完整交互仍待验，见收尾计划。 |
-| 待验 | 2项 | 场景有限且可执行，缺少覆盖证据或受相关实现变化影响：FT-06、FT-07。 |
+| 待修 | 1项 | FT-07：补齐用户指出的托盘常驻、独立浮窗和提词器基本行为，当前分支正在实现与验证。 |
+| 待验 | 1项 | FT-06：缺少实机拒绝与恢复证据；按用户要求，暂不继续繁复的权限场景。 |
 | 缺资源 | 0/33 | 当前把本阶段主动延后的摄像头条件记为“延期”；有资源后再评估能否执行。 |
 | 延期 | 3/33 | 两行摄像头实机条件及一行在线更新/公开反馈服务。仍计入33项，均不算通过。 |
 
@@ -56,4 +56,4 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 
 最短闭环优先清单：
 
-1. 0.2.8包内尾帧验证已完成；继续补 FT-06、FT-07 各自的固定场景，并完成最终包桌面验收。FT-03 已按本行有限范围通过；FT-04 已按本行单机菜单枚举与可用状态范围通过；摄像头行和在线服务条件保持延期。33项分母和32/33门槛不变，当前28项通过，尚未达到95%门槛。
+1. 先完成 FT-07 的独立窗口、托盘和提词器基本流程，权限复杂场景按用户要求暂缓。随后核对当前源码候选的包与普通桌面流程。摄像头行和在线服务条件保持延期。33项分母和32/33门槛不变，当前28项通过，尚未达到95%门槛。

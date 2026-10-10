@@ -2,7 +2,7 @@
 
 此清单以锁定的 `upstream/dogsc` 为原版证据，覆盖 README 明示能力、RecorderCore 项目模型和关键 UI 页面。每行描述一个用户任务或产品入口；不把技术子步骤拆开计数。验收状态、已实现但待设备验证的项目，以及仍缺少的行为见后面的逐项复核表。
 
-> **最新范围覆盖（2026-10-10）：** 当前收尾按 [95% 收尾计划](95-percent-plan.md) 执行：35 项原表扣除上游捐赠入口与 Mac 工程导入/互通目标后，现行分母为 33 项，目标为 32/33（97.0%）；在线更新/公开反馈是唯一延期项。Windows 与 Mac 功能及交互对齐仍在范围内，预览、导出效果与 Mac 参考对照继续保留。下文旧分母及真实 Mac 工程导入验收记录属于历史口径，不代表当前目标。
+> **最新范围覆盖（2026-10-10）：** 当前收尾按 [95% 收尾计划](95-percent-plan.md) 执行：35 项原表扣除上游捐赠入口与 Mac 工程导入/互通目标后，现行分母为 33 项，目标为 32/33（97.0%）；摄像头实机条件和在线更新/公开反馈暂时延期，仍保留在分母；托盘常驻、独立浮窗和提词器按最新用户反馈优先修正。Windows 与 Mac 功能及交互对齐仍在范围内，预览、导出效果与 Mac 参考对照继续保留。下文旧分母及真实 Mac 工程导入验收记录属于历史口径，不代表当前目标。
 
 核对基线：`upstream/dogsc` 固定提交 `e207d11b111c5e58152238fb64115b2009850547`，上游 README 当前版本号 `0.1.2`。README 四张 UI 图及静态参考见 [`visual-spec.md`](visual-spec.md)。
 
@@ -16,7 +16,7 @@
 | 录制 | 设备来源 | `RecorderSetupSurface.swift`；`CaptureSources.swift` | 设备来源入口行为明确，实际捕获类型与系统能力一致 |
 | 录制 | 同录摄像头、麦克风、系统声音 | README；`RecorderSetupSurface.swift`、`MicrophoneRecorder.swift`、`CoreAudioSystemAudioTap.swift`、`CameraRecorder.swift` | 可独立启停和选择设备；录制轨道真实可解码，长录对齐另行测试 |
 | 录制 | 授权和首次使用引导 | README；`PermissionTourFlow.swift`、`FirstLaunchIntroduction.swift`、`FirstUseTour.swift` | 缺少设备权限时有明确说明及操作入口，不伪造权限状态 |
-| 录制 | 浮动录制条与备忘录 | README；`RecorderSetupSurface.swift`、`RecorderMemo.swift` | 单行浮条按参考图排序；悬浮备忘录可移动、调尺寸/字号/不透明度、自动保存并从自身录制排除 |
+| 录制 | 浮动录制条与备忘录（FT-07） | README；`RecorderSetupSurface.swift`、`RecorderMemo.swift` | 录制工具与编辑器生命周期独立；应用关闭主窗后可驻留托盘并找回；备忘录可编辑/阅读、手动滚动及自动提词滚动，可调字号和背景透明度并自动保存；录制浮窗可独立找回 |
 | 录制 | 录制标记 | README；`RecordingMarkers.swift`、`RecordingMarker.swift` | 按钮和 `Ctrl+Alt+M` 写时间标记；标记随项目保存且不进入导出画面 |
 | 录制 | 录制时继续编辑旧项目；自录屏排除窗口 | README；`CaptureWindowPresentationPolicy.swift`、`ScreenRecorder.swift` | 录制期间旧项目可编辑；本程序浮条/备忘录排除规则在目标采集类型下验证 |
 | 工程 | 保存、自动保存、恢复和最近项目 | `ProjectStore.swift`、`ProjectRepository`、`ProjectRecoveryJournal` | 工程包和媒体引用稳定；保存中断时保留最近有效版本；打开路径和最近列表可用 |
@@ -58,7 +58,7 @@
 | 设备来源 | 部分通过 | 显示器、窗口、音频端点可枚举；本机没有摄像头设备，物理摄像头和多显示器未测。 |
 | 摄像头、麦克风、系统声音同录 | 部分通过 | 系统loopback同包30秒18/18；0.2.5同包1800秒1070/1080名义cue、双向覆盖99.9066%，raw绝对P95/最大值80.9143/99.2483ms，映射导出P95/最大值43.333/63.333ms，租约360次观察及状态恢复通过。发行包麦克风15.0186秒墙钟、暂停2.0104秒、WAV 13.0083秒且帧差0，仅证明本次端点数值采集与暂停映射，不证明语音质量。物理摄像头和多设备同时录制仍待设备验证。旧0.2.4/v6长测数值属于历史。 |
 | 权限和首次引导 | 部分通过 | 首次帮助和Windows权限说明已实现；拒绝/撤销权限时的系统反馈与恢复流程待验证。 |
-| 浮动录制条与备忘录 | 部分通过 | 浮动录制条有录制流程和截图；独立重启 UIA 验证备忘录文本、字号 32、透明度 0.61、移动和重开位置保持一致（`ui-memo-audit-v24.json`）；final17 全量流程亦通过备忘录移动及保存重启项。v4开发快照在主显示器DDA实录中验证录制条和备忘录排除像素，停止后录制条销毁、备忘录affinity保持17。其它捕获类型及显示器组合仍未覆盖。 |
+| 浮动录制条与备忘录（FT-07） | 待实现 | 旧证据只覆盖浮条录制流程、备忘录文本/字号/透明度/位置保存，以及主显示器DDA下浮条和备忘录排除。托盘驻留与恢复、主窗关闭后继续运行、录制浮窗独立于主窗的生命周期、备忘录编辑/阅读模式和自动提词滚动均未真实验收；原版仅有编辑/阅读和手动滚动，没有自动滚动，本迁移将补自动滚动。新增范围与普通操作清单见 [`desktop-residency.md`](desktop-residency.md)。 |
 | 录制标记 | 部分通过 | 录制 workflow 保存过标记；`RecordingMarkerTimelineProbe` 组合验证暂停压缩后的源时间标记经过裁短、分割、两段不同速率、重排及保存重开后保留ID/名称/源时间，跳转映射正确，裁掉的标记无目标。此Core测试不验证采集端的暂停时钟压缩；标记导出不绘制仍待证明。热键冲突有状态提示。 |
 | 录制时继续编辑和排除编辑器 | 通过限定实测 | 0.2.5开发快照的 `artifacts/validation/recording-isolation-v4/recording-isolation-smoke.json` 与 `driver-result.json` 通过：主显示器DDA录像中编辑器/录制条/备忘录基线像素可见，启用产品排除后对应点均变为控制背景色；录制中编辑旧隔离工程并保存重开，ProjectId和修改值保留，素材SHA256不变；停止后主窗affinity恢复0、录制条销毁、备忘录保持17。测试偏好恢复成功。仅为150%单显示器、测试自有Topmost背景布局及主显示器DDA，不覆盖窗口/区域捕获和其它显示器。 |
 | 保存、自动保存、恢复和最近项目 | 部分通过 | UIA 保存重开通过；Core 备份恢复及实际终止 FFmpeg 后扫描 manifest、恢复已封段 MP4 均通过。0.2.5发行包App SHA `D46FE2FDBA4393E0D6925EC57598A42EDC9CD388FF30F9FCA624DF86298C6491` 的 `package-025-persistence-v1/result.json` 真实文件锁回归12项通过，覆盖保存/撤销/重做失败后的内存、磁盘、历史一致性与解锁重试，driver报告偏好恢复且演示样例不变；修复前 `persistence-negative-v2` 保留失败证据。自动保存异常和最近项目失效项仍待验证。 |
