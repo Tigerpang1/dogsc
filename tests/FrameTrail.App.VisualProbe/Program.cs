@@ -17,8 +17,11 @@ internal static class Program
     {
         var textBoxEditMenuOnly = args.FirstOrDefault() == "--textbox-edit-menu";
         var saveFailureOnly = args.FirstOrDefault() == "--save-failure";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
-        var output = Path.GetFullPath(outputArgument ?? (saveFailureOnly
+        var preferencesExportOnly = args.FirstOrDefault() == "--preferences-export";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
+            ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
+            : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
         if (Directory.Exists(output)) throw new IOException("Use a fresh directory for visual evidence.");
@@ -45,6 +48,18 @@ internal static class Program
             }
             VerifyPlacementGeometry();
             window = new MainWindow();
+            if (preferencesExportOnly)
+            {
+                PreferencesExportProbe.Verify(window, output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "真实 App 偏好应用路径与 ExportEngine 成片 framemd5 对照；隐藏窗口，不创建 HWND，不写用户设置",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} offscreen preferences/export checks; {output}");
+                return 0;
+            }
             PreferenceValidationProbe.Verify(window, Check);
             if (saveFailureOnly)
             {

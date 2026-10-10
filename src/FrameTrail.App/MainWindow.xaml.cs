@@ -323,6 +323,7 @@ public partial class MainWindow : Window
         }
         using var relocation = new ProjectAssetRelocationTransaction();
         Dictionary<string,double> openedAuxiliaryDurations = new(StringComparer.OrdinalIgnoreCase);
+        string? auxiliaryWarning = null;
         var mainRelocated = false;
         string media;
         try
@@ -374,6 +375,7 @@ public partial class MainWindow : Window
             var auxiliaryRelocated = await RelocateMissingAuxiliaryAssets(opened, path, relocation);
             var auxiliaryLoad = await LoadAuxiliaryDurations(opened, path);
             openedAuxiliaryDurations = auxiliaryLoad.Durations;
+            auxiliaryWarning = auxiliaryLoad.Warning;
             relocation.Commit(() =>
             {
                 if (mainRelocated || auxiliaryRelocated || auxiliaryLoad.Changed)
@@ -387,7 +389,7 @@ public partial class MainWindow : Window
         }
         auxiliaryDurations.Clear();
         foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
-        project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
+        project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
     }
     private static bool MainMediaCoversTimeline(MediaInfo info, FrameTrailProject candidate)
     {
@@ -457,7 +459,7 @@ public partial class MainWindow : Window
             RefreshProject();
             throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
         }
-        history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value));
+        history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); Status.Text = "已保存 · " + projectFile; _ = Guard(() => RenderPreview(Playhead.Value));
     }
     private TimelineSegment Selected(FrameTrailProject p) => p.Timeline.Segments.FirstOrDefault(x => x.Id == (Clips.SelectedItem as ClipItem)?.Id) ?? throw new InvalidOperationException("请选择一个片段。");
     private double SelectedSourceAtPlayhead(FrameTrailProject p,TimelineSegment selected)

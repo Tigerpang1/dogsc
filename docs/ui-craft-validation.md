@@ -4,6 +4,21 @@
 
 2026-10-10，按用户要求暂缓摄像头，继续处理编辑与导出中的实际问题。时间线不接收组合文字输入，中文输入法下的 `I`/`O` 范围快捷键恢复；普通文本字段保留中文输入。设置目录错误改在字段下方提示，修改输入会清除提示。导出成功后的退出按钮改为“完成”。文本字段的默认英文直角菜单统一为应用的中文圆角菜单，并明确将编辑命令指向对应文本框。
 
+### 本轮补充的有限证据
+
+| 场景 | 证据与可核对结果 |
+| --- | --- |
+| 素材定位、轨道与时间线预览 | `artifacts/validation/noncamera-closeout-v3/recovery/cancel-result.json` 记录主素材副本完成后取消辅助定位，工程 SHA 不变且没有遗留副本；`success-result.json` 记录主/辅素材复制哈希匹配并从最近项目重开。`timeline-view-result.json` 记录轨道隐藏/恢复、吸附开启定位 6.0 秒/关闭定位 5.9 秒，以及悬浮预览约 8.47 秒且播放头保持 5.9 秒。 |
+| 变速与成片 | `artifacts/validation/noncamera-closeout-v4/menu/locked-speed-result.json`、`retry-saved.txt`、`undo-result.json` 和对应截图记录文件锁下变速失败、解锁重试及撤销。`artifacts/validation/noncamera-closeout-v4/editing/verification/result.json` 对实际 UI 导出的 19.3 秒音视频成片完整解码，并以独立源时间参考核验四段顺序和 2×片段映射。 |
+| 右键菜单 | `artifacts/validation/noncamera-closeout-v4/menu/speed-selected-two-light.jpg`、`speed-selected-two-dark.jpg`、`first-disabled-left.jpg`、`last-disabled-right.jpg` 显示浅/深主题、当前 2×档位及首尾片段的重排禁用状态。 |
+| 打开状态与辅助素材警告 | `artifacts/validation/noncamera-closeout-v4/open-status-probe/result.json` 的 47 项离屏探针调用辅助素材时长校验，确认自动裁短警告作为返回值保留，并与成功打开文案组合、清除旧取消提示。OpenProject 在启动异步缩略图/波形任务前设置此状态；该项没有伪称为实机窗口验收。 |
+| 指针、校准和画布裁切 | `artifacts/validation/noncamera-closeout-v5/noncamera-parity/result.json` 的 FT21–FT23 使用导出 MP4 实际解码帧核对点击反馈/隐藏、剪切前后指针校准位置，以及非居中 Crop 的坐标图案和 Full 负对照。 |
+| 偏好与固定参数导出对照 | `artifacts/validation/noncamera-closeout-v4/preferences-export/result.json` 应用浅/深主题及预览分辨率/帧率偏好，再以相同固定 `ExportOptions` 直接调用 `ExportEngine` 对照 30 帧像素哈希。它没有经过真实导出设置窗口路径，不能作为该窗口路径的验收证据。 |
+| FT-17 开场 | 实机 UI 配置和保存重开证据见 `artifacts/validation/noncamera-closeout-v5/intro-zoom/intro-configured.jpg`、`intro-reopened.jpg`、`intro-reopened.txt`。`artifacts/validation/noncamera-closeout-v5/intro-zoom/opening-probe/result.json` 用真实 `PreviewPlaybackSession` 及解码后的 MP4 帧核对配置开场，并以关闭开场、反向顺序和仅屏幕素材作为负对照；该探针不声称键盘或桌面交互覆盖。 |
+| FT-18 自动/手动缩放 | `artifacts/validation/noncamera-closeout-v5/intro-zoom/desktop-result.json` 记录 UI 生成自动镜头、手动缩放与预览点焦点后关闭重开，工程 SHA 前后相同。`artifacts/validation/noncamera-closeout-v5/intro-zoom/zoom-probe/result.json` 对自动镜头和手动镜头使用真实预览会话与解码 MP4 帧对照，并包含错误焦点及 Scale 1 负对照；不是全功能或全媒体类型覆盖。 |
+
+当前验收记录为24项通过、6项待验、3项延期。6项待验受桌面自动化能力限制，具体见 `artifacts/validation/noncamera-closeout-v5/desktop-automation-limits.json`：录制器控件状态刷新/截图限制、无法执行带修饰键的 Control-click，以及不能处理系统隐私授权恢复。FT-17/18 已通过上述 UI 配置、保存重开和实际预览/导出帧验证。摄像头延期，Mac 工程互通不属于要求；有限证据不代表整体 95% 已验收。
+
 第一轮实机预览为 `artifacts/preview/FrameTrail-0.2.7-closeout/app/FrameTrail.exe`。本机 Windows 11、单显示器150% DPI、中文输入环境：`I`/`O` 设置4.99–12.00秒范围；方向键从4.99前进至5.02再返回；空格播放后再次暂停，播放头可从14.43秒拖到8.03秒。未出现输入法候选框或整片时间线虚线焦点框。实际范围导出得到1920×1080、60 FPS、420帧视频，视频7.000秒、AAC音频7.007秒，完整解码通过。对应截图、操作记录和媒体探测均在 `artifacts/validation/noncamera-closeout-v1/`。
 
 保存失败会把检查器恢复为已保存值，并明确告知本次编辑未应用。素材重定位先验证可读性，所有替代副本完成后一次提交；取消或提交失败仅清理该事务创建的副本。辅助文件存在但损坏时也会进入重选。现存可读的较短音轨保留原有裁短处理，替代素材则须覆盖原同步区间。用户先前明确确认的损坏项目备份恢复属于独立操作，保留 `.damaged-*` 和已恢复项目，不因后续取消素材选择而撤销。

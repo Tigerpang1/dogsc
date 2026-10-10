@@ -57,7 +57,7 @@ public partial class MainWindow
    }
   }
  }
- private async Task<(Dictionary<string,double> Durations,bool Changed)> LoadAuxiliaryDurations(FrameTrailProject p,string file)
+ private async Task<(Dictionary<string,double> Durations,bool Changed,string? Warning)> LoadAuxiliaryDurations(FrameTrailProject p,string file)
  {
   var durations=new Dictionary<string,double>(StringComparer.OrdinalIgnoreCase);var paths=p.AudioTracks.Select(a=>a.MediaPath).Concat(p.Camera is {} camera?[camera.MediaPath]:Array.Empty<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();var changed=false;var warnings=new List<string>();
   foreach(var relative in paths)
@@ -77,9 +77,9 @@ public partial class MainWindow
     if(AudioAssetEnd(audio)>info.Duration+.05){try{AudioTimelineOperations.TrimAssetEnd(audio,info.Duration);changed=true;warnings.Add("独立音轨同步区间超出素材时长，已按实际可用范围裁短。");}catch(InvalidOperationException ex){throw new InvalidDataException($"独立音轨素材时长不足以覆盖工程同步范围：{relative}",ex);}}
   }
 
-  if(warnings.Count>0)Status.Text=string.Join(" ",warnings.Distinct());
-  return (durations,changed);
+  return (durations,changed,warnings.Count>0?string.Join(" ",warnings.Distinct()):null);
  }
+ private static string ProjectOpenedStatus(string path,string? warning)=>"项目已打开 · "+path+(string.IsNullOrWhiteSpace(warning)?"":" "+warning);
  private double AvailableAssetDuration(string path,double fallback)=>auxiliaryDurations.TryGetValue(path,out var duration)?duration:fallback;
  private static double CameraAssetEnd(CameraTrack camera)=>camera.SyncSegments is {Count:>0} parts?parts.Max(x=>x.SourceStart+x.Duration*x.SourceRate):camera.SourceStart+camera.Duration;
  private static double AudioAssetEnd(AudioTrack audio)=>audio.SyncSegments is {Count:>0} parts?parts.Max(x=>x.SourceStart+x.Duration*x.SourceRate):audio.SourceStart+audio.Duration*audio.SourceRate;

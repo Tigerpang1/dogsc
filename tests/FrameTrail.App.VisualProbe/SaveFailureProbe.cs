@@ -9,6 +9,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using FrameTrail;
 using FrameTrail.App;
+using FrameTrail.Media;
 
 namespace FrameTrail.App.VisualProbe;
 
@@ -68,6 +69,29 @@ internal static class SaveFailureProbe
                     && FrameTrailProjectStore.Load(file).Settings.Padding == savedPadding,
                     "failed edit leaves project file bytes and persisted model unchanged", null);
             }
+
+            var warningProjectDirectory = Path.Combine(directory, "open-warning-project");
+            Directory.CreateDirectory(Path.Combine(warningProjectDirectory, "media"));
+            var shortAudio = Path.Combine(warningProjectDirectory, "media", "short.wav");
+            MediaTools.RunAsync(MediaTools.Ffmpeg,
+                ["-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=1", "-c:a", "pcm_s16le", "-y", shortAudio])
+                .GetAwaiter().GetResult();
+            var warningProject = new FrameTrailProject();
+            warningProject.AudioTracks.Add(new AudioTrack { MediaPath = "media/short.wav", Duration = 2 });
+            var loadAuxiliary = typeof(MainWindow).GetMethod("LoadAuxiliaryDurations", BindingFlags.Instance | BindingFlags.NonPublic)!;
+            var loadTask = (Task<(Dictionary<string, double> Durations, bool Changed, string? Warning)>)loadAuxiliary.Invoke(
+                window, [warningProject, Path.Combine(warningProjectDirectory, "project.frametrail")])!;
+            var auxiliaryLoad = loadTask.GetAwaiter().GetResult();
+            check(auxiliaryLoad.Changed && auxiliaryLoad.Warning?.Contains("已按实际可用范围裁短", StringComparison.Ordinal) == true,
+                "auxiliary validation returns its automatic-trim warning instead of setting transient UI state",
+                new { auxiliaryLoad.Changed, auxiliaryLoad.Warning, TrimmedDuration = warningProject.AudioTracks[0].Duration });
+            var formatOpenStatus = typeof(MainWindow).GetMethod("ProjectOpenedStatus", BindingFlags.Static | BindingFlags.NonPublic)!;
+            var openedStatus = (string)formatOpenStatus.Invoke(null, [Path.Combine(warningProjectDirectory, "project.frametrail"), auxiliaryLoad.Warning])!;
+            check(openedStatus.Contains("项目已打开", StringComparison.Ordinal)
+                    && openedStatus.Contains(auxiliaryLoad.Warning!, StringComparison.Ordinal)
+                    && !openedStatus.Contains("处理已取消", StringComparison.Ordinal),
+                "successful project-open status clears prior cancellation text while preserving current trim warning",
+                openedStatus);
             check(!window.IsVisible && new WindowInteropHelper(window).Handle == IntPtr.Zero,
                 "save-failure probe does not show the window or create a native HWND", null);
         }
