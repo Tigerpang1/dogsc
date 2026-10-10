@@ -139,6 +139,8 @@ internal static class RangeAudioExportProbe
             if (!audioInfo.HasAudio || audioInfo.Width != 0 || Math.Abs(audioInfo.Duration - 6.75) > .12)
                 throw new InvalidDataException($"M4A范围输出核验失败：{audioInfo.Duration:F3}s, audio={audioInfo.HasAudio}");
 
+            var fractionalFrameChecks = await VerifyFractionalFrameCountsAsync(root, sourcePath, sourceInfo, systemPath, systemInfo);
+
             var videoChecks = new[]
             {
                 (Time: .4, Expected: "blue"), (Time: 1.1, Expected: "red"),
@@ -181,6 +183,7 @@ internal static class RangeAudioExportProbe
             report["ExportTimelineSeconds"] = rangedProject.Timeline.Duration;
             report["VideoExport"] = new { videoExport.FrameCount, videoExport.Encoder, videoExport.Renderer, Probe = videoInfo, FrameChecks = videoResults };
             report["AudioExport"] = new { audioExport.FrameCount, audioExport.Encoder, Probe = audioInfo, PcmSamples = pcm.Length, Checks = checks };
+            report["FractionalFrameExports"] = fractionalFrameChecks;
             report["FrozenThresholds"] = new { ExpectedToneAmplitudeMinimum = .08, MutedBandAmplitudeMaximum = .015, FrequencyWindowSeconds = .18, PcmSampleRate = 48000 };
         }
         catch (Exception ex)
@@ -217,12 +220,124 @@ internal static class RangeAudioExportProbe
         return result;
     }
 
-    private static async Task CreateScreenSourceAsync(string path)
+    private static async Task<object[]> VerifyFractionalFrameCountsAsync(string root, string sourcePath, MediaInfo sourceInfo,
+        string finiteAudioPath, MediaInfo finiteAudioInfo)
+    {
+        var results = new List<object>();
+        var source60Path = Path.Combine(root, "fractional-source-60fps.mp4");
+        await CreateScreenSourceAsync(source60Path, 60);
+        var source60Info = await MediaTools.ProbeAsync(source60Path);
+        foreach (var (name, duration, fps) in new[]
+                 {
+                     ("fractional-30fps", 12.6759265, 30),
+                     ("fractional-60fps", 1.017, 60)
+                 })
+        {
+            var testSourcePath = fps == 60 ? source60Path : sourcePath;
+            var testSourceInfo = fps == 60 ? source60Info : sourceInfo;
+            var expectedFrames = checked((int)Math.Ceiling(duration * fps - 1e-7));
+            var lastExpectedSample = (expectedFrames - 1) / (double)fps;
+            var precedingSample = (expectedFrames - 2) / (double)fps;
+            // Put a visible source-color cut between the last two expected samples. If the
+            // muxer drops the final CFR sample, the output's last frame remains red.
+            var finalSegmentStart = (lastExpectedSample + precedingSample) / 2;
+            var segments = new List<TimelineSegment>();
+            var redRemaining = finalSegmentStart;
+            while (redRemaining > 1e-8)
+            {
+                var length = Math.Min(2, redRemaining);
+                segments.Add(new() { SourceStart = 0, SourceDuration = length });
+                redRemaining -= length;
+            }
+            segments.Add(new() { SourceStart = 2, SourceDuration = duration - finalSegmentStart });
+
+            var projectPath = Path.Combine(root, name + ".frametrail");
+            var outputPath = Path.Combine(root, name + ".mp4");
+            var project = new FrameTrailProject
+            {
+                DisplayName = name,
+                MediaPath = Path.GetFileName(testSourcePath),
+                Media = new() { Width = testSourceInfo.Width, Height = testSourceInfo.Height, Duration = testSourceInfo.Duration, FrameRate = testSourceInfo.FrameRate },
+                Timeline = new() { Segments = segments },
+                AudioTracks = fps == 30
+                    ? [new AudioTrack
+                    {
+                        MediaPath = Path.GetFileName(finiteAudioPath), Duration = finiteAudioInfo.Duration,
+                        Volume = 1, Source = AudioTrackSource.System,
+                        SyncSegments = [new(0, 0, finiteAudioInfo.Duration, 1)]
+                    }]
+                    : [],
+                Settings = new() { CanvasWidth = 320, CanvasHeight = 180, Background = "#000000", Padding = 0, CornerRadius = 0, Shadow = 0, CursorVisible = false, AutoZoom = false }
+            };
+            FrameTrailProjectStore.Save(projectPath, project);
+            project = FrameTrailProjectStore.Load(projectPath);
+            var resolvedSource = FrameTrailProjectStore.ResolveMediaPath(projectPath, project);
+            var export = await new ExportEngine().ExportAsync(project, resolvedSource, outputPath,
+                new ExportOptions(320, 180, fps, HardwarePreferred: false, ProjectFilePath: projectPath));
+            var probeJson = await MediaTools.RunAsync(MediaTools.Ffprobe,
+                ["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=nb_read_frames,duration,avg_frame_rate", "-of", "json", outputPath]);
+            using var probe = JsonDocument.Parse(probeJson);
+            var video = probe.RootElement.GetProperty("streams").EnumerateArray().Single();
+            var decodedFrames = int.Parse(video.GetProperty("nb_read_frames").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+            var videoInfo = await MediaTools.ProbeAsync(outputPath);
+            double? outputAudioDuration = null;
+            if (fps == 30)
+            {
+                using var audioProbe = JsonDocument.Parse(await MediaTools.RunAsync(MediaTools.Ffprobe,
+                    ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "json", outputPath]));
+                var audioStream = audioProbe.RootElement.GetProperty("streams").EnumerateArray().Single();
+                outputAudioDuration = double.Parse(audioStream.GetProperty("duration").GetString()!, System.Globalization.CultureInfo.InvariantCulture);
+                if (!videoInfo.HasAudio || Math.Abs(outputAudioDuration.Value - duration) > .08
+                    || outputAudioDuration.Value > videoInfo.Duration
+                    || videoInfo.Duration < duration || videoInfo.Duration > duration + 1 / (double)fps + .002)
+                    throw new InvalidDataException($"{name}有限音轨/容器时长错误：输入音轨={finiteAudioInfo.Duration:R}s，输出音轨={outputAudioDuration:R}s，timeline={duration:R}s，容器={videoInfo.Duration:R}s。");
+            }
+            var hashes = (await MediaTools.RunAsync(MediaTools.Ffmpeg,
+                    ["-v", "error", "-i", outputPath, "-map", "0:v:0", "-an", "-f", "framemd5", "-"]))
+                .Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                .Where(line => !line.StartsWith('#')).ToArray();
+            if (export.FrameCount != expectedFrames || decodedFrames != expectedFrames || hashes.Length != expectedFrames)
+                throw new InvalidDataException($"{name}帧数错误：预期 {expectedFrames}，ExportResult={export.FrameCount}，ffprobe={decodedFrames}，framemd5={hashes.Length}。");
+            var previousPixels = await MediaTools.DecodeFrameAsync(outputPath, precedingSample, 320, 180, CancellationToken.None);
+            var lastPixels = await MediaTools.DecodeFrameAsync(outputPath, lastExpectedSample, 320, 180, CancellationToken.None);
+            var precedingColor = ClassifyColor(previousPixels, 320, 160, 90);
+            var lastColor = ClassifyColor(lastPixels, 320, 160, 90);
+            if (precedingColor != "red" || lastColor != "green")
+                throw new InvalidDataException($"{name}尾帧内容错误：前一采样点应为red/实际{precedingColor}，最后预期采样点应为green/实际{lastColor}。");
+            var expectedDuration = expectedFrames / (double)fps;
+            if (Math.Abs(videoInfo.Duration - expectedDuration) > .002 || videoInfo.Duration + 1e-8 < duration)
+                throw new InvalidDataException($"{name}封装时长错误：timeline={duration:R}s，MP4={videoInfo.Duration:R}s，帧对齐预期={expectedDuration:R}s。");
+            results.Add(new
+            {
+                Name = name,
+                TimelineDurationSeconds = duration,
+                FrameRate = fps,
+                ExpectedCfrFrames = expectedFrames,
+                ExportResultFrames = export.FrameCount,
+                FfprobeDecodedFrames = decodedFrames,
+                FrameMd5Count = hashes.Length,
+                PreviousSampleTime = precedingSample,
+                PreviousSampleColor = precedingColor,
+                LastExpectedSampleTime = lastExpectedSample,
+                LastExpectedSampleColor = lastColor,
+                TimelineDurationRoundedToCfrFrames = videoInfo.Duration,
+                ExpectedCfrDuration = expectedDuration,
+                FiniteAudioInputDuration = fps == 30 ? finiteAudioInfo.Duration : (double?)null,
+                OutputAudioDuration = outputAudioDuration,
+                HasAudio = videoInfo.HasAudio,
+                Encoder = export.Encoder,
+                Renderer = export.Renderer
+            });
+        }
+        return results.ToArray();
+    }
+
+    private static async Task CreateScreenSourceAsync(string path, int fps = 30)
     {
         var inputs = new List<string>();
         foreach (var color in new[] { "red", "green", "blue", "yellow" })
         {
-            inputs.Add("-f"); inputs.Add("lavfi"); inputs.Add("-i"); inputs.Add($"color=c={color}:s=320x180:r=30:d=2");
+            inputs.Add("-f"); inputs.Add("lavfi"); inputs.Add("-i"); inputs.Add($"color=c={color}:s=320x180:r={fps}:d=2");
         }
         await MediaTools.RunAsync(MediaTools.Ffmpeg, ["-v", "error", .. inputs,
             "-filter_complex", "[0:v][1:v][2:v][3:v]concat=n=4:v=1:a=0,format=yuv420p[v]", "-map", "[v]", "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", "8", "-pix_fmt", "yuv420p", "-y", path]);

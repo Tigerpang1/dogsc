@@ -43,7 +43,11 @@ public partial class MainWindow
   {
    foreach(var (button,kind) in sourceButtons)if(button.Content is Grid content&&content.Children[0] is Border selected){var active=CaptureKind.SelectedIndex==kind;selected.Background=active?Brush("Selection"):Brushes.Transparent;selected.BorderBrush=active?Brush("Hairline"):Brushes.Transparent;}
   }
-  Source("screen","显示器",0,b=>ChooseSource(b,0));Source("window","窗口",1,b=>ChooseSource(b,1));Source("region","区域",2,b=>ChooseSource(b,2));CaptureKind.SelectionChanged+=(_,_)=>RefreshSourceSelection();RefreshSourceSelection();
+  Source("screen","显示器",0,b=>ChooseSource(b,0));Source("window","窗口",1,b=>ChooseSource(b,1));Source("region","区域",2,b=>ChooseSource(b,2));
+  SelectionChangedEventHandler sourceSelectionChanged=(_,_)=>RefreshSourceSelection();
+  CaptureKind.SelectionChanged+=sourceSelectionChanged;
+  window.Closed+=(_,_)=>CaptureKind.SelectionChanged-=sourceSelectionChanged;
+  RefreshSourceSelection();
   Source("device","设备",-1,b=>{var menu=new ContextMenu();menu.Items.Add(new MenuItem{Header="USB 摄像头可从摄像头按钮选择",IsEnabled=false});menu.Items.Add(new MenuItem{Header="当前不支持 iPhone 有线屏幕捕获",IsEnabled=false});var settings=new MenuItem{Header="打开 Windows 摄像头设置"};settings.Click+=(_,_)=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("ms-settings:camera"){UseShellExecute=true});menu.Items.Add(settings);menu.PlacementTarget=b;menu.IsOpen=true;});Divider();
   Button Round(string icon,string label,CheckBox? state,Action<Button> click)
   {

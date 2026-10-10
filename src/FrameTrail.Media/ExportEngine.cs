@@ -96,7 +96,11 @@ public sealed class ExportEngine
                 "-c:v", chosenEncoder, "-pix_fmt", "yuv420p"]);
             if (chosenEncoder == "libx264") args.AddRange(["-preset", "fast", "-crf", "20"]);
             else args.AddRange(["-b:v", "16M"]);
-            args.AddRange(["-t", MediaTools.Number(project.Timeline.Duration), "-movflags", "+faststart", "-y", temporary]);
+            // The rawvideo input is a finite stream containing exactly the CFR frame count
+            // selected below. Do not apply an output -t here: FFmpeg can discard the final
+            // frame when its packet extends past a fractional timeline duration, even though
+            // that frame's timestamp is still inside the requested interval.
+            args.AddRange(["-movflags", "+faststart", "-y", temporary]);
             encoder = MediaTools.Start(MediaTools.Ffmpeg, args, input: true);
             var encoderErrors = encoder.StandardError.ReadToEndAsync();
             using var reg = cancellation.Register(() => { MediaTools.Kill(decoder); MediaTools.Kill(encoder); });

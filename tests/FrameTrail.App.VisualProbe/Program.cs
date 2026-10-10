@@ -19,11 +19,13 @@ internal static class Program
         var saveFailureOnly = args.FirstOrDefault() == "--save-failure";
         var preferencesExportOnly = args.FirstOrDefault() == "--preferences-export";
         var recordingHotKeyOnly = args.FirstOrDefault() == "--recording-hotkey";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var windowSourceFilterOnly = args.FirstOrDefault() == "--window-source-filter";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
+            : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
         if (Directory.Exists(output)) throw new IOException("Use a fresh directory for visual evidence.");
         Directory.CreateDirectory(output);
@@ -34,6 +36,18 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (windowSourceFilterOnly)
+            {
+                WindowCaptureSourceFilterProbe.Verify(Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "窗口来源过滤纯函数：按当前进程 ID 和主窗口句柄排除 FrameTrail 自身浮窗，支持主编辑器开关并保留外部同名窗口",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} window capture source filter checks; {output}");
+                return 0;
+            }
             if (recordingHotKeyOnly)
             {
                 RecordingMarkerHotKeyProbe.Verify(Check);

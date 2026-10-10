@@ -11,11 +11,11 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | FT-01 | 显示器录制 | 本机主显示器录制30秒；成片音画可解码、时间对应。 | [`capture-validation.md`](capture-validation.md)；`artifacts/validation/capture-025-av-30s-v1/run-result.json` 与 `capture.sync-playback.json`，同包18/18。 | 通过 |
 | FT-02 | 窗口录制 | 指定测试窗口遮挡前、中、移动缩放后取9个颜色样点；关闭目标被拒绝，录制中关闭/最小化可收尾。 | `artifacts/validation/capture-025-target-v1/target.target.json`。 | 通过 |
 | FT-03 | 区域录制 | 单显示器拖选一个区域，停止后核对成片边界与选区。 | 现有窗口目标专项含区域录制回归，但不覆盖拖选及边界核对；需补此场景。 | 待验 |
-| FT-04 | 设备来源 | 打开来源选择器，核对显示器、窗口、音频端点的枚举类型与可选状态。 | 现有 `capture-validation.md` 仅记枚举结论，未保存可核对的固定场景记录。 | 待验 |
+| FT-04 | 设备来源 | 打开来源选择器，核对显示器、窗口、音频端点的枚举类型与可选状态。 | 现有 `capture-validation.md` 仅记枚举结论，未保存可核对的固定场景记录。最近实机还发现来源菜单列出应用自身不可录制的浮动窗口；修复处理中，仍按本行原有限场景复验，不增加验收项。 | 待验 |
 | FT-05 | 摄像头、麦克风、系统声音同录 | 同一真实会话独立启停摄像头、麦克风、loopback；导出三轨并核对解码和起止时间。 | 现有实测证明 loopback 和麦克风端点映射；没有物理摄像头设备及三轨同录证据，摄像头条件本轮延期。 | 延期 |
 | FT-06 | 授权和首次引导 | 拒绝一次采集权限，检查说明与恢复入口，再授权并成功开始录制。 | 现有报告覆盖首次帮助/权限说明；拒绝后恢复未验。 | 待验 |
 | FT-07 | 浮动录制条与备忘录 | 移动备忘录、改字号/透明度、重启检查保存值；录屏核对浮条和备忘录排除。 | `ui-memo-audit-v24.json`、`artifacts/validation/recording-isolation-v4/`；但共享控件样式已变，当前界面场景需复验。 | 待验 |
-| FT-08 | 录制标记 | 录制中用按钮和可用全局快捷键写标记；首选 `Ctrl+Alt+M`，系统占用时显示并使用 `Ctrl+Alt+Shift+M`。保存重开核对时间，导出抽帧确认无标记绘制。 | 0.2.7 首次人工录制仅保存一条，首选键被其他应用占用；初次记录见 `artifacts/validation/package-0.2.7/recording-markers/initial-result.json`。本机 0.2.8 测试候选以备用键完成补验：`artifacts/validation/marker-hotkey-fix/recording-proof/desktop-result.json` 记录用户确认的按钮1次、热键2次，正常关闭并从最近项目 UI 重开；三个标记 sourceTime 为 2.5939237、11.2726287、14.2698502，逐条与 origin 日志一致，重开前后 Project SHA 均为 `29AE09B6C37D57C778CDADBACAA2DC0BA977502DB7F5C32405022F4A18F80C23`。`saved-menu-0.jpg`、`saved-menu-1.jpg`、`reopened-menu-0.jpg`、`reopened-menu-1.jpg` 留存界面证据。`recording-proof/probe/result.json` 以真实 ExportEngine 比较有/无3条标记的短区间输出，3个时点均在选区内，解码后380帧逐帧像素相同，原录制与输出均完整解码、退出码0。该运行时 App DLL SHA 为 `AA1A8ED9D46FC5334ABAE2177DFF823311336F97C5403B4FF75D22C6AEFD4AF6`；仅覆盖此备用键冲突和实机录制，不代表最终 0.2.8 包或所有系统组合。探针还发现区间尾端向编码器送入381帧而文件解码出380帧，精确末端帧边界仍需修复和复验；3条标记均在区间内，未影响本行有限场景结论。 | 通过 |
+| FT-08 | 录制标记 | 录制中用按钮和可用全局快捷键写标记；首选 `Ctrl+Alt+M`，系统占用时显示并使用 `Ctrl+Alt+Shift+M`。保存重开核对时间，导出抽帧确认无标记绘制。 | 0.2.7 首次人工录制仅保存一条，首选键被其他应用占用；初次记录见 `artifacts/validation/package-0.2.7/recording-markers/initial-result.json`。本机 0.2.8 测试候选以备用键完成补验：`artifacts/validation/marker-hotkey-fix/recording-proof/desktop-result.json` 记录用户确认的按钮1次、热键2次，正常关闭并从最近项目 UI 重开；三个标记 sourceTime 为 2.5939237、11.2726287、14.2698502，逐条与 origin 日志一致，重开前后 Project SHA 均为 `29AE09B6C37D57C778CDADBACAA2DC0BA977502DB7F5C32405022F4A18F80C23`。`saved-menu-0.jpg`、`saved-menu-1.jpg`、`reopened-menu-0.jpg`、`reopened-menu-1.jpg` 留存界面证据。`recording-proof/probe/result.json` 以真实 ExportEngine 比较有/无3条标记的短区间输出，3个时点均在选区内，解码后380帧逐帧像素相同，原录制与输出均完整解码、退出码0。该运行时 App DLL SHA 为 `AA1A8ED9D46FC5334ABAE2177DFF823311336F97C5403B4FF75D22C6AEFD4AF6`；仅覆盖此备用键冲突和实机录制，不代表最终 0.2.8 包或所有系统组合。历史探针曾观察到381帧送入编码器、380帧解码；源码修复及编码结果见 `artifacts/validation/fractional-frame-fix/result.json`，Core tests 和 Integration 分别见同目录测试日志及 `fractional-frame-fix-integration/result.json`。此修复尚未更新最终交付包。 | 通过 |
 | FT-09 | 录制时继续编辑和排除编辑器 | 主显示器 DDA 录制时编辑既有工程并保存重开；对比编辑器/浮条/备忘录排除前后像素及停止后窗口状态。 | `artifacts/validation/recording-isolation-v4/recording-isolation-smoke.json`、`driver-result.json`。 | 通过 |
 | FT-10 | 保存、自动保存、恢复和最近项目 | 以文件锁触发编辑保存失败，核对画面/历史仍与磁盘一致、控件恢复；解除占用后重试，并取消一次素材重定位事务核对清理。用户明确确认恢复损坏项目的备份后，恢复到原路径是单独接受的恢复动作；之后取消素材定位不回滚该恢复。 | `artifacts/validation/noncamera-closeout-v3/recovery/locked-edit-result.json`、`success-result.json`、`cancel-result.json` 覆盖文件锁编辑失败且 SHA 不变、解锁后重试/撤销，以及普通素材定位取消清理；`main-media-coverage/result.json` 覆盖主素材时长恢复校验。新增 `artifacts/validation/noncamera-closeout-v4/backup-recovery/result.json`（FrameTrail-0.2.7-menu，Runtime DLL SHA `445AADB4C819E8A24A9761DCBEBBA91DE3FAFDA966A74006AB4EB9E8691CBF2B`）及 `confirm.jpg`、`relocation-after-restore.jpg`、`canceled.jpg` 记录用户确认备份恢复后取消缺失主素材定位。恢复后工程 SHA 与备份均为 `337B4933…EC937D64`，保留1份 damaged 文件（SHA `E5CADB37…0DEF7FA`），无 relocated 副本，证明取消未回滚已接受恢复。 | 通过 |
 | FT-11 | 项目素材资产管理 | 对主素材和辅助素材分别取消/失败重定位，确认工程及本轮复制副本的事务结果；成功重定位后保存重开并核对哈希。素材事务只管理本轮新增的重定位副本与最终工程保存。若用户已明确确认恢复备份，原路径恢复及保留的 `.damaged-*` 文件属于该已接受恢复动作，不是素材事务的临时副本，也不因后续素材取消而删除。 | `artifacts/validation/noncamera-closeout-v3/recovery/README.md`、`cancel-result.json`、`success-result.json`、`fixture-hashes.json` 和 `reopened-editor.jpg`：主素材已复制后取消辅助素材选择时工程 SHA 不变且无重定位副本；短主素材候选被拒后完成主/辅素材复制，文件哈希与候选一致，保存后可从最近项目重开。 | 通过 |
@@ -47,13 +47,13 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | 状态 | 数量 | 含义 |
 |---|---:|---|
 | 通过 | 26项 | 仅台账定义的有限场景有证据，不等同于全部功能或全硬件覆盖。此数是证据销账数，不是功能迁移完成率。 |
-| 待修 | 0项 | 台账内暂未另列待修状态；这不表示没有已知未结问题。区间导出末端帧数差异已记录，需修复并复验，见 FT-08 与收尾计划。 |
+| 待修 | 0项 | 台账内暂未另列待修状态。短区间末端帧边界已在源码测试候选修复并通过验证，但尚未更新最终交付包，见 FT-08 与收尾计划。 |
 | 待验 | 4项 | 场景有限且可执行，缺少覆盖证据或受相关实现变化影响；包括录制与来源交互。 |
 | 缺资源 | 0/33 | 当前把本阶段主动延后的摄像头条件记为“延期”；有资源后再评估能否执行。 |
 | 延期 | 3/33 | 两行摄像头实机条件及一行在线更新/公开反馈服务。仍计入33项，均不算通过。 |
 
-已知未结问题：真实 ExportEngine 的短区间探针记录381帧送入编码器、380帧实际解码，精确尾端帧边界待修复和复验。此问题不改变 FT-08 本次三条标记均处于区间内且标记不入画的有限场景证据，也未直接复现于 FT-29 固定整24秒场景；不得将当前待修计数解释为没有已知问题。
+历史发现与当前结论：真实 ExportEngine 的短区间探针曾记录381帧送入编码器、380帧实际解码。源码修复后，`artifacts/validation/fractional-frame-fix/result.json` 验证 30fps、12.6759265 秒输出381帧（包括末帧绿色色样）及 60fps、1.017 秒输出62帧；有限音轨长度检查通过，Core tests 与 Integration 均通过（`fractional-frame-fix-core-tests.log`、`fractional-frame-fix-integration/result.json`）。当前源码测试候选已覆盖该边界，最终 0.2.7 交付包尚未更新。FT-29 固定整24秒场景原通过状态保留。当前待修计数为0不代表未发生过问题或最终包已包含源码修复。
 
 最短闭环优先清单：
 
-1. 修复并复验短区间导出尾端帧边界；再补 FT-03/04/06/07 各自的固定录制/来源交互证据。FT-08 已按本行有限场景通过；摄像头行和在线服务条件保持延期。
+1. 将短区间尾帧源码修复纳入下一交付包并按包验证；再补 FT-03/04/06/07 各自的固定录制/来源交互证据。FT-04 已发现来源菜单列出自身不可录浮窗，修复后仍在原验收项内复验，不扩计数。FT-08 已按本行有限场景通过；摄像头行和在线服务条件保持延期。

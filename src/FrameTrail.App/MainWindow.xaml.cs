@@ -167,7 +167,15 @@ public partial class MainWindow : Window
         var oldMicrophone=(MicDevices.SelectedItem as AudioDeviceInfo)?.Id;var oldCamera=(CameraDevices.SelectedItem as CameraInfo)?.Id;
         var list = new List<TargetItem>();
         if (CaptureKind.SelectedIndex == 1)
-            list.AddRange((await capture.EnumerateWindowsAsync()).Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+        {
+            var windows = await capture.EnumerateWindowsAsync();
+            var visibleWindows = WindowCaptureSourceFilter.Filter(
+                windows,
+                Environment.ProcessId,
+                new WindowInteropHelper(this).Handle,
+                excludeEditorDuringRecording);
+            list.AddRange(visibleWindows.Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+        }
         else list.AddRange((await capture.EnumerateDisplaysAsync()).Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
         Targets.ItemsSource = list; Targets.SelectedIndex = 0;
         MicDevices.ItemsSource = (await trackCapture.EnumerateAudioDevicesAsync()).Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
