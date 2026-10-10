@@ -172,6 +172,28 @@ try
     result.VideoExport = new ExportCheck(videoResult.Path, videoResult.Encoder, videoResult.Renderer,
         videoResult.FrameCount, ToProbe(videoProbe));
 
+    // Markers belong to the editor. Compare actual decoded exports after trim,
+    // split, retiming and reorder so a future overlay cannot leak into the movie.
+    var marked = FrameTrailProjectStore.Load(projectFile);
+    marked.Markers = [
+        new(Guid.NewGuid(), 0, "起点 · 不应进入画面"),
+        new(Guid.NewGuid(), sourceInfo.Duration * .3, "中间标记"),
+        new(Guid.NewGuid(), sourceInfo.Duration * .7, "变速后标记"),
+        new(Guid.NewGuid(), sourceInfo.Duration, "终点标记")
+    ];
+    var markedFile = Path.Combine(outputRoot, "marked-project.frametrail");
+    FrameTrailProjectStore.Save(markedFile, marked);
+    marked = FrameTrailProjectStore.Load(markedFile);
+    if (marked.Markers.Count != 4) throw new InvalidDataException("标记未随工程保存重开。");
+    var markedPath = Path.Combine(outputRoot, "export-with-markers.mp4");
+    var markedResult = await engine.ExportAsync(marked, resolvedMedia, markedPath, exportOptions);
+    var baselineHashes = await DecodedVideoHashes(mp4Path);
+    var markedHashes = await DecodedVideoHashes(markedPath);
+    if (baselineHashes.Length != videoResult.FrameCount || markedResult.FrameCount != videoResult.FrameCount ||
+        !baselineHashes.SequenceEqual(markedHashes))
+        throw new InvalidDataException("添加标记后，成片解码帧发生变化。");
+    result.MarkerExport = new MarkerExportCheck(markedPath, marked.Markers.Count, markedHashes.Length, true);
+
     var m4aPath = Path.Combine(outputRoot, "export.m4a");
     var audioResult = await engine.ExportAsync(loaded, resolvedMedia, m4aPath,
         exportOptions with { AudioOnly = true });
@@ -230,6 +252,14 @@ await File.WriteAllTextAsync(resultPath, JsonSerializer.Serialize(result, jsonOp
 Console.WriteLine(JsonSerializer.Serialize(result, jsonOptions));
 Console.WriteLine($"Validation JSON: {resultPath}");
 return 0;
+
+static async Task<string[]> DecodedVideoHashes(string path)
+{
+    var hashes = await MediaTools.RunAsync(MediaTools.Ffmpeg,
+        ["-v", "error", "-i", path, "-map", "0:v:0", "-an", "-f", "framemd5", "-"]);
+    return hashes.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+        .Where(line => !line.StartsWith('#')).ToArray();
+}
 
 static async Task<string> CreateSyntheticMediaAsync(string outputRoot)
 {
@@ -479,6 +509,7 @@ sealed class ValidationResult
     public bool CancellationCleanupSucceeded { get; set; }
     public List<string> CancellationProgressStages { get; set; } = [];
     public ExportCheck? VideoExport { get; set; }
+    public MarkerExportCheck? MarkerExport { get; set; }
     public ExportCheck? AudioExport { get; set; }
     public List<SceneComparison> SceneComparisons { get; set; } = [];
     public PerformanceCheck? Performance1080p60 { get; set; }
@@ -488,6 +519,7 @@ sealed class ValidationResult
 
 sealed record ProbeSummary(int Width, int Height, double DurationSeconds, double FrameRate, bool HasAudio);
 sealed record ExportCheck(string Path, string Encoder, string Renderer, int FrameCount, ProbeSummary Probe);
+sealed record MarkerExportCheck(string Path, int MarkerCount, int ComparedDecodedFrames, bool IdenticalToUnmarked);
 sealed record SceneComparison(double OutputTime, double SourceTime, double Zoom, double PsnrDb, double MeanAbsoluteError);
 sealed record PerformanceCheck(double ElapsedSeconds, string Encoder, string Renderer, int FrameCount, ProbeSummary Probe);
 sealed class SyncValidationResult

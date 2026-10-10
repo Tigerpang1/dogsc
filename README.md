@@ -20,6 +20,12 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 本轮交付采用候选清单，范围见 [UI 验收记录](docs/ui-craft-validation.md) 和生成的 `artifacts/release/FrameTrail-0.2.6-candidate-manifest.json`。0.2.5 的历史采集与三档 DPI 结果不替代本轮全矩阵验收；系统高对比模式、模态窗口 Esc 送达及整体 95% 覆盖仍未证明。
 
+## 0.2.7 交互收尾候选
+
+时间线和全局控件改用统一的实线焦点提示，消除整片时间线的系统虚线框；中文输入环境下的编辑快捷键可正常使用。文本右键菜单统一为中文圆角样式，设置错误就地提示，导出成功后的退出按钮显示“完成”。素材重定位按事务提交，损坏或过短的主素材会要求重选，保存失败后控件恢复到已保存值。
+
+本机已实测播放、暂停、逐帧、拖动、I/O范围、1080p60与1440p30成片、M4A、编码中取消、设置错误修正及保存重启。具体范围见 [UI验收记录](docs/ui-craft-validation.md) 和 [功能台账](docs/acceptance-ledger.md)。本阶段暂缓摄像头实机工作，Mac工程互通不属于交付要求；这些调整不表示整体95%已验收。0.2.7为本地候选，安装包和便携包按下方命令生成。
+
 ## 构建与运行
 
 0.2.5发行包在100%、150%、200%单显示器缩放下全量UIA各44/44、浮层UIA各20/20。全量UIA使用旧合成testsrc2工程；首次启动边界通过只读工作区检查，备忘录重启步骤由harness调用SetWindowPos重新定位。三档指定浮层截图均已人工审阅；150%查看浅色主窗、深色下拉、嵌套菜单及预设确认弹窗。素材重定位v12为10/10通过；PNG贴图导入的撤销/重做、保存重开和工程副本保留已有22项实测；该证据不覆盖所有素材类型或渲染，当前没有工程素材自动清理机制。干净虚拟机、多显示器、真实Mac工程和物理摄像头仍未验收；功能覆盖95%尚未证明。
@@ -33,7 +39,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.5
+pwsh -File scripts/package.ps1 -Version 0.2.7
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。

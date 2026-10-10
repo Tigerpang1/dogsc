@@ -292,6 +292,7 @@ public sealed partial class ExportWindow : Window
         foreach (var choice in frameRateChoices) choice.IsEnabled = !audioOnly && !running;
         hardware.IsEnabled = !audioOnly && !running;
         videoModeButton.IsEnabled = audioModeButton.IsEnabled = browseButton.IsEnabled = !running;
+        cancelButton.Content = completedPath is not null ? "完成" : "取消";
         fileName.IsEnabled = !running; cancelButton.IsEnabled = true;
     }
 

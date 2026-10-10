@@ -58,6 +58,8 @@ public sealed class EditorTimelineControl : FrameworkElement
  public EditorTimelineControl()
  {
   Focusable=true;MinHeight=234;SizeChanged+=(_,_)=>InvalidateVisual();
+  // This surface consumes editing shortcuts and never accepts composed text.
+  InputMethod.SetIsInputMethodEnabled(this,false);
   SetResourceReference(FocusVisualStyleProperty,"TimelineKeyboardFocus");
   System.Windows.Automation.AutomationProperties.SetName(this,"时间线");
   System.Windows.Automation.AutomationProperties.SetHelpText(this,"左右方向键逐帧定位；空格播放或暂停；S 分割所选片段。");

@@ -15,7 +15,12 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
-        var output = Path.GetFullPath(args.SingleOrDefault() ?? "artifacts/validation/theme-offscreen");
+        var textBoxEditMenuOnly = args.FirstOrDefault() == "--textbox-edit-menu";
+        var saveFailureOnly = args.FirstOrDefault() == "--save-failure";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var output = Path.GetFullPath(outputArgument ?? (saveFailureOnly
+            ? "artifacts/validation/save-failure-offscreen"
+            : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
         if (Directory.Exists(output)) throw new IOException("Use a fresh directory for visual evidence.");
         Directory.CreateDirectory(output);
         var checks = new List<object>();
@@ -25,8 +30,34 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            MainMediaCoverageProbe.Verify(Check);
+            TextBoxEditMenuProbe.Verify(app, Check);
+            if (textBoxEditMenuOnly)
+            {
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "TextBox edit-menu resources and command-target binding; unshown WPF controls; no HWND or desktop automation",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} offscreen TextBox edit-menu checks; {output}");
+                return 0;
+            }
             VerifyPlacementGeometry();
             window = new MainWindow();
+            PreferenceValidationProbe.Verify(window, Check);
+            if (saveFailureOnly)
+            {
+                SaveFailureProbe.Verify(window, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "Save failure model, control, history, and project-file state; unshown WPF window; no HWND or desktop automation",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} offscreen save-failure checks; {output}");
+                return 0;
+            }
             var project = new FrameTrailProject
             {
                 MediaPath = "unused-synthetic.mp4",

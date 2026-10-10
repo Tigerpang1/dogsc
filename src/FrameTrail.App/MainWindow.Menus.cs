@@ -616,6 +616,11 @@ public partial class MainWindow
 
     private void ShowUserPreferences()
     {
+        CreateUserPreferencesDialog(this).ShowDialog();
+    }
+
+    private Window CreateUserPreferencesDialog(Window? owner = null)
+    {
         var current = ReadUserPreferences();
         var root = new DockPanel { Margin = new Thickness(18, 12, 18, 14), LastChildFill = true };
         var actions = new Border
@@ -626,16 +631,29 @@ public partial class MainWindow
             Margin = new Thickness(0, 8, 0, 0)
         };
         var actionRow = new DockPanel { LastChildFill = false };
-        actionRow.Children.Add(new TextBlock
+        var actionStatus = new TextBlock
         {
             Text = "更改仅在保存后生效",
             Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
             FontSize = 11,
-            VerticalAlignment = VerticalAlignment.Center
-        });
+            VerticalAlignment = VerticalAlignment.Center,
+            Width = 260,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        const string defaultActionStatus = "更改仅在保存后生效";
+        System.Windows.Automation.AutomationProperties.SetLiveSetting(actionStatus, System.Windows.Automation.AutomationLiveSetting.Assertive);
+        void SetActionStatus(string text)
+        {
+            actionStatus.Text = text;
+            actionStatus.ToolTip = text == defaultActionStatus ? null : text;
+        }
+        void ClearActionStatus() => SetActionStatus(defaultActionStatus);
+        actionRow.Children.Add(actionStatus);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 82, Margin = new Thickness(4, 0, 0, 0) };
         var save = new Button { Content = "保存设置", IsDefault = true, MinWidth = 100, Margin = new Thickness(8, 0, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(save, "UserPreferencesSave");
         buttons.Children.Add(cancel);
         buttons.Children.Add(save);
         DockPanel.SetDock(buttons, Dock.Right);
@@ -676,6 +694,31 @@ public partial class MainWindow
             Margin = new Thickness(0, 0, 0, 4)
         };
 
+        TextBlock FieldError()
+        {
+            var error = new TextBlock
+            {
+                FontSize = 11,
+                Height = 17,
+                VerticalAlignment = VerticalAlignment.Center,
+                TextTrimming = TextTrimming.CharacterEllipsis
+            };
+            System.Windows.Automation.AutomationProperties.SetLiveSetting(error, System.Windows.Automation.AutomationLiveSetting.Assertive);
+            if (Application.Current?.TryFindResource("TransientPreferences") is TransientPreferences highContrast)
+            {
+                void UpdateErrorForeground()
+                {
+                    error.SetResourceReference(TextBlock.ForegroundProperty, highContrast.HighContrast
+                        ? SystemColors.WindowTextBrushKey
+                        : "Ink");
+                }
+                UpdateErrorForeground();
+                System.ComponentModel.PropertyChangedEventManager.AddHandler(highContrast, (_, _) => UpdateErrorForeground(), nameof(TransientPreferences.HighContrast));
+            }
+            else error.SetResourceReference(TextBlock.ForegroundProperty, "Ink");
+            return error;
+        }
+
         Grid FieldGrid(params (string Label, FrameworkElement Control)[] fields)
         {
             var grid = new Grid();
@@ -698,8 +741,16 @@ public partial class MainWindow
         }
 
         var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), Height = 36, VerticalContentAlignment = VerticalAlignment.Center };
+        System.Windows.Automation.AutomationProperties.SetAutomationId(folder, "UserPreferencesRecordingFolder");
+        var folderError = FieldError();
+        System.Windows.Automation.AutomationProperties.SetAutomationId(folderError, "UserPreferencesRecordingFolderError");
         var browse = new Button { Content = "选择目录…", MinWidth = 92, Height = 36, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         browse.Click += (_, _) => { var picker = new OpenFolderDialog { Title = "选择默认录制保存目录", FolderName = Directory.Exists(folder.Text) ? folder.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) }; if (picker.ShowDialog(this) == true) folder.Text = picker.FolderName; };
+        folder.TextChanged += (_, _) =>
+        {
+            folderError.Text = "";
+            ClearActionStatus();
+        };
         var folderRow = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(browse, Dock.Right);
         folderRow.Children.Add(browse);
@@ -707,9 +758,12 @@ public partial class MainWindow
 
         var frameRate = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.FrameRate == 30 ? 30 : 60, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         var resolution = new ComboBox { ItemsSource = new[] { "最高 1080p", "原始分辨率" }, SelectedIndex = current.OriginalResolution ? 1 : 0, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        frameRate.SelectionChanged += (_, _) => ClearActionStatus();
+        resolution.SelectionChanged += (_, _) => ClearActionStatus();
         var recording = new StackPanel();
         recording.Children.Add(FieldLabel("保存目录"));
         recording.Children.Add(folderRow);
+        recording.Children.Add(folderError);
         recording.Children.Add(FieldGrid(("录制帧率", frameRate), ("录制分辨率", resolution)));
         content.Children.Add(Section("录制", recording));
 
@@ -720,16 +774,28 @@ public partial class MainWindow
         sources.Children.Add(system);
         sources.Children.Add(microphone);
         sources.Children.Add(camera);
+        foreach (var toggle in new[] { system, microphone, camera })
+        {
+            toggle.Checked += (_, _) => ClearActionStatus();
+            toggle.Unchecked += (_, _) => ClearActionStatus();
+        }
         content.Children.Add(Section("音视频来源", sources));
 
         var previewWidth = new ComboBox { ItemsSource = new[] { 960, 1440, 1920 }, SelectedItem = current.PreviewResolution is 960 or 1440 or 1920 ? current.PreviewResolution : 1440, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        previewWidth.SelectionChanged += (_, _) => ClearActionStatus();
+        previewFps.SelectionChanged += (_, _) => ClearActionStatus();
         System.Windows.Automation.AutomationProperties.SetName(previewWidth, "预览分辨率");
         System.Windows.Automation.AutomationProperties.SetName(previewFps, "预览帧率");
         var appearance = new StackPanel();
         appearance.Children.Add(FieldGrid(("预览宽度", previewWidth), ("预览帧率", previewFps)));
         var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 8), MinHeight = 30 };
         var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
+        foreach (var toggle in new[] { dark, excludeEditor })
+        {
+            toggle.Checked += (_, _) => ClearActionStatus();
+            toggle.Unchecked += (_, _) => ClearActionStatus();
+        }
         appearance.Children.Add(dark);
         appearance.Children.Add(excludeEditor);
         appearance.Children.Add(new TextBlock
@@ -744,23 +810,87 @@ public partial class MainWindow
 
         root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
         var dialog = new Window { Title = "录制与界面设置", Width = 560, Height = 720, ShowInTaskbar = false };
-        SurfaceWindow.Configure(dialog, this);
+        SurfaceWindow.Configure(dialog, owner);
         dialog.Content = SurfaceWindow.WrapContent(dialog, root, "录制与界面设置");
         save.Click += (_, _) =>
         {
-            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60)) { SurfaceDialog.Show(dialog, "请选择 30 或 60 FPS。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            folderError.Text = "";
+            ClearActionStatus();
+            if (!int.TryParse(Convert.ToString(frameRate.SelectedItem), out var fps) || fps is not (30 or 60))
+            {
+                SetActionStatus("请选择 30 或 60 FPS。");
+                frameRate.Focus();
+                return;
+            }
             var path = folder.Text.Trim();
-            if (path.Length == 0) { SurfaceDialog.Show(dialog, "请指定默认录制保存目录。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
+            if (path.Length == 0)
+            {
+                folderError.Text = "请填写默认录制保存目录。";
+                folder.Focus();
+                return;
+            }
+            UserPreferences updated;
             try
             {
-                path = Path.GetFullPath(path); Directory.CreateDirectory(path);
-                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60)) { SurfaceDialog.Show(dialog, "请选择有效的预览分辨率和帧率。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning); return; }
-                var updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
-                SaveUserPreferences(updated); ApplyUserPreferences(updated); dialog.DialogResult = true;
+                try { path = Path.GetFullPath(path); }
+                catch (Exception ex) when (ex is ArgumentException or NotSupportedException or IOException or System.Security.SecurityException)
+                {
+                    folderError.Text = "目录路径格式无效，请检查后重试。";
+                    folder.Focus();
+                    return;
+                }
+                try
+                {
+                    Directory.CreateDirectory(path);
+                    var writeCheck = Path.Combine(path, ".frametrail-write-check-" + Guid.NewGuid().ToString("N"));
+                    using (var probe = new FileStream(writeCheck, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1, FileOptions.DeleteOnClose)) probe.WriteByte(0);
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    folderError.Text = "无法写入此目录，请检查文件夹权限。";
+                    folder.Focus();
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or ArgumentException or NotSupportedException or System.Security.SecurityException)
+                {
+                    folderError.Text = "无法使用此目录，请检查路径和磁盘状态。";
+                    folder.Focus();
+                    return;
+                }
+                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60))
+                {
+                    SetActionStatus("请选择有效的预览宽度和帧率。");
+                    previewWidth.Focus();
+                    return;
+                }
+                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
+                try { SaveUserPreferences(updated); }
+                catch (Exception ex)
+                {
+                    App.Log(ex);
+                    SetActionStatus("设置未能保存，请检查应用数据权限。");
+                    save.Focus();
+                    return;
+                }
             }
-            catch (Exception ex) { SurfaceDialog.Show(dialog, "无法保存设置：" + ex.Message, "设置", MessageBoxButton.OK, MessageBoxImage.Error); }
+            catch (Exception ex)
+            {
+                App.Log(ex);
+                folderError.Text = "无法使用此目录，请检查路径和磁盘状态。";
+                folder.Focus();
+                return;
+            }
+            try { ApplyUserPreferences(updated); }
+            catch (Exception ex)
+            {
+                App.Log(ex);
+                SetActionStatus("设置已保存，部分内容未能立即应用。");
+                save.Focus();
+                return;
+            }
+            dialog.DialogResult = true;
         };
-        dialog.ShowDialog();
+        return dialog;
     }
 
     private void ShowPermissionHelp(bool firstRun)

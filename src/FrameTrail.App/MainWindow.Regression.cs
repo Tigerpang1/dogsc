@@ -63,6 +63,16 @@ public partial class MainWindow
    var assets=new[]{copy.MediaPath,copy.Camera?.MediaPath,copy.Settings.BackgroundStyle?.ImagePath,copy.Settings.BackgroundStyle?.VideoPath}.Concat(copy.AudioTracks.Select(x=>x.MediaPath)).Concat(copy.Overlays.Select(x=>x.MediaPath)).Where(x=>!string.IsNullOrEmpty(x)).Distinct(StringComparer.OrdinalIgnoreCase);
    foreach(var asset in assets){var target=FrameTrailProjectStore.ResolveAssetPath(file,asset!);Directory.CreateDirectory(Path.GetDirectoryName(target)!);File.Copy(FrameTrailProjectStore.ResolveAssetPath(original,asset!),target);}
    FrameTrailProjectStore.Save(file,copy);await OpenProject(file);
+   var savedPadding=project!.Settings.Padding;var saveFailureMessage="";
+   using(var blockingReader=new FileStream(file,FileMode.Open,FileAccess.Read,FileShare.Read))
+   {
+    PaddingSlider.Value=Math.Clamp(savedPadding+.02,.01,.9);
+    try{Edit(p=>p.Settings.Padding=PaddingSlider.Value);}
+    catch(IOException ex){saveFailureMessage=ex.Message;}
+    Check(saveFailureMessage.Contains("本次编辑未应用")&&saveFailureMessage.Contains("重新执行该操作"),"保存失败明确提示编辑未应用并指导重试");
+    Check(project.Settings.Padding==savedPadding&&Math.Abs(PaddingSlider.Value-savedPadding)<1e-9,"保存失败后编辑模型与控件恢复为已保存值");
+    Check(Math.Abs(FrameTrailProjectStore.Load(file).Settings.Padding-savedPadding)<1e-9,"保存失败未改变磁盘项目");
+   }
    Playhead.Value=.5;NextFrame(this,new());Check(Math.Abs(Playhead.Value-(.5+1/project!.Media.FrameRate))<1e-9,"逐帧前进使用素材实际帧率");PreviousFrame(this,new());Check(Math.Abs(Playhead.Value-.5)<1e-9,"逐帧后退恢复原位置");
    var fiveFrameStart=Playhead.Value;StepFrames(5);Check(Math.Abs(Playhead.Value-(fiveFrameStart+5/project!.Media.FrameRate))<1e-9,"Shift+方向键移动5个素材帧");StepFrames(-5);
    var baselineSegments=project!.Timeline.Segments.Select(x=>x.Copy()).ToList();var sourceSegment=project.Timeline.Segments[0];var effectCenter=sourceSegment.SourceStart+sourceSegment.SourceDuration/2;var zoomClip=new ZoomClip{Start=effectCenter-.5,End=effectCenter+.5,Scale=1.6};var originalZoomCount=project.ZoomClips.Count;

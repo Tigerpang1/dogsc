@@ -321,18 +321,79 @@ public partial class MainWindow : Window
             if (SurfaceDialog.Show(this, "项目文件未能读取。是否保留损坏文件并恢复最近备份？\n" + ex.Message, "恢复项目", MessageBoxButton.YesNo) != MessageBoxResult.Yes) throw;
             File.Copy(path, path + ".damaged-" + DateTime.Now.ToString("yyyyMMdd-HHmmss")); opened = FrameTrailProjectStore.RestoreBackup(path);
         }
-        var media = FrameTrailProjectStore.ResolveMediaPath(path, opened);
-        if (!File.Exists(media))
+        using var relocation = new ProjectAssetRelocationTransaction();
+        Dictionary<string,double> openedAuxiliaryDurations = new(StringComparer.OrdinalIgnoreCase);
+        var mainRelocated = false;
+        string media;
+        try
         {
-            var dialog = new OpenFileDialog { Title = "素材缺失：请选择原视频，副本将保存到项目目录", Filter = "视频|*.mp4;*.mov;*.mkv;*.avi" };
-            if (dialog.ShowDialog(this) != true) throw new FileNotFoundException("项目素材缺失，未打开项目。", media);
-            var info = await MediaTools.ProbeAsync(dialog.FileName); if (info.Width<1||info.Duration + .05 < opened.Timeline.Segments.Max(x => x.SourceEnd)) throw new InvalidDataException("重新定位的文件缺少视频或时长过短，无法匹配时间线。");await MediaTools.DecodeFrameAsync(dialog.FileName,0,16,16,CancellationToken.None);
-            var newRelative = "media/relocated-" + Guid.NewGuid().ToString("N") + Path.GetExtension(dialog.FileName); media = FrameTrailProjectStore.ResolveAssetPath(path,newRelative); Directory.CreateDirectory(Path.GetDirectoryName(media)!); File.Copy(dialog.FileName, media); opened.MediaPath = newRelative;opened.Media=new(){Width=info.Width,Height=info.Height,Duration=info.Duration};
-            FrameTrailProjectStore.Save(path, opened);
+            media = FrameTrailProjectStore.ResolveMediaPath(path, opened);
+            MediaInfo? sourceInfo = null;
+            Exception? sourceError = null;
+            if (File.Exists(media))
+            {
+                try
+                {
+                    var existingSourceInfo = await MediaTools.ProbeAsync(media);
+                    if (!MainMediaCoversTimeline(existingSourceInfo, opened)) throw new InvalidDataException("项目的主素材无法覆盖当前时间线范围，或没有可用视频帧。");
+                    await MediaTools.DecodeFrameAsync(media, 0, 16, 16, CancellationToken.None);
+                    sourceInfo = existingSourceInfo;
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException) { sourceError = ex; App.Log(ex); }
+            }
+            if (sourceInfo is null)
+            {
+                if (sourceError is not null) SurfaceDialog.Show(this, "项目的主素材无法读取，请重新定位可解码的视频。\n\n" + sourceError.Message, "主素材无法读取", MessageBoxButton.OK, MessageBoxImage.Warning);
+                while (true)
+                {
+                    var dialog = new OpenFileDialog { Title = "素材缺失或无法读取：请选择原视频，副本将保存到项目目录", Filter = "视频|*.mp4;*.mov;*.mkv;*.avi" };
+                    if (dialog.ShowDialog(this) != true) throw new OperationCanceledException("主素材重定位已取消，项目未修改。");
+                    MediaInfo candidateInfo;
+                    try
+                    {
+                        candidateInfo = await MediaTools.ProbeAsync(dialog.FileName);
+                        if (!MainMediaCoversTimeline(candidateInfo, opened)) throw new InvalidDataException("重新定位的文件缺少视频或时长过短，无法匹配时间线。");
+                        await MediaTools.DecodeFrameAsync(dialog.FileName, 0, 16, 16, CancellationToken.None);
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        App.Log(ex); SurfaceDialog.Show(this, "所选文件无法用于主视频，请重新选择。\n\n" + ex.Message, "素材验证失败", MessageBoxButton.OK, MessageBoxImage.Warning); continue;
+                    }
+                    var newRelative = "media/relocated-" + Guid.NewGuid().ToString("N") + Path.GetExtension(dialog.FileName);
+                    media = FrameTrailProjectStore.ResolveAssetPath(path, newRelative);
+                    relocation.Copy(dialog.FileName, media);
+                    opened.MediaPath = newRelative; opened.Media = new() { Width = candidateInfo.Width, Height = candidateInfo.Height, Duration = candidateInfo.Duration };
+                    mainRelocated = true;
+                    sourceInfo = candidateInfo;
+                    break;
+                }
+            }
+            var validatedSourceInfo = sourceInfo ?? throw new InvalidDataException("项目的主素材没有通过验证。");
+            opened.Media.FrameRate = validatedSourceInfo.FrameRate > 0 ? validatedSourceInfo.FrameRate : 30;
+            var auxiliaryRelocated = await RelocateMissingAuxiliaryAssets(opened, path, relocation);
+            var auxiliaryLoad = await LoadAuxiliaryDurations(opened, path);
+            openedAuxiliaryDurations = auxiliaryLoad.Durations;
+            relocation.Commit(() =>
+            {
+                if (mainRelocated || auxiliaryRelocated || auxiliaryLoad.Changed)
+                    FrameTrailProjectStore.Save(path, opened);
+            });
         }
-        var sourceInfo=await MediaTools.ProbeAsync(media);if(sourceInfo.Width<1||sourceInfo.Duration<=0)throw new InvalidDataException("项目的主素材没有可用视频帧。");opened.Media.FrameRate=sourceInfo.FrameRate>0?sourceInfo.FrameRate:30;
-        await RelocateMissingAuxiliaryAssets(opened,path);await LoadAuxiliaryDurations(opened,path);
+        catch
+        {
+            foreach (var cleanupError in relocation.Rollback()) App.Log(cleanupError);
+            throw;
+        }
+        auxiliaryDurations.Clear();
+        foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
         project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
+    }
+    private static bool MainMediaCoversTimeline(MediaInfo info, FrameTrailProject candidate)
+    {
+        if (info.Width < 1 || !double.IsFinite(info.Duration) || info.Duration <= 0 || candidate.Timeline.Segments.Count == 0) return false;
+        var requiredEnd = candidate.Timeline.Segments.Max(segment => segment.SourceEnd);
+        return double.IsFinite(requiredEnd) && info.Duration + .05 >= requiredEnd;
     }
     private async void ImportClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
@@ -390,7 +451,13 @@ public partial class MainWindow : Window
     private void Edit(Action<FrameTrailProject> edit)
     {
         if (project is null || history is null) return; StopPlayback(); var next = Clone(project); edit(next); foreach(var motion in next.ScreenMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration);foreach(var motion in next.CameraMotions)motion.EnterDuration=Math.Min(motion.EnterDuration,motion.Duration); next.Timeline.Validate();
-        FrameTrailProjectStore.Save(projectFile!, next); history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value));
+        try { FrameTrailProjectStore.Save(projectFile!, next); }
+        catch (Exception ex)
+        {
+            RefreshProject();
+            throw new IOException("保存失败，本次编辑未应用。解除文件占用后请重新执行该操作。", ex);
+        }
+        history.Commit(next); project = next; InvalidateProxy(); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value));
     }
     private TimelineSegment Selected(FrameTrailProject p) => p.Timeline.Segments.FirstOrDefault(x => x.Id == (Clips.SelectedItem as ClipItem)?.Id) ?? throw new InvalidOperationException("请选择一个片段。");
     private double SelectedSourceAtPlayhead(FrameTrailProject p,TimelineSegment selected)

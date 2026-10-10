@@ -1,5 +1,21 @@
 # 0.2.6–0.2.7 界面打磨与验收
 
+## 0.2.7 非摄像头交互收尾
+
+2026-10-10，按用户要求暂缓摄像头，继续处理编辑与导出中的实际问题。时间线不接收组合文字输入，中文输入法下的 `I`/`O` 范围快捷键恢复；普通文本字段保留中文输入。设置目录错误改在字段下方提示，修改输入会清除提示。导出成功后的退出按钮改为“完成”。文本字段的默认英文直角菜单统一为应用的中文圆角菜单，并明确将编辑命令指向对应文本框。
+
+第一轮实机预览为 `artifacts/preview/FrameTrail-0.2.7-closeout/app/FrameTrail.exe`。本机 Windows 11、单显示器150% DPI、中文输入环境：`I`/`O` 设置4.99–12.00秒范围；方向键从4.99前进至5.02再返回；空格播放后再次暂停，播放头可从14.43秒拖到8.03秒。未出现输入法候选框或整片时间线虚线焦点框。实际范围导出得到1920×1080、60 FPS、420帧视频，视频7.000秒、AAC音频7.007秒，完整解码通过。对应截图、操作记录和媒体探测均在 `artifacts/validation/noncamera-closeout-v1/`。
+
+保存失败会把检查器恢复为已保存值，并明确告知本次编辑未应用。素材重定位先验证可读性，所有替代副本完成后一次提交；取消或提交失败仅清理该事务创建的副本。辅助文件存在但损坏时也会进入重选。现存可读的较短音轨保留原有裁短处理，替代素材则须覆盖原同步区间。用户先前明确确认的损坏项目备份恢复属于独立操作，保留 `.damaged-*` 和已恢复项目，不因后续取消素材选择而撤销。
+
+Core tests 与 Integration 已通过；标记导出检查对4个标记工程的117个解码帧逐帧比较，与无标记基线完全一致。离屏保存失败探针核对模型、历史、磁盘和检查器回退。现存主视频和替换候选共用时间线覆盖校验；短于所需源区间超过50毫秒时进入重选。证据分别位于 `noncamera-closeout-v2/core-tests-final.log`、`noncamera-closeout-v2/integration-final3/result.json`、`noncamera-closeout-v2/main-media-coverage/result.json` 和 `noncamera-closeout-v1/save-failure-offscreen/result.json`。
+
+第二轮预览 `artifacts/preview/FrameTrail-0.2.7-closeout-final/app/FrameTrail.exe` 实测中文圆角文本菜单浅深色、空目录就地提示、修正清错、有效保存和重启持久化。自动化需重新定位所属窗口才能可靠设置字段；部分模态键盘消息和菜单点击仍受工具焦点影响，文本菜单的全选命令另外用真实 WPF 命令路由离屏验证，未冒充桌面点击通过。完整 VisualProbe 113项通过，其中覆盖设置字段、菜单及主视频范围校验；独立文本菜单命令探针27项通过。截图和结果在 `artifacts/validation/noncamera-closeout-v2/`。
+
+第二轮实际导出包括全24秒1440p/30 FPS视频（2560×1440、720帧、AAC 24秒）及24秒M4A（仅AAC流、48 kHz），两者完整解码通过。浅深色完成页均显示“完成”，点击可回编辑器。4K软件编码在50.6%时取消，恢复可编辑状态，最终输出及同名前缀临时文件均不存在；记录见 `full-export-1440p-probe.json`、`audio-export-probe.json` 和 `export-cancel-check.json`。录制目录测试结束后恢复默认值；本轮没有扩大摄像头、DPI、长录制或干净机器的通过范围。
+
+实现参考 [WPF InputMethod.IsInputMethodEnabled](https://learn.microsoft.com/en-us/dotnet/api/system.windows.input.inputmethod.isinputmethodenabled?view=windowsdesktop-10.0)；禁用范围仅为不接受文字的时间线控件。
+
 ## 0.2.7 交互预览：移除系统虚线焦点框
 
 2026-10-10 用户明确拒绝截图中围住整片时间线的 Windows/WPF 虚线焦点框。本次在应用级覆盖主题默认焦点样式，补齐自绘时间线与曲线控件；时间线键盘焦点只标记左上“轨道”标题，分隔条使用短条提示，滚动容器不额外占用 Tab 停靠位。悬浮时间游标改为细实线。鼠标点击不额外圈住整片内容，键盘焦点仍可辨认。
