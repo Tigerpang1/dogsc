@@ -17,6 +17,8 @@
 
 Release 构建为0警告、0错误；Core、导入及应用离屏回归通过。`artifacts/validation/desktop-residency/memo-v2/result.json` 的71项检查覆盖文稿保存失败/恢复、旧设置兼容、滚动算法、有限坐标和浅深布局；`surfaces-v2/result.json` 的11项检查使用同一个实际录制浮窗验证主题更新、控件边界和无 Owner；`ipc-final/result.json` 的6项检查用隔离命名管道和不同线程验证主/次实例、唤回确认、无效请求和释放恢复。它们不证明真实托盘菜单、跨进程启动、捕获期间窗口独立或成片排除行为；这些仍按下方普通操作验收。
 
+0.2.9包内 `DesktopInstance` 已另做真实跨进程通信补验：主进程55900收到两个次进程97092、69788的空参数与包含中文、空格、撇号的项目路径，均确认成功；主进程退出后进程83300成功取得锁。四个角色实际从发布目录加载同一 `FrameTrail.dll`，SHA-256为 `06CB1EC9A8173448C04EA42F0BCF79AFCA8BBE9763E422B1D2D33AA76AAC5871`。证据在 `artifacts/validation/package-0.2.9/ipc-process-probe/result.json`、原始请求记录及 `root-review.json`。该探针仅运行包内通信类，没有启动完整应用或实际打开工程，因此完整应用重复启动、窗口召回仍待桌面验收。
+
 ## 普通操作验收
 
 逐项在实际桌面运行候选版本并记录结果；在取得实际证据前保持未验收。

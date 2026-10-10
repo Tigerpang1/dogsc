@@ -19,6 +19,7 @@
 - 便携ZIP内490个文件与发布目录逐字节一致。
 - 源码包在仓库外解压，无Git元数据，独立完成测试、App构建和再次打包；固定采集库、补丁和构建身份匹配。
 - 本机静默安装及卸载退出码均0，426个程序文件与便携包哈希一致；本次安装的注册项、程序和快捷方式均已移除。此结果不包括安装版实际播放/录制，也不代表干净机器。
+- 直接加载包内 `DesktopInstance`，以四个独立进程验证主/次实例互斥、空参数与中文路径精确传递、接收确认和主实例退出后的锁接替，所有进程正常退出。证据在 `ipc-process-probe/`；这仍不代替完整应用重复启动与窗口召回。
 
 证据位于 `artifacts/validation/desktop-residency/` 和 `artifacts/validation/package-0.2.9/`。安装报告为 `artifacts/validation/install-029-41cc7d46362548ecbbfe801208fe9c7e/result.json`。源码验证的218份细粒度产物已复制至外部日志目录并逐文件校验，约0.68GiB临时解包/构建副本已清理，见 `source-temp-cleanup.json`。
 
