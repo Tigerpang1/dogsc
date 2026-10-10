@@ -515,7 +515,7 @@ public partial class MainWindow
         AddMenu(menu, "反馈与问题报告", () => SurfaceDialog.Show(this,
             "当前版本未配置在线更新或公开反馈服务。请通过获取此安装包时使用的发行渠道联系维护者。\n\n反馈时建议附上 FrameTrail 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
             "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
-        AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\nCtrl+Alt+M　录制中添加标记\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
+        AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\n" + RecordingMarkerShortcutHelp + "\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
         AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
         AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
         menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;

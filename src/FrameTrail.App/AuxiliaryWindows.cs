@@ -28,29 +28,37 @@ internal static class NativeWindows
 }
 public sealed class RecordingBar : Window
 {
-    private readonly TextBlock label=new() { Margin=new(12,0,12,0),VerticalAlignment=VerticalAlignment.Center };
+    private readonly TextBlock label=new() { Margin=new(6,0,16,0),MinWidth=106,VerticalAlignment=VerticalAlignment.Center };
     private readonly Stopwatch watch=Stopwatch.StartNew();
     private readonly DispatcherTimer timer=new() { Interval=TimeSpan.FromMilliseconds(250) };
     private int markers;
-    private readonly Button pause=new() { Width=38,Height=38,ToolTip="暂停录制" };
+    private readonly Button pause=new() { Width=38,Height=38,Padding=new(0),ToolTip="暂停录制" };
     private readonly Button end;
+    private readonly Button mark;
     private readonly Func<Task> stop;
     private readonly Action<Exception>? stopFailed;
     private bool stopInProgress;
     private bool closeAfterRecording;
     private string? stopStatus;
-    public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null)
+    private bool paused;
+    public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null,string? markerShortcut="Ctrl+Alt+M",bool markerShortcutIsFallback=false)
     {
         this.stop=stop??throw new ArgumentNullException(nameof(stop));this.stopFailed=stopFailed;
-        Title="FrameTrail · 录制条"; Width=420; Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
+        Title="FrameTrail · 录制条"; Width=markerShortcutIsFallback?458:428; Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
         SurfaceWindow.Configure(this,closeOnEscape:false,captionHeight:0);
         var panel=new StackPanel { Orientation=Orientation.Horizontal,Margin=new(12,6,12,6) }; Content=SurfaceWindow.WrapContent(this,panel,Title,showCloseButton:false,showTitleBar:false); panel.Children.Add(label);
-        var mark=new Button { Content=new EditorIcon { Kind="flag" },ToolTip="添加标记",Width=38,Height=38 }; mark.Click+=(_,_)=>addMarker(); panel.Children.Add(mark);
+        var markerContent=new StackPanel { Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center };
+        markerContent.Children.Add(new EditorIcon { Kind="flag",Width=17,Height=17,Margin=new(0,0,9,0),VerticalAlignment=VerticalAlignment.Center });
+        var markerText=new StackPanel(); markerText.Children.Add(new TextBlock { Text="标记",FontSize=12,FontWeight=FontWeights.Medium });
+        var shortcutText=new TextBlock { Text=markerShortcut??"快捷键不可用",FontSize=10.5,Margin=new(0,2,0,0) };shortcutText.SetResourceReference(TextBlock.ForegroundProperty,"Secondary");markerText.Children.Add(shortcutText);markerContent.Children.Add(markerText);
+        mark=new Button { Content=markerContent,ToolTip=markerShortcut==null?"标记快捷键暂不可用，点击此按钮添加标记。":markerShortcutIsFallback?"Ctrl+Alt+M 已被占用，使用 "+markerShortcut+" 或点击添加标记。":"添加标记 · "+markerShortcut,MinWidth=markerShortcutIsFallback?169:139,Height=46,Padding=new(12,4,12,4) };
+        System.Windows.Automation.AutomationProperties.SetName(mark,"添加标记");System.Windows.Automation.AutomationProperties.SetAutomationId(mark,"RecordingAddMarker");System.Windows.Automation.AutomationProperties.SetHelpText(mark,mark.ToolTip.ToString());
+        mark.Click+=(_,_)=>addMarker(); panel.Children.Add(mark);
         pause.Content=new EditorIcon { Kind="pause" }; pause.Click+=async(_,_)=>{pause.IsEnabled=false;try{await togglePause();}finally{pause.IsEnabled=true;}};panel.Children.Add(pause);
         end=new Button { Content="结束录制",Foreground=Brushes.White,Background=new SolidColorBrush(Color.FromRgb(227,101,85)),Margin=new(8,0,0,0),Height=38 }; end.Click+=async(_,_)=>await RequestStopAsync(); panel.Children.Add(end);
-        timer.Tick+=(_,_)=>{if(stopInProgress)return;label.Text=stopStatus??$"● {watch.Elapsed:mm\\:ss} · {markers} 标记";}; timer.Start();
+        timer.Tick+=(_,_)=>{if(!stopInProgress)RefreshLabel();};RefreshLabel();timer.Start();
         Closing+=OnClosing; SourceInitialized+=(_,_)=>NativeWindows.Exclude(this); Closed+=(_,_)=>timer.Stop();
-        PreviewMouseLeftButtonDown+=(_,e)=>{ if(e.OriginalSource is TextBlock) DragMove(); };
+        label.MouseLeftButtonDown+=(_,e)=>{ if(e.ClickCount==1)DragMove(); };
     }
     private void OnClosing(object? sender,CancelEventArgs e)
     {
@@ -61,7 +69,7 @@ public sealed class RecordingBar : Window
     private async Task RequestStopAsync()
     {
         if(stopInProgress||closeAfterRecording)return;
-        stopInProgress=true;stopStatus="正在结束录制…";end.IsEnabled=false;pause.IsEnabled=false;label.Text=stopStatus;
+        stopInProgress=true;stopStatus="正在结束录制…";end.IsEnabled=false;pause.IsEnabled=false;mark.IsEnabled=false;label.Text=stopStatus;
         try
         {
             await stop();
@@ -75,7 +83,7 @@ public sealed class RecordingBar : Window
         finally
         {
             stopInProgress=false;
-            if(IsVisible&&!closeAfterRecording){end.IsEnabled=true;pause.IsEnabled=true;}
+            if(IsVisible&&!closeAfterRecording){end.IsEnabled=true;pause.IsEnabled=true;mark.IsEnabled=!paused;}
         }
     }
     public void CloseAfterRecording()
@@ -85,8 +93,9 @@ public sealed class RecordingBar : Window
         closeAfterRecording=true;
         Close();
     }
-    public void SetMarkerCount(int value)=>markers=value;
-    public void SetPaused(bool value) { if(value)watch.Stop();else watch.Start();pause.Content=new EditorIcon { Kind=value?"play":"pause" };pause.ToolTip=value?"继续录制":"暂停录制"; }
+    private void RefreshLabel()=>label.Text=stopStatus??$"{(paused?"Ⅱ":"●")} {watch.Elapsed:mm\\:ss} · {markers} 标记";
+    public void SetMarkerCount(int value) { markers=value;RefreshLabel(); }
+    public void SetPaused(bool value) { paused=value;if(value)watch.Stop();else watch.Start();pause.Content=new EditorIcon { Kind=value?"play":"pause" };pause.ToolTip=value?"继续录制":"暂停录制";mark.IsEnabled=!value&&!stopInProgress;RefreshLabel(); }
 }
 public sealed class MemoWindow : Window
 {

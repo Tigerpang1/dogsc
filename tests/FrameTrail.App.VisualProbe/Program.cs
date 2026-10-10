@@ -18,7 +18,8 @@ internal static class Program
         var textBoxEditMenuOnly = args.FirstOrDefault() == "--textbox-edit-menu";
         var saveFailureOnly = args.FirstOrDefault() == "--save-failure";
         var preferencesExportOnly = args.FirstOrDefault() == "--preferences-export";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var recordingHotKeyOnly = args.FirstOrDefault() == "--recording-hotkey";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -33,6 +34,19 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (recordingHotKeyOnly)
+            {
+                RecordingMarkerHotKeyProbe.Verify(Check);
+                RecordingBarPresentationProbe.Verify(output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "快捷键冲突、备用键、释放与重试；录制条三种快捷键状态的离屏布局，不代表实机热键验收",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} recording hotkey and offscreen bar checks; {output}");
+                return 0;
+            }
             MainMediaCoverageProbe.Verify(Check);
             TextBoxEditMenuProbe.Verify(app, Check);
             if (textBoxEditMenuOnly)

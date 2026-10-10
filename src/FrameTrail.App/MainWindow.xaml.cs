@@ -41,6 +41,7 @@ public partial class MainWindow : Window
     private string? diagnosticRecordingRoot;
     private PixelRect? region;
     private RecordingBar? recordingBar;
+    private readonly RecordingMarkerHotKey markerHotKey = new();
     private readonly List<(long Tick, string Label)> recordingMarkers = [];
     private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private readonly DispatcherTimer recordingGuard = new() { Interval = TimeSpan.FromSeconds(2) };
@@ -60,7 +61,7 @@ public partial class MainWindow : Window
         SurfaceWindow.FitToWorkArea(this);
         AutomationProperties.SetItemStatus(PreviewImage, "idle");
         AutomationProperties.SetItemStatus(TimelineView, "idle");
-        Closed += (_, _) => { seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); };
+        Closed += (_, _) => { markerHotKey.Dispose();seekCancellation?.Cancel(); assetsCancellation?.Cancel(); operationCancellation?.Cancel(); recordingBar?.CloseAfterRecording(); recordingBar=null; recordingGuard.Stop(); };
         recordingGuard.Tick += async (_, _) =>
         {
             if(capture.State is not (CaptureState.Recording or CaptureState.Paused) || protectiveStop||recordingFinalizing)return;
@@ -93,7 +94,7 @@ public partial class MainWindow : Window
         ApplyUserPreferencesOnStartup(showFirstRunHelp: !Environment.GetCommandLineArgs().Any(a=>a.StartsWith("--")));
         var handle = new WindowInteropHelper(this).Handle;
         HwndSource.FromHwnd(handle)?.AddHook(WindowMessage);
-        if (!NativeWindows.RegisterHotKey(handle, 17, 0x0001 | 0x0002 | 0x4000, 0x4D)) Status.Text = "Ctrl+Alt+M 已被其他应用占用；仍可使用录制条标记按钮。";
+        RegisterRecordingMarkerHotKey();
         var args = Environment.GetCommandLineArgs();
         var open = Array.IndexOf(args, "--open");
         if (open >= 0 && args.Length > open + 1) await Guard(() => OpenProject(args[open + 1]));
@@ -125,7 +126,7 @@ public partial class MainWindow : Window
             try
             {
                 using var inputStimulus=args.Contains("--with-input-stimulus")?new WorkflowInputStimulus():null;SystemSound.IsChecked=true; await ToggleRecording();
-                await Task.Delay(1200); AddMarker();
+                await Task.Delay(1200); AddMarker("diagnostic");
                 if(args.Contains("--with-pause")){await ToggleRecordingPause();await Task.Delay(1100);await ToggleRecordingPause();}
                 if(inputStimulus!=null)await inputStimulus.ExerciseAsync();var secondsIndex=Array.IndexOf(args,"--record-seconds");var recordSeconds=secondsIndex>=0&&secondsIndex+1<args.Length?double.Parse(args[secondsIndex+1],CultureInfo.InvariantCulture):3.5;if(!double.IsFinite(recordSeconds)||recordSeconds<1.2||recordSeconds>3600)throw new ArgumentOutOfRangeException("--record-seconds");await Task.Delay(TimeSpan.FromSeconds(recordSeconds-1.2));await StopRecording();
                 var originalDuration=project!.Timeline.Duration;if(inputStimulus!=null&&(project.PointerEvents.Count(x=>x.Kind==PointerEventKind.LeftClick)<2||project.ZoomClips.Count==0))throw new InvalidOperationException("真实点击未保存到指针轨道或未生成自动运镜。");
@@ -153,7 +154,7 @@ public partial class MainWindow : Window
         var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using var stream=File.Create(path); png.Save(stream);
     }
     private IntPtr WindowMessage(IntPtr hwnd, int msg, IntPtr wp, IntPtr lp, ref bool handled)
-    { if (msg == 0x0312 && wp.ToInt32() == 17) { AddMarker(); handled = true; } return IntPtr.Zero; }
+    { if (msg == 0x0312 && wp.ToInt32() == RecordingMarkerHotKey.Id) { AddMarker("hotkey"); handled = true; } return IntPtr.Zero; }
     private async Task Guard(Func<Task> action)
     {
         try { await action(); }
@@ -201,16 +202,18 @@ public partial class MainWindow : Window
         try
         {
             if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
-            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(AddMarker, StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);}); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
+            RegisterRecordingMarkerHotKey();
+            await File.WriteAllTextAsync(Path.Combine(recordingFolder,"recording-controls.json"),JsonSerializer.Serialize(new { MarkerShortcut=markerHotKey.ShortcutText, MarkerShortcutIsFallback=markerHotKey.IsFallback, MarkerShortcutRegistrationError=markerHotKey.RegistrationError },new JsonSerializerOptions { WriteIndented=true }));
+            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(()=>AddMarker("button"), StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);},markerHotKey.ShortcutText,markerHotKey.IsFallback); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
         finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
     }
-    private void AddMarker()
+    private void AddMarker(string input)
     {
         if (capture.State != CaptureState.Recording) return;
         recordingMarkers.Add((Stopwatch.GetTimestamp(), $"标记 {recordingMarkers.Count + 1}"));
-        if (recordingFolder is not null) File.AppendAllText(Path.Combine(recordingFolder, "markers.jsonl"), JsonSerializer.Serialize(new { Tick = recordingMarkers[^1].Tick, Label = recordingMarkers[^1].Label }) + Environment.NewLine);
+        if (recordingFolder is not null) File.AppendAllText(Path.Combine(recordingFolder, "markers.jsonl"), JsonSerializer.Serialize(new { Tick = recordingMarkers[^1].Tick, Label = recordingMarkers[^1].Label, Input = input }) + Environment.NewLine);
         recordingBar?.SetMarkerCount(recordingMarkers.Count);
     }
     private Task StopRecording()
@@ -598,7 +601,7 @@ public partial class MainWindow : Window
             await Guard(async()=>
             {
                 SaveProject(); seekCancellation?.Cancel(); assetsCancellation?.Cancel(); StopPlayback(); Player.Close();
-                NativeWindows.UnregisterHotKey(new WindowInteropHelper(this).Handle,17);
+                markerHotKey.Dispose();
                 await capture.DisposeAsync(); await trackCapture.DisposeAsync();
                 // A cancelled seek may still be decoding a layer. Let it leave the preview critical section first.
                 await previewGate.WaitAsync();

@@ -10,6 +10,15 @@ public partial class MainWindow
 {
  private Window? recorderSetup;
  private bool changingRecorderMode;
+ private void RegisterRecordingMarkerHotKey()
+ {
+  markerHotKey.Register(new System.Windows.Interop.WindowInteropHelper(this).Handle);
+  if(markerHotKey.IsFallback)Status.Text="Ctrl+Alt+M 已被占用，录制标记使用 "+markerHotKey.ShortcutText+"。";
+  else if(markerHotKey.ShortcutText==null)Status.Text="标记快捷键暂不可用，请使用录制条上的标记按钮。";
+ }
+ private string RecordingMarkerShortcutHelp=>markerHotKey.ShortcutText is { } shortcut
+  ? shortcut+"　录制中添加标记"+(markerHotKey.IsFallback?"（Ctrl+Alt+M 已被占用，当前使用备用键）":"")
+  : "录制标记快捷键暂不可用，请使用录制条上的标记按钮。";
  private async Task ShowFloatingRecorder()
  {
   if(recorderSetup!=null){recorderSetup.Activate();return;}await RefreshDevices();

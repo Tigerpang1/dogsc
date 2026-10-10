@@ -15,7 +15,7 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | FT-05 | 摄像头、麦克风、系统声音同录 | 同一真实会话独立启停摄像头、麦克风、loopback；导出三轨并核对解码和起止时间。 | 现有实测证明 loopback 和麦克风端点映射；没有物理摄像头设备及三轨同录证据，摄像头条件本轮延期。 | 延期 |
 | FT-06 | 授权和首次引导 | 拒绝一次采集权限，检查说明与恢复入口，再授权并成功开始录制。 | 现有报告覆盖首次帮助/权限说明；拒绝后恢复未验。 | 待验 |
 | FT-07 | 浮动录制条与备忘录 | 移动备忘录、改字号/透明度、重启检查保存值；录屏核对浮条和备忘录排除。 | `ui-memo-audit-v24.json`、`artifacts/validation/recording-isolation-v4/`；但共享控件样式已变，当前界面场景需复验。 | 待验 |
-| FT-08 | 录制标记 | 录制中用按钮和 `Ctrl+Alt+M` 写两标记，保存重开核对时间；导出抽帧确认无标记绘制。 | Core 标记映射探针覆盖编辑保存；采集热键与导出不入画缺少同场景证据。 | 待验 |
+| FT-08 | 录制标记 | 录制中用按钮和可用全局快捷键各写一条标记；首选 `Ctrl+Alt+M`，系统占用时显示并使用 `Ctrl+Alt+Shift+M`。保存重开核对时间，导出抽帧确认无标记绘制。 | 0.2.7 人工录制只得到一条标记；正常启动确认首选键被其他应用占用，打开工程又覆盖了提示。`artifacts/validation/package-0.2.7/recording-markers/initial-result.json` 留存失败，`probe/result.json` 验证该标记时间精确映射及2秒有无标记导出60帧一致。0.2.8 增加可见备用键和输入来源记录，`artifacts/validation/marker-hotkey-fix/offscreen-v3/result.json` 94项离屏检查通过；`startup.txt` 记录本机备用键注册成功。双输入、重开及同录制导出仍待实机复验，见[修复说明](recording-marker-hotkey.md)。 | 待验 |
 | FT-09 | 录制时继续编辑和排除编辑器 | 主显示器 DDA 录制时编辑既有工程并保存重开；对比编辑器/浮条/备忘录排除前后像素及停止后窗口状态。 | `artifacts/validation/recording-isolation-v4/recording-isolation-smoke.json`、`driver-result.json`。 | 通过 |
 | FT-10 | 保存、自动保存、恢复和最近项目 | 以文件锁触发编辑保存失败，核对画面/历史仍与磁盘一致、控件恢复；解除占用后重试，并取消一次素材重定位事务核对清理。用户明确确认恢复损坏项目的备份后，恢复到原路径是单独接受的恢复动作；之后取消素材定位不回滚该恢复。 | `artifacts/validation/noncamera-closeout-v3/recovery/locked-edit-result.json`、`success-result.json`、`cancel-result.json` 覆盖文件锁编辑失败且 SHA 不变、解锁后重试/撤销，以及普通素材定位取消清理；`main-media-coverage/result.json` 覆盖主素材时长恢复校验。新增 `artifacts/validation/noncamera-closeout-v4/backup-recovery/result.json`（FrameTrail-0.2.7-menu，Runtime DLL SHA `445AADB4C819E8A24A9761DCBEBBA91DE3FAFDA966A74006AB4EB9E8691CBF2B`）及 `confirm.jpg`、`relocation-after-restore.jpg`、`canceled.jpg` 记录用户确认备份恢复后取消缺失主素材定位。恢复后工程 SHA 与备份均为 `337B4933…EC937D64`，保留1份 damaged 文件（SHA `E5CADB37…0DEF7FA`），无 relocated 副本，证明取消未回滚已接受恢复。 | 通过 |
 | FT-11 | 项目素材资产管理 | 对主素材和辅助素材分别取消/失败重定位，确认工程及本轮复制副本的事务结果；成功重定位后保存重开并核对哈希。素材事务只管理本轮新增的重定位副本与最终工程保存。若用户已明确确认恢复备份，原路径恢复及保留的 `.damaged-*` 文件属于该已接受恢复动作，不是素材事务的临时副本，也不因后续素材取消而删除。 | `artifacts/validation/noncamera-closeout-v3/recovery/README.md`、`cancel-result.json`、`success-result.json`、`fixture-hashes.json` 和 `reopened-editor.jpg`：主素材已复制后取消辅助素材选择时工程 SHA 不变且无重定位副本；短主素材候选被拒后完成主/辅素材复制，文件哈希与候选一致，保存后可从最近项目重开。 | 通过 |
@@ -23,7 +23,7 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 | FT-13 | 分割、裁短、恢复、重排和变速 | 固定合成工程执行分割、裁短/恢复、2倍速、重排并保存重开，核对源时间与成片顺序；另验证文件锁时编辑失败不会提前改变项目/历史。 | `artifacts/validation/noncamera-closeout-v4/editing/01-split.json` 至 `07-undo-restore.json` 记录实机分割、撤销、左裁至3.4秒、2倍速、重排、恢复全长及撤销恢复；末态序列为6/11/3.4/18秒，19.3秒并从最近项目重开。`editing/verification/result.json` 五项通过：实际UI导出1920×1080@30完整解码，多段关键帧匹配独立源时间参考，反事实校验区分段顺序及2×映射。文件锁证据 `noncamera-closeout-v3/recovery/locked-edit-result.json` 与 `noncamera-closeout-v4/menu/speed-save-failed.jpg`、`locked-speed-result.json`、`retry-saved.jpg/.txt`、`undo-result.json` 覆盖失败时保留2×模型值、解除占用后重试保存及撤销精确恢复。旧 `package-025-editor-v1/result.json`（53项）和离屏失败探针仅作补充。 | 通过 |
 | FT-14 | 缩略图和音频波形 | 8秒含音轨素材显示8张源帧缩略图和波形；检查无音轨、取消生成两种结果。 | `artifacts/validation/timeline-assets-20261009-190531-715/result.json`，20项通过；缓存实现未变。 | 通过 |
 | FT-15 | 轨道显隐、吸附、悬浮预览和范围导出 | 中文输入环境下按 `I`、`O` 设置范围并核对区间，再检查轨道显隐、吸附、悬浮预览及选区导出头尾帧。 | `artifacts/validation/noncamera-closeout-v1/desktop-observations.json` 记录 4.99–12.00 范围导出，1920×1080、60 FPS、420帧且完整解码；`artifacts/validation/noncamera-closeout-v3/recovery/timeline-view-result.json` 验证轨道隐藏/恢复、吸附开启定位6秒而关闭定位5.9秒、悬浮预览输出时间约8.47秒且播放头保持5.9秒；`artifacts/validation/noncamera-closeout-v2/integration-final3/result.json` 验证标记帧与基线一致。 | 通过 |
-| FT-16 | 区间、多选和剪辑快捷操作 | 先设置并核对 I/O 范围，再对不连续多选片段执行一次快捷操作、撤销并重开。 | `artifacts/validation/noncamera-closeout-v1/desktop-observations.json` 实机验证 I/O 和播放头操作；旧编辑53项覆盖多选与部分编辑。中文输入法下的多选快捷剪辑、撤销并重开场景仍待验。 | 待验 |
+| FT-16 | 区间、多选和剪辑快捷操作 | 先设置并核对 I/O 范围，再对不连续多选片段执行一次快捷操作、撤销并重开。 | 用户协助在最终 0.2.7 包中完成有限场景：`artifacts/validation/package-0.2.7/manual-acceptance/range-before-selection.txt/.jpg` 记录 I/O 范围 1.99–9.97 秒；`selected-1-and-3.jpg` 记录第1/3段不连续选择；`after-multidelete.json/.jpg/.txt` 记录按 D 后仅保留原第2/4段（11/7/1、18/6/1），总长13秒；`after-undo.json` 与 `before.json` 整份工程语义相同，SHA `955EC016…CABFF00`；`reopened.jpg/.txt` 及 `result.json` 记录关闭后从最终包重开，仍为4段/19.30秒且项目语义相同、字节未变化。运行时 App DLL SHA `A03DD45233E132172169D754F6D6816EE5DE54F8690B2AD6FA934BC50C2BACE1`。 | 通过 |
 | FT-17 | 开场动效 | 在固定工程中设置时长、缓动、元素集合和顺序，保存重开，并对照预览与导出关键时点。 | `artifacts/validation/noncamera-closeout-v5/intro-zoom/intro-configured.jpg`、`intro-reopened.jpg/.txt`、`01-intro-configured.json` 与 `desktop-result.json` 记录设置与重开。配置截图来自同 ProjectId 的源工程；冻结 fixture 保留同一开场设置并加入19.3秒贴图，重开 SHA 与 fixture 相同。`opening-probe/result.json` 与 `Program.cs` 使用 overlay 起点0、时长19.3秒、首段源起点6秒；仅缩短测试片段以导出4.5秒，不缩短 overlay。真实 `PreviewPlaybackSession` 和 `ExportEngine` 在0/1.18/2.2/4秒取帧，独立进度/透明度公式匹配，并以关闭开场、仅屏幕和反转顺序作实际导出负对照。 | 通过 |
 | FT-18 | 自动跟随和手动缩放 | 在固定指针片段分别启用自动跟随与手动焦点/缩放，保存重开并核对两个关键时点构图。 | `artifacts/validation/noncamera-closeout-v5/intro-zoom/02-auto-generated.json`、`03-manual-configured.json`、`manual-configured.jpg`、`manual-reopened.txt` 与 `desktop-result.json` 记录自动生成、手动焦点/比例设置及相同 SHA 重开。`zoom-probe/result.json` 使用同快照实际 `PreviewPlaybackSession` 和 `ExportEngine` 解码帧核对；手动帧16.233s的缩放、裁切原点匹配独立焦点公式，预览/导出差值均值1.88；镜像焦点和1倍比例负对照分别有71.2%、72.0%变化像素。自动固定焦点负对照在输出2.0s产生19.0%变化像素，另有 Core 自动跟随回归通过。`Automatic.Samples[].ManualSceneMatchesIndependent=false` 是仅在手动样本时才判真的诊断字段，不表示自动场景失败。 | 通过 |
 | FT-19 | 屏幕3D | 固定工程检查投影参数与选框四角反算，并完成一段综合3D导出。 | Render.Probe 投影、选框反算及综合3D导出证据；相关实现未变。 | 通过 |
@@ -46,13 +46,12 @@ Git 差异核对：从 0.2.5 验收提交 `df3ed90` 到旧基线 `889db72`，Cor
 
 | 状态 | 数量 | 含义 |
 |---|---:|---|
-| 通过 | 24项 | 仅台账定义的有限场景有证据，不等同于全部功能或全硬件覆盖。此数是证据销账数，不是功能迁移完成率。 |
-| 待修 | 0项 | 时间线 `I`/`O` 快捷键已在中文输入环境实机验证通过；本轮未记录其它已复现待修问题。 |
-| 待验 | 6项 | 场景有限且可执行，缺少覆盖证据或受相关实现变化影响；包括录制与来源交互及多选。 |
+| 通过 | 25项 | 仅台账定义的有限场景有证据，不等同于全部功能或全硬件覆盖。此数是证据销账数，不是功能迁移完成率。 |
+| 待修 | 0项 | 时间线 `I`/`O` 快捷键已在中文输入环境实机验证通过；FT-08 本机热键冲突已实现修复，仍在待验行等待实机复验，不计通过。 |
+| 待验 | 5项 | 场景有限且可执行，缺少覆盖证据或受相关实现变化影响；包括录制与来源交互。 |
 | 缺资源 | 0/33 | 当前把本阶段主动延后的摄像头条件记为“延期”；有资源后再评估能否执行。 |
 | 延期 | 3/33 | 两行摄像头实机条件及一行在线更新/公开反馈服务。仍计入33项，均不算通过。 |
 
 最短闭环优先清单：
 
-1. FT-16：以 `src/FrameTrail.App/MainWindow.TimelineCommands.cs`、`EditorTimelineControl.cs` 的现有命令，对固定工程做一次不连续多选快捷剪辑、撤销并重开；`artifacts/validation/package-025-editor-v1/result.json` 有旧多选/编辑证据，但当前中文输入法与完整复合场景未覆盖。
-2. FT-03/04/06/07/08：按各行固定场景补最小录制/来源交互证据；摄像头行保持延期，在线服务条件也保持延期。
+1. FT-03/04/06/07/08：按各行固定场景补最小录制/来源交互证据；摄像头行保持延期，在线服务条件也保持延期。
