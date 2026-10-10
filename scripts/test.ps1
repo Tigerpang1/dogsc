@@ -49,6 +49,9 @@ try {
         $visualOutput = Join-Path $repoRoot ('artifacts/validation/theme-offscreen-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- $visualOutput
         if ($LASTEXITCODE -ne 0) { throw "离屏主题文字与时间线像素检查失败，退出码 $LASTEXITCODE" }
+        $microphoneRecoveryOutput = Join-Path $repoRoot ('artifacts/validation/microphone-recovery-offscreen-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --microphone-access-recovery $microphoneRecoveryOutput
+        if ($LASTEXITCODE -ne 0) { throw "离屏麦克风访问恢复提示检查失败，退出码 $LASTEXITCODE" }
         Write-Host 'WPF离屏检查完成，未创建桌面窗口或访问采集设备；真实交互仍须单独验收。'
     }
 
@@ -58,7 +61,7 @@ try {
         }
         & dotnet build $captureProbe --configuration $Configuration -p:Platform=x64
         if ($LASTEXITCODE -ne 0) { throw "采集探针构建失败，退出码 $LASTEXITCODE" }
-        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test', '--microphone-clock-segment-test')) {
+        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test', '--microphone-clock-segment-test', '--microphone-access-error-test')) {
             & dotnet run --no-build --project $captureProbe --configuration $Configuration -p:Platform=x64 -- $pureProbe
             if ($LASTEXITCODE -ne 0) { throw "采集纯逻辑探针 $pureProbe 失败，退出码 $LASTEXITCODE" }
         }

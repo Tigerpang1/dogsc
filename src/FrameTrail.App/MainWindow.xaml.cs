@@ -159,6 +159,12 @@ public partial class MainWindow : Window
     {
         try { await action(); }
         catch (OperationCanceledException) { Status.Text = "处理已取消，原始素材和项目已保留。"; }
+        catch (MicrophoneAccessDeniedException ex)
+        {
+            App.Log(ex);
+            Status.Text = "Windows 拒绝访问麦克风。检查权限后可重新开始录制。";
+            MicrophoneAccessRecovery.Show(this);
+        }
         catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(this, ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
     private async Task RefreshDevices()

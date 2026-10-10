@@ -20,7 +20,8 @@ internal static class Program
         var preferencesExportOnly = args.FirstOrDefault() == "--preferences-export";
         var recordingHotKeyOnly = args.FirstOrDefault() == "--recording-hotkey";
         var windowSourceFilterOnly = args.FirstOrDefault() == "--window-source-filter";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var microphoneAccessOnly = args.FirstOrDefault() == "--microphone-access-recovery";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -36,6 +37,18 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (microphoneAccessOnly)
+            {
+                MicrophoneAccessRecoveryProbe.Verify(output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "麦克风权限恢复提示：浅深主题离屏布局、动作与默认按钮；未打开系统设置或音频设备，不替代实机拒绝/恢复验收",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} microphone recovery checks; {output}");
+                return 0;
+            }
             if (windowSourceFilterOnly)
             {
                 WindowCaptureSourceFilterProbe.Verify(Check);

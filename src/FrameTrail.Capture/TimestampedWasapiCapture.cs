@@ -9,6 +9,7 @@ internal sealed class TimestampedWasapiCapture : IDisposable
 {
     private readonly AudioClient _audioClient;
     private readonly AudioCaptureClient _captureClient;
+    private readonly bool _isMicrophone;
     private readonly AutoResetEvent _packetReady = new(false);
     private readonly Thread _thread;
     private volatile bool _stopping;
@@ -22,11 +23,13 @@ internal sealed class TimestampedWasapiCapture : IDisposable
         AudioCaptureClient? captureClient = null;
         try
         {
-            audioClient = endpoint.AudioClient;
-            var waveFormat = audioClient.MixFormat;
+            var client = MicrophoneAccessDeniedMapper.Invoke(!loopback, () => endpoint.AudioClient);
+            audioClient = client;
+            var waveFormat = MicrophoneAccessDeniedMapper.Invoke(!loopback, () => client.MixFormat);
             var flags = AudioClientStreamFlags.EventCallback;
             if (loopback) flags |= AudioClientStreamFlags.Loopback;
-            audioClient.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, waveFormat, Guid.Empty);
+            MicrophoneAccessDeniedMapper.Invoke(!loopback,
+                () => client.Initialize(AudioClientShareMode.Shared, flags, 1_000_000, 0, waveFormat, Guid.Empty));
             audioClient.SetEventHandle(_packetReady.SafeWaitHandle.DangerousGetHandle());
             captureClient = audioClient.AudioCaptureClient;
             long? positionFrequency = null;
@@ -46,6 +49,7 @@ internal sealed class TimestampedWasapiCapture : IDisposable
             WaveFormat = waveFormat;
             AudioClockFrequency = positionFrequency;
             AudioClockFrequencyError = positionFrequencyError;
+            _isMicrophone = !loopback;
             _thread = new Thread(CaptureLoop) { IsBackground = true, Name = "FrameTrail WASAPI timestamped capture" };
         }
         catch
@@ -65,7 +69,7 @@ internal sealed class TimestampedWasapiCapture : IDisposable
 
     internal void StartRecording()
     {
-        _audioClient.Start();
+        MicrophoneAccessDeniedMapper.Invoke(_isMicrophone, _audioClient.Start);
         _clientStarted = true;
         try { _thread.Start(); }
         catch

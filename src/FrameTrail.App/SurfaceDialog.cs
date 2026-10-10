@@ -9,7 +9,8 @@ namespace FrameTrail.App;
 internal static class SurfaceDialog
 {
     public static MessageBoxResult Show(Window owner, string message, string title,
-        MessageBoxButton buttons = MessageBoxButton.OK, MessageBoxImage image = MessageBoxImage.None)
+        MessageBoxButton buttons = MessageBoxButton.OK, MessageBoxImage image = MessageBoxImage.None,
+        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false)
     {
         ArgumentNullException.ThrowIfNull(owner);
         var result = buttons switch
@@ -18,6 +19,17 @@ internal static class SurfaceDialog
             MessageBoxButton.OK => MessageBoxResult.OK,
             _ => MessageBoxResult.Cancel
         };
+        var window = Create(owner, message, title, buttons, value => result = value,
+            acceptLabel, cancelLabel, preferCancel);
+        window.ShowDialog();
+        return result;
+    }
+
+    internal static Window Create(Window? owner, string message, string title,
+        MessageBoxButton buttons, Action<MessageBoxResult> completed,
+        string? acceptLabel = null, string? cancelLabel = null, bool preferCancel = false)
+    {
+        ArgumentNullException.ThrowIfNull(completed);
         var window = new Window
         {
             Title = title, Width = 480, MinWidth = 360,
@@ -36,7 +48,7 @@ internal static class SurfaceDialog
         AutomationProperties.SetName(text, message);
         content.Children.Add(new ScrollViewer
         {
-            Content = text, MaxHeight = Math.Max(100, Math.Min(520, SurfaceWindow.WorkArea(owner).Height - 200)),
+            Content = text, MaxHeight = Math.Max(100, Math.Min(520, SurfaceWindow.WorkArea(owner ?? window).Height - 200)),
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
         });
@@ -46,7 +58,7 @@ internal static class SurfaceDialog
             var isDefault = buttons switch
             {
                 MessageBoxButton.OK => value == MessageBoxResult.OK,
-                MessageBoxButton.OKCancel => value == MessageBoxResult.OK,
+                MessageBoxButton.OKCancel => preferCancel ? cancel : value == MessageBoxResult.OK,
                 MessageBoxButton.YesNo or MessageBoxButton.YesNoCancel => value == MessageBoxResult.No,
                 _ => cancel
             };
@@ -56,9 +68,9 @@ internal static class SurfaceDialog
                 Padding = new Thickness(16, 10, 16, 10), IsCancel = cancel,
                 IsDefault = isDefault
             };
-            if (primary) button.Style = owner.TryFindResource("PrimaryButton") as Style;
+            if (primary) button.Style = (owner ?? window).TryFindResource("PrimaryButton") as Style;
             AutomationProperties.SetAutomationId(button, "Dialog" + value);
-            button.Click += (_, _) => { result = value; window.Close(); };
+            button.Click += (_, _) => { completed(value); window.Close(); };
             actions.Children.Add(button);
             return button;
         }
@@ -76,8 +88,9 @@ internal static class SurfaceDialog
                 AddButton("是", MessageBoxResult.Yes, true, false);
                 break;
             case MessageBoxButton.OKCancel:
-                AddButton("取消", MessageBoxResult.Cancel, false, true);
-                initialFocus = AddButton("确定", MessageBoxResult.OK, true, false);
+                var cancelButton = AddButton(cancelLabel ?? "取消", MessageBoxResult.Cancel, false, true);
+                var acceptButton = AddButton(acceptLabel ?? "确定", MessageBoxResult.OK, true, false);
+                initialFocus = preferCancel ? cancelButton : acceptButton;
                 break;
             default:
                 initialFocus = AddButton("确定", MessageBoxResult.OK, true, false);
@@ -85,7 +98,6 @@ internal static class SurfaceDialog
         }
         window.Content = SurfaceWindow.WrapContent(window, content, title);
         window.ContentRendered += (_, _) => Keyboard.Focus(initialFocus);
-        window.ShowDialog();
-        return result;
+        return window;
     }
 }
