@@ -42,7 +42,9 @@ var progressPath = Path.ChangeExtension(reportPath, ".progress.log");
 File.WriteAllText(progressPath, $"UIA 开始 {DateTimeOffset.Now:O}{Environment.NewLine}");
 SmokeProgress.Path = progressPath;
 InteractiveDesktopGuard.Initialize(consented: true, progressPath);
-var testRoot = args.Contains("--relink-only") || args.Contains("--relink-aux-only") || args.Contains("--relink-aux-external-input")
+var testRoot = args.Contains("--png-overlay-undo-only", StringComparer.Ordinal)
+    ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "png-overlay-undo-" + Guid.NewGuid().ToString("N"))
+    : args.Contains("--relink-only") || args.Contains("--relink-aux-only") || args.Contains("--relink-aux-external-input")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-relink-fixture-audit-" + Guid.NewGuid().ToString("N"))
     : args.Contains("--effects-only")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-effect-fixture-audit-" + Guid.NewGuid().ToString("N"))
@@ -73,6 +75,22 @@ try
     WriteUserDataSnapshot(userDataSnapshotPath, userDataSnapshots);
     SmokeProgress.AppendMessage($"用户数据恢复快照已保存：{userDataSnapshotPath}");
     CopyDirectory(Path.GetDirectoryName(sourceProject)!, projectCopy);
+    if (args.Contains("--png-overlay-undo-only", StringComparer.Ordinal))
+    {
+        var pngPath = Path.Combine(testRoot, "input-overlay.png");
+        var diagnosticPath = Path.Combine(testRoot, "png-overlay-undo-result.json");
+        var run = await PngOverlayUndoSmoke.RunAsync(
+            appPath, projectCopyFile, pngPath, diagnosticPath,
+            (process, timeout) => WaitForWindow(process, timeout),
+            (window, hint) => FindButtonByHint(window, hint),
+            TryInvoke,
+            FocusWindow,
+            window => InteractiveDesktopGuard.ActivateTargetOnceAtStartup((IntPtr)window.Current.NativeWindowHandle),
+            progress => SmokeProgress.AppendMessage(progress));
+        AddResult(new("真实 PNG 贴图导入、撤销重做及重开", run.Passed, run.Detail));
+        if (!run.Passed) SmokeProgress.MarkIncomplete(run.Detail);
+        throw new SmokeEarlyExitException();
+    }
     if (args.Contains("--relink-only"))
     {
         RunRelinkOnly(appPath, sourceProject, projectCopyFile, results);
@@ -767,7 +785,7 @@ finally
     }, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"UIA_REPORT={reportPath}");
     foreach (var result in results) Console.WriteLine($"{(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}");
-        if (userDataRestored && cleanupErrors.Count == 0 && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only") && !args.Contains("--relink-aux-only") && !args.Contains("--relink-aux-external-input")) try { Directory.Delete(testRoot, true); } catch { }
+        if (userDataRestored && cleanupErrors.Count == 0 && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only") && !args.Contains("--relink-aux-only") && !args.Contains("--relink-aux-external-input") && !args.Contains("--png-overlay-undo-only")) try { Directory.Delete(testRoot, true); } catch { }
 }
 return results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）") ? 1
     : results.Count == 0 || !SmokeProgress.IsComplete || InteractiveDesktopGuard.IsAborted ? 2 : 0;

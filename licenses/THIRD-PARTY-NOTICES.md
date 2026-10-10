@@ -13,9 +13,8 @@ FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随�
 | Vortice.D3DCompiler | 3.8.3 | MIT | shader 编译绑定；[NuGet 包](https://www.nuget.org/packages/Vortice.D3DCompiler/3.8.3)，同属 Vortice.Windows 仓库。 |
 | Vortice.DXGI / Vortice.DirectX | 3.8.3 | MIT | Vortice 的传递依赖，运行时包由锁文件确认。 |
 | Vortice.Mathematics | 2.1.0 | MIT | Vortice 的传递依赖，运行时包由锁文件确认。 |
-| SharpGen.Runtime / SharpGen.Runtime.COM | 2.4.2-beta | MIT | Vortice 的传递依赖；NuGet 包声明 MIT。 |
-| System.Text.Json / System.IO.Pipelines / System.Text.Encodings.Web | 9.0.1 | MIT | SharpGen 传递依赖；Microsoft .NET 包。 |
-| .NET 10 Runtime / Windows Desktop Runtime assets | 随 .NET 10 SDK 发布 | MIT 及各自第三方声明 | 自包含发布随应用目录一起发行；以 `dotnet publish` 输出中的 `LICENSE.txt` 和 `ThirdPartyNotices.txt` 为准。发行时应使用当前受支持的 .NET 10 补丁版 SDK 重建。 |
+| SharpGen.Runtime / SharpGen.Runtime.COM | 2.4.2-beta | MIT | Vortice 的传递依赖；两个 NuGet 包均指向 SharpGenTools/SharpGenTools 提交 `6990bcafe124a4c22515ad19cee5a081da8db67b`。完整许可见 [`SharpGenTools-MIT-6990bcafe124a4c22515ad19cee5a081da8db67b.txt`](SharpGenTools-MIT-6990bcafe124a4c22515ad19cee5a081da8db67b.txt)，来源及哈希见 [`Microsoft-NET10.0.12-SOURCE.md`](Microsoft-NET10.0.12-SOURCE.md)。 |
+| .NET 10 Runtime / Windows Desktop Runtime | `Microsoft.NETCore.App 10.0.12`、`Microsoft.WindowsDesktop.App 10.0.12` | MIT 与 Runtime 第三方声明 | 以 0.2.5 `FrameTrail.runtimeconfig.json` 为准。对应许可及哈希见 [`Microsoft-NET10.0.12-SOURCE.md`](Microsoft-NET10.0.12-SOURCE.md) 和同目录 `Microsoft.NETCore.App-Runtime-10.0.12-*`、`Microsoft.WindowsDesktop.App-Runtime-10.0.12-LICENSE.txt`。`System.IO.Pipelines.dll`、`System.Text.Encodings.Web.dll`、`System.Text.Json.dll` 来自该 .NET Runtime 10.0.12 框架，不是本版本单独锁定的 9.0.1 NuGet 包。 |
 | Microsoft Visual C++ 2015–2022 Redistributable (x64) | 系统预装组件 | Microsoft 许可条款 | ScreenRecorderLib 的运行依赖。本安装包不捆绑、不安装、不更新它；用户从[微软官方页面](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)自行获取。 |
 | FFmpeg（Gyan Windows full static build） | 8.1.1，FFmpeg commit `239f2c733d` | GPLv3 build | 仅本机验证包。随发布候选包的许可证和源代码准备见 [`FFmpeg-GPLv3.txt`](FFmpeg-GPLv3.txt)、[`FFmpeg-CORRESPONDING-SOURCE.md`](FFmpeg-CORRESPONDING-SOURCE.md) 与 [`../scripts/fetch-ffmpeg-corresponding-source.ps1`](../scripts/fetch-ffmpeg-corresponding-source.ps1)。公开发布仍须确认完整对应源代码覆盖和 GPL 合规。 |
 

@@ -35,6 +35,8 @@ internal static class AuxiliaryRelinkSmoke
             if (!validCandidate) throw new InvalidDataException($"候选素材类型/解码不符合预期：{asset.Key}，type={asset.Type}，path={asset.CandidatePath}，SHA256={asset.ExpectedHash}");
         }
         PrepareProject(assets);
+        checks.Add(new("重链接导出音频夹具配置", true,
+            "mainAudioMuted=false；mainAudioVolume=1；两条独立AudioTrack均volume=1/muted=false；timeline中每段audioOverrides=null。"));
 
         Process? relinked = null;
         try
@@ -71,13 +73,18 @@ internal static class AuxiliaryRelinkSmoke
                         ? "未等待到文件模态 HWND 自然成为前台；没有发送文件选择输入。"
                         : "首次文件模态 HWND 未通过守卫的一次性前台激活；没有发送文件选择输入。");
                 }
+                var dialogTitleSnapshot = Safe(() => dialog.Current.Name);
                 var selected = SelectPath(dialog, dialogHandle, asset.CandidatePath, sendKey, out var dialogDetails);
-                if (!selected) throw new InvalidOperationException("无法在缺失辅助素材对话框中选择候选文件：" + titlePart + "; " + dialogDetails);
+                if (!selected)
+                {
+                    var screenshot = SaveFailureScreenshot(dialog, reportPath, asset.Key);
+                    throw new InvalidOperationException("无法在缺失辅助素材对话框中选择候选文件：" + titlePart + "; " + dialogDetails + "; screenshot=" + screenshot);
+                }
                 var copiedPathForAsset = await WaitForRelocatedCopyAsync(Path.GetDirectoryName(isolatedProject)!, asset, ffmpeg, TimeSpan.FromSeconds(60));
                 if (copiedPathForAsset is null)
                     throw new TimeoutException($"选择操作后没有生成与候选一致且可解码的工程副本：key={asset.Key}，candidate={asset.CandidatePath}，SHA256={asset.ExpectedHash}，当前媒体文件={DescribeRelocatedFiles(Path.GetDirectoryName(isolatedProject)!)}；选择诊断={dialogDetails}；当前前台={DescribeForegroundWindow()}");
                 checks.Add(new("选择缺失辅助素材 " + asset.Key, true,
-                    $"dialogTitle={Safe(() => dialog.Current.Name)}，candidate={asset.CandidatePath}，expectedType={asset.Type}，SHA256={asset.ExpectedHash}，copied={copiedPathForAsset}，selection={dialogDetails}。"));
+                    $"dialogTitle={dialogTitleSnapshot}，candidate={asset.CandidatePath}，expectedType={asset.Type}，SHA256={asset.ExpectedHash}，copied={copiedPathForAsset}，selection={dialogDetails}。"));
                 progress($"素材副本通过：key={asset.Key}；candidate={asset.CandidatePath}；copied={copiedPathForAsset}；SHA256={asset.ExpectedHash}；FFmpeg解码通过。");
             }
             var main = await WaitForWindowAsync(relinked.Id, TimeSpan.FromSeconds(30));
@@ -186,7 +193,10 @@ internal static class AuxiliaryRelinkSmoke
                 AudioJson(inputAssets.Single(x => x.Key == "systemAudio").MissingRelative, "system"),
                 AudioJson(inputAssets.Single(x => x.Key == "microphoneAudio").MissingRelative, "microphone"));
             var settings = document["settings"]?.AsObject() ?? throw new InvalidDataException("测试工程缺少settings。");
-            settings["mainAudioMuted"] = true;
+            settings["mainAudioMuted"] = false;
+            settings["mainAudioVolume"] = 1.0;
+            if (document["timeline"]?["segments"] is JsonArray timelineSegments)
+                foreach (var segment in timelineSegments.OfType<JsonObject>()) segment["audioOverrides"] = null;
             var background = settings["backgroundStyle"]?.AsObject() ?? throw new InvalidDataException("测试工程缺少backgroundStyle。");
             background["kind"] = "image";
             background["imagePath"] = inputAssets.Single(x => x.Key == "background").MissingRelative;
@@ -291,43 +301,59 @@ internal static class AuxiliaryRelinkSmoke
         catch (Exception ex) { return ex.GetType().Name; }
     }
 
-    private static bool SelectPath(AutomationElement dialog, IntPtr dialogHandle, string path, Action<byte, bool> sendKey, out string details)
+    internal static bool SelectPath(AutomationElement dialog, IntPtr dialogHandle, string path, Action<byte, bool> sendKey, out string details)
     {
         try
         {
             var edits = dialog.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit)).Cast<AutomationElement>().ToArray();
-            var field = edits.FirstOrDefault(x => Safe(() => x.Current.AutomationId) == "1148") ?? edits.FirstOrDefault();
-            if (field is null) { details = "filename edit missing"; return false; }
+            var field = edits.SingleOrDefault(x => Safe(() => x.Current.AutomationId) == "1148");
+            if (field is null) { details = "filename edit AutomationId=1148 missing; edits=" + DescribeEdits(edits); return false; }
+            var fieldId = Safe(() => field.Current.AutomationId);
+            var fieldName = Safe(() => field.Current.Name);
+            var fieldClass = Safe(() => field.Current.ClassName);
+            if (Safe(() => field.Current.ControlType) != ControlType.Edit)
+            { details = $"filename target is not Edit; id={fieldId}; name={fieldName}; class={fieldClass}"; return false; }
             if (!BeforeDialogInput(dialogHandle, "辅助素材重链接文件名焦点")) { details = "foreground dialog guard refused before SetFocus"; return false; }
             field.SetFocus();
             var focusedElement = Safe(() => AutomationElement.FocusedElement);
-            var fieldId = Safe(() => field.Current.AutomationId);
             var focusedElementId = Safe(() => focusedElement?.Current.AutomationId);
             var focusMatches = Safe(() => field.Current.HasKeyboardFocus)
                 && Safe(() => focusedElement?.Current.ProcessId) == Safe(() => dialog.Current.ProcessId)
                 && (fieldId == focusedElementId || fieldId == "1148" && focusedElementId == "1148");
             if (!focusMatches) { details = $"filename focus mismatch; fieldId={fieldId}; focusedId={focusedElementId}; Open has no action yet"; return false; }
-            if (!BeforeDialogInput(dialogHandle, "辅助素材重链接文件选择")) { details = "foreground dialog guard refused before SetValue"; return false; }
-            var valuePattern = (ValuePattern)field.GetCurrentPattern(ValuePattern.Pattern);
-            valuePattern.SetValue(path);
-            Thread.Sleep(100);
-            var valueMatches = Safe(() => valuePattern.Current.Value) == path;
-            if (!valueMatches) { details = $"filename value mismatch before invoke; expected={path}; actual={Safe(() => valuePattern.Current.Value)}"; return false; }
-            var buttons = dialog.FindAll(TreeScope.Descendants, Condition.TrueCondition).Cast<AutomationElement>().ToArray();
-            var open = buttons.FirstOrDefault(x => Safe(() => x.Current.AutomationId) == "1" && SupportsInvoke(x))
-                ?? buttons.FirstOrDefault(x => (Safe(() => x.Current.Name).Contains("打开", StringComparison.OrdinalIgnoreCase)
-                    || Safe(() => x.Current.Name).Equals("Open", StringComparison.OrdinalIgnoreCase)) && SupportsInvoke(x));
-            if (open is not null)
+            if (!BeforeDialogInput(dialogHandle, "辅助素材重链接全选")) { details = "foreground dialog guard refused before Ctrl+A"; return false; }
+            sendKey(0x41, true);
+            foreach (var character in path)
             {
-                if (!BeforeDialogInput(dialogHandle, "辅助素材重链接打开")) { details = "foreground dialog guard refused"; return false; }
-                ((InvokePattern)open.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
-                details = $"filenameValueMatchedBeforeInvoke=true; value={path}; openInvoked=true; pattern=InvokePattern";
-                return true;
+                if (!BeforeDialogInput(dialogHandle, "辅助素材重链接键入路径") || !InteractiveDesktopGuard.SendUnicodeText(character.ToString()))
+                { details = $"guarded Unicode typing failed; id={fieldId}; name={fieldName}; class={fieldClass}"; return false; }
+                Thread.Sleep(5);
             }
-            if (Safe(() => valuePattern.Current.Value) != path) { details = "filename value changed before Enter"; return false; }
+            var valuePattern = (ValuePattern)field.GetCurrentPattern(ValuePattern.Pattern);
+            var readbacks = new List<string>();
+            var readbackWatch = Stopwatch.StartNew();
+            string actualValue = "";
+            var valueMatches = false;
+            while (readbackWatch.Elapsed <= TimeSpan.FromSeconds(5))
+            {
+                actualValue = Safe(() => valuePattern.Current.Value) ?? "";
+                var focused = Safe(() => AutomationElement.FocusedElement);
+                var focusedDescription = focused is null ? "<none>" :
+                    $"id={Safe(() => focused.Current.AutomationId)},name={Safe(() => focused.Current.Name)},class={Safe(() => focused.Current.ClassName)}";
+                readbacks.Add($"{readbackWatch.ElapsedMilliseconds}ms value=<{actualValue}> focus=<{focusedDescription}>");
+                if (actualValue == path) { valueMatches = true; break; }
+                Thread.Sleep(100);
+            }
+            if (!valueMatches)
+            {
+                details = $"filename value mismatch before Enter; expected=<{path}>; actual=<{actualValue}>; field=id={fieldId},name={fieldName},class={fieldClass}; edits={DescribeEdits(edits)}; readbackSequence=[{string.Join(" | ", readbacks)}]";
+                return false;
+            }
             if (!BeforeDialogInput(dialogHandle, "辅助素材重链接Enter")) { details = "foreground dialog guard refused before Enter"; return false; }
+            var dialogTitleSnapshot = Safe(() => dialog.Current.Name);
+            var editSnapshot = DescribeEdits(edits);
             sendKey(0x0D, false);
-            details = $"filenameValueMatchedBeforeInvoke=true; value={path}; openInvoked=false; method=guarded-Enter; focusedFilename=true";
+            details = $"filenameValueMatchedBeforeEnter=true; method=guarded-Unicode-typing+Enter; value={path}; dialogTitle={dialogTitleSnapshot}; id={fieldId}; name={fieldName}; class={fieldClass}; edits={editSnapshot}";
             return true;
         }
         catch (Exception ex) { details = ex.GetType().Name + ":" + ex.Message; return false; }
@@ -335,6 +361,27 @@ internal static class AuxiliaryRelinkSmoke
 
     private static bool BeforeDialogInput(IntPtr expectedDialog, string operation) =>
         expectedDialog != IntPtr.Zero && GetForegroundWindow() == expectedDialog && InteractiveDesktopGuard.BeforeInput(operation);
+
+    private static string DescribeEdits(IEnumerable<AutomationElement> edits) => string.Join(" | ", edits.Select(x =>
+        $"id={Safe(() => x.Current.AutomationId)},name={Safe(() => x.Current.Name)},class={Safe(() => x.Current.ClassName)}"));
+
+    private static string SaveFailureScreenshot(AutomationElement dialog, string reportPath, string key)
+    {
+        var screenshotPath = Path.Combine(Path.GetDirectoryName(reportPath)!, $"aux-relink-{key}-failure.png");
+        try
+        {
+            var method = typeof(AuxiliaryRelinkSmoke).Assembly.GetTypes()
+                .SelectMany(type => type.GetMethods(System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+                .FirstOrDefault(candidate => candidate.Name.Contains("CaptureWindow", StringComparison.Ordinal)
+                    && candidate.GetParameters() is var parameters && parameters.Length == 2
+                    && parameters[0].ParameterType == typeof(AutomationElement)
+                    && parameters[1].ParameterType == typeof(string));
+            if (method is null) return "<existing CaptureWindow helper not found>";
+            method.Invoke(null, [dialog, screenshotPath]);
+            return File.Exists(screenshotPath) ? screenshotPath : "<CaptureWindow helper did not create file>";
+        }
+        catch (Exception ex) { return $"<screenshot failed: {ex.GetType().Name}: {ex.Message}>"; }
+    }
 
     private static async Task<AutomationElement?> WaitForForegroundDialogAsync(int processId, string title, TimeSpan timeout)
     {
@@ -408,12 +455,6 @@ internal static class AuxiliaryRelinkSmoke
             await Task.Delay(100);
         }
         return null;
-    }
-
-    private static bool SupportsInvoke(AutomationElement element)
-    {
-        try { return element.TryGetCurrentPattern(InvokePattern.Pattern, out _); }
-        catch { return false; }
     }
 
     private static async Task<(bool Passed, string Detail)> WaitForFrameTrailVisualReadyAsync(AutomationElement mainWindow, TimeSpan timeout)

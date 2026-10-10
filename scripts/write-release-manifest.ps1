@@ -16,7 +16,7 @@ if ($Candidate) {
 }
 $requiredChecks = @('portable-archive-content')
 if (-not $Candidate) {
-    $requiredChecks += @('preferences-snapshot', 'portable-playback', 'portable-workflow', 'installed-playback', 'installed-uninstall', 'preferences-restored')
+    $requiredChecks += @('preferences-snapshot', 'portable-playback', 'portable-workflow', 'installed-playback', 'installed-uninstall', 'preferences-restored', 'portable-archive-unchanged')
 }
 foreach ($id in $requiredChecks) {
     $matches = @($package.Checks | Where-Object Id -eq $id)
@@ -52,8 +52,9 @@ $manifest = [ordered]@{
     status=$(if ($Candidate) { 'candidate-awaiting-interactive-validation' } else { 'validated-local-delivery' })
     frameTrailCommit=$head; upstreamDogScCommit=$source.sourceMetadata.upstreamDogScCommit
     packageValidationScope=$package.Scope; packageValidatedUtc=$package.CompletedUtc; sourceValidatedUtc=$source.completedUtc
+    packageValidationCheckIds=@($package.Checks | ForEach-Object Id)
     artifacts=$entries
-    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头与多显示器矩阵未验收；麦克风已有含暂停的实采证据，物理拔插及多设备同时录制尚未覆盖。','采集与音画同步的局部测试不替代完整发行包工作流；具体样本、数值及版本边界见docs/capture-validation.md。','窗口首帧补丁已通过静态/动态对照及遮挡、移动、缩放、关闭回归；其他驱动和多显示器仍需覆盖。','浅深主题与浮层已有局部实机证据；完整同包视觉、100%/200% DPI与系统高对比模式尚未验收。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
+    limitations=@('本机Windows 11 x64验证，不等同于干净虚拟机。','原Mac真实工程、物理摄像头与多显示器矩阵未验收；麦克风已有含暂停的实采证据，物理拔插及多设备同时录制尚未覆盖。','采集与音画同步的局部测试不替代完整发行包工作流；具体样本、数值及版本边界见docs/capture-validation.md。','窗口首帧补丁已通过静态/动态对照及遮挡、移动、缩放、关闭回归；其他驱动和多显示器仍需覆盖。','DPI、浅深主题与浮层的同包实机证据及人工审阅范围见docs/validation-report.md；混合DPI、多显示器和系统高对比模式尚未验收。','未签名，FFmpeg静态依赖的完整公开分发材料仍待核实。')
 }
 if ($Candidate) { $manifest.limitations += '当前候选仅完成后台包内容检查；最终全量UIA、发行包实际播放录制和安装卸载待主机交互时段验证。' }
 $manifestJson = $manifest | ConvertTo-Json -Depth 6

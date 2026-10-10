@@ -18,6 +18,7 @@ internal static class InteractiveDesktopGuard
     private static readonly HashSet<uint> PressedMouseButtons = [];
     private static Func<uint>? _foregroundPidOverride;
     private static Action<byte, byte, uint>? _keySinkOverride;
+    private static Func<NativeInput[], uint>? _sendInputOverride;
     private static Action<uint>? _mouseSinkOverride;
 
     public static bool HasExplicitConsent(string[] args) =>
@@ -246,6 +247,38 @@ internal static class InteractiveDesktopGuard
         }
     }
 
+    public static bool SendUnicodeText(string text)
+    {
+        lock (Gate)
+        {
+            foreach (var character in text)
+            {
+                if (!BeforeInputLocked("Unicode text input")) return false;
+                var events = CreateUnicodeInputPair(character);
+                var inserted = _sendInputOverride?.Invoke(events) ?? SendInputNative((uint)events.Length, events, Marshal.SizeOf<NativeInput>());
+                if (inserted != events.Length)
+                {
+                    uint releaseInserted = 0;
+                    var releaseAttempted = inserted > 0;
+                    if (releaseAttempted)
+                    {
+                        var keyUp = new[] { events[1] };
+                        releaseInserted = _sendInputOverride?.Invoke(keyUp) ?? SendInputNative(1, keyUp, Marshal.SizeOf<NativeInput>());
+                    }
+                    AbortLocked($"SendInput Unicode 注入不完整：char=U+{(int)character:X4}，已插入={inserted}/{events.Length}，keyUpAttempted={releaseAttempted}，keyUpInserted={releaseInserted}/1，Win32Error={Marshal.GetLastWin32Error()}；后续输入已停止。");
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private static NativeInput[] CreateUnicodeInputPair(char character) =>
+    [
+        new() { Type = InputKeyboard, Data = new InputUnion { Keyboard = new NativeKeyboardInput { VirtualKey = 0, ScanCode = character, Flags = KeyUnicode } } },
+        new() { Type = InputKeyboard, Data = new InputUnion { Keyboard = new NativeKeyboardInput { VirtualKey = 0, ScanCode = character, Flags = KeyUnicode | KeyUp } } }
+    ];
+
     public static bool SendMouseEvent(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo)
     {
         lock (Gate)
@@ -280,9 +313,16 @@ internal static class InteractiveDesktopGuard
         var secondOwnedPidActivationAllowed = TryBeginStartupActivationForProbe(5678);
         var unownedPidActivationRejected = !TryBeginStartupActivationForProbe(9999);
         var outputs = new List<string>();
+        var unicodeOutputs = new List<string>();
         uint foreground = 1234;
         _foregroundPidOverride = () => foreground;
         _keySinkOverride = (key, _, flags) => outputs.Add($"key:{key}:{flags}");
+        _sendInputOverride = events =>
+        {
+            foreach (var input in events)
+                unicodeOutputs.Add($"{input.Data.Keyboard.ScanCode}:{input.Data.Keyboard.Flags}");
+            return (uint)events.Length;
+        };
         _mouseSinkOverride = flags => outputs.Add($"mouse:{flags}");
         Initialize(consented: false, string.Empty);
         BindTargetProcess(1234);
@@ -293,6 +333,35 @@ internal static class InteractiveDesktopGuard
         foreground = 5678;
         var rejectedNextKeyDown = !SendKeyEvent(66, 48, 0, UIntPtr.Zero);
         var keyReleased = outputs.Contains("key:65:2") && !outputs.Contains("key:66:0");
+
+        outputs.Clear();
+        foreground = 1234;
+        Initialize(consented: true, string.Empty);
+        BindTargetProcess(1234);
+        const string unicodeProbePath = "C:\\中.wav";
+        var acceptedUnicodeText = SendUnicodeText(unicodeProbePath);
+        var unicodeEventsPaired = unicodeOutputs.Count == unicodeProbePath.Length * 2
+            && unicodeOutputs.Where((_, index) => index % 2 == 0).All(value => value.EndsWith(":4", StringComparison.Ordinal))
+            && unicodeOutputs.Where((_, index) => index % 2 == 1).All(value => value.EndsWith(":6", StringComparison.Ordinal))
+            && unicodeOutputs.Any(value => value == $"{(int)'中'}:4")
+            && Marshal.SizeOf<NativeInput>() == (IntPtr.Size == 8 ? 40 : 28);
+        foreground = 5678;
+        var sentUnicodeCount = unicodeOutputs.Count;
+        var rejectedUnicodeText = !SendUnicodeText("C:\\b.wav") && unicodeOutputs.Count == sentUnicodeCount;
+
+        var partialEvents = new List<string>();
+        foreground = 1234;
+        Initialize(consented: true, string.Empty);
+        BindTargetProcess(1234);
+        _sendInputOverride = events =>
+        {
+            var inserted = events.Length == 2 ? 1 : events.Length;
+            partialEvents.AddRange(events.Take(inserted).Select(input => $"{input.Data.Keyboard.ScanCode}:{input.Data.Keyboard.Flags}"));
+            return (uint)inserted;
+        };
+        var partialRejected = !SendUnicodeText("AB") && IsAborted;
+        var partialKeyUpAttempted = partialEvents.SequenceEqual(["65:4", "65:6"]);
+        var partialStopsFollowingCharacters = partialEvents.All(value => !value.StartsWith("66:", StringComparison.Ordinal));
 
         outputs.Clear();
         foreground = 1234;
@@ -324,11 +393,14 @@ internal static class InteractiveDesktopGuard
         var normalCompletionReleased = heldKey && outputs.Contains("key:65:2");
         _foregroundPidOverride = null;
         _keySinkOverride = null;
+        _sendInputOverride = null;
         _mouseSinkOverride = null;
         return noConsent && explicitConsent && sameProcess && differentProcess && noTarget
             && firstActivationAllowed && samePidActivationRejected && secondOwnedPidActivationAllowed && unownedPidActivationRejected
             && noConsentRejected
             && acceptedKeyDown && rejectedNextKeyDown && keyReleased
+            && acceptedUnicodeText && unicodeEventsPaired && rejectedUnicodeText
+            && partialRejected && partialKeyUpAttempted && partialStopsFollowingCharacters
             && acceptedMouseDown && rejectedNextMouseAction && mouseReleased
             && ownedMismatchDoesNotAbort && ownedTransitionAllowed && ownedTargetAccepted && unrelatedForegroundRejected
             && normalCompletionReleased;
@@ -476,6 +548,8 @@ internal static class InteractiveDesktopGuard
     private const uint GwOwner = 4;
     private const int SwRestore = 9;
     private const uint KeyUp = 2;
+    private const uint KeyUnicode = 4;
+    private const uint InputKeyboard = 1;
     private const uint LeftDown = 0x0002;
     private const uint LeftUp = 0x0004;
     private const uint RightDown = 0x0008;
@@ -490,6 +564,50 @@ internal static class InteractiveDesktopGuard
         [LeftDown] = LeftUp, [RightDown] = RightUp, [MiddleDown] = MiddleUp, [XDown] = XUp
     };
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeInput
+    {
+        public uint Type;
+        public InputUnion Data;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public NativeMouseInput Mouse;
+        [FieldOffset(0)] public NativeKeyboardInput Keyboard;
+        [FieldOffset(0)] public NativeHardwareInput Hardware;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeMouseInput
+    {
+        public int Dx;
+        public int Dy;
+        public uint MouseData;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeKeyboardInput
+    {
+        public ushort VirtualKey;
+        public ushort ScanCode;
+        public uint Flags;
+        public uint Time;
+        public UIntPtr ExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeHardwareInput
+    {
+        public uint Message;
+        public ushort ParameterLow;
+        public ushort ParameterHigh;
+    }
+
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll", EntryPoint = "SetForegroundWindow")] private static extern bool SetForegroundWindowNative(IntPtr hWnd);
     [DllImport("user32.dll", EntryPoint = "ShowWindow")] private static extern bool ShowWindowNative(IntPtr hWnd, int command);
@@ -498,5 +616,7 @@ internal static class InteractiveDesktopGuard
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint command);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll", EntryPoint = "keybd_event")] private static extern void KeybdEventNative(byte virtualKey, byte scanCode, uint flags, UIntPtr extraInfo);
+    [DllImport("user32.dll", EntryPoint = "SendInput", SetLastError = true)]
+    private static extern uint SendInputNative(uint inputCount, [In] NativeInput[] inputs, int inputSize);
     [DllImport("user32.dll", EntryPoint = "mouse_event")] private static extern void MouseEventNative(uint flags, uint dx, uint dy, uint data, UIntPtr extraInfo);
 }

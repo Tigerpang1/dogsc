@@ -14,6 +14,7 @@ $preferenceSnapshotId = [guid]::NewGuid().ToString('N')
 $preferenceSnapshotPath = Join-Path $validation "user-preferences-$preferenceSnapshotId.json"
 $preferenceSnapshotCreated = $false
 $preferenceRestoreFailed = $false
+$portableArchiveBaselineVerified = $false
 $report = [ordered]@{ Version=$Version; Scope=$(if ($ContentOnly) { 'content-only' } elseif ($SkipInstallation) { 'portable-only' } else { 'interactive-package' }); StartedUtc=[DateTime]::UtcNow.ToString('O'); Passed=$false; Checks=@(); Limitations=@('本机 Windows 11 x64；不代替没有运行库的干净虚拟机。') }
 if ($ContentOnly) { $report.Limitations += '仅后台检查包内容与哈希，未执行播放、录制或安装卸载，不替代交互运行验收。' }
 else { $report.Limitations += '应用运行验证隔离 PATH 与 DOTNET_ROOT，使用当前真实桌面。' }
@@ -164,6 +165,50 @@ function Assert-PortableArchive([string]$ArchivePath, [string]$DirectoryPath) {
         return $seen.Count
     } finally { $archive.Dispose() }
 }
+function Copy-SampleProjectForPlayback([string]$ProjectPath, [string]$DestinationDirectory) {
+    $sourceDirectory = [IO.Path]::GetFullPath((Split-Path -Parent $ProjectPath))
+    $destination = [IO.Path]::GetFullPath($DestinationDirectory)
+    if (-not [IO.File]::Exists($ProjectPath)) { throw "播放样例工程不存在：$ProjectPath" }
+    if ([IO.Directory]::Exists($destination) -or [IO.File]::Exists($destination)) { throw "播放样例副本目录已存在：$destination" }
+    $sourceItems = @(Get-ChildItem -LiteralPath $sourceDirectory -Force -Recurse)
+    if (@($sourceItems | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 }).Count -gt 0) {
+        throw "播放样例源目录包含重解析点：$sourceDirectory"
+    }
+    $null = New-Item -ItemType Directory -Path $destination
+    foreach ($item in $sourceItems) {
+        $relative = $item.FullName.Substring($sourceDirectory.TrimEnd('\').Length).TrimStart('\')
+        $target = Join-Path $destination $relative
+        if ($item.PSIsContainer) {
+            $null = New-Item -ItemType Directory -Path $target -Force
+        } else {
+            $parent = Split-Path -Parent $target
+            $null = New-Item -ItemType Directory -Path $parent -Force
+            [IO.File]::Copy($item.FullName, $target, $false)
+        }
+    }
+    $copiedItems = @(Get-ChildItem -LiteralPath $destination -Force -Recurse -File)
+    $sourceFiles = @($sourceItems | Where-Object { -not $_.PSIsContainer })
+    if ($copiedItems.Count -ne $sourceFiles.Count) { throw "播放样例副本文件数量不一致：$destination" }
+    foreach ($sourceFile in $sourceFiles) {
+        $relative = $sourceFile.FullName.Substring($sourceDirectory.TrimEnd('\').Length).TrimStart('\')
+        $copyPath = Join-Path $destination $relative
+        if (-not [IO.File]::Exists($copyPath) -or
+            (Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $copyPath -Algorithm SHA256).Hash) {
+            throw "播放样例副本校验失败：$relative"
+        }
+    }
+    return (Join-Path $destination ([IO.Path]::GetFileName($ProjectPath)))
+}
+function Record-PortableArchiveUnchanged([string]$ArchivePath, [string]$DirectoryPath) {
+    try {
+        $fileCount = Assert-PortableArchive $ArchivePath $DirectoryPath
+        $report.Checks += [ordered]@{ Id='portable-archive-unchanged'; Name='整轮包验收结束时发布目录每个文件仍与原始 ZIP 逐字节一致'; Passed=$true; FileCount=$fileCount }
+        return $true
+    } catch {
+        $report.Checks += [ordered]@{ Id='portable-archive-unchanged'; Name='整轮包验收结束时发布目录每个文件仍与原始 ZIP 逐字节一致'; Passed=$false; Error=$_.Exception.ToString() }
+        return $false
+    }
+}
 try {
     if (-not $ContentOnly) {
         $unrestored = @()
@@ -187,6 +232,7 @@ try {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
     $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+    $portableArchiveBaselineVerified = $true
     $expectedSamples = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md') | Sort-Object
     $sampleDirectory = Split-Path -Parent $sample
     $actualSamples = @(Get-ChildItem -LiteralPath $sampleDirectory -Force)
@@ -196,7 +242,8 @@ try {
     $report.Checks += [ordered]@{ Id='portable-archive-content'; Name='主程序、自包含运行库、原创样例与许可证齐备，ZIP逐文件内容一致'; Passed=$true }
     if (-not $ContentOnly) {
     $playback = Join-Path $validation 'portable-playback.json'
-    Run-OwnedProcess $exe @('--open', $sample, '--playback-smoke', $playback) $true
+    $portableSample = Copy-SampleProjectForPlayback $sample (Join-Path $validation "portable-playback-sample-$preferenceSnapshotId")
+    Run-OwnedProcess $exe @('--open', $portableSample, '--playback-smoke', $playback) $true
     Check-Report $playback 'portable-playback' '隔离开发环境后的便携版有声播放与暂停恢复'
     $workflow = Join-Path $validation 'portable-workflow'
     Run-OwnedProcess $exe @('--workflow-smoke', $workflow, '--with-pause', '--with-input-stimulus', '--record-seconds', '6') $true
@@ -204,20 +251,21 @@ try {
     if (-not $SkipInstallation) {
         $registry = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{9EB9A39E-9EF9-4E70-9D2B-E081ECBC1A68}_is1'
         if (Test-Path -LiteralPath $registry) { throw '存在已安装的 FrameTrail；为保留用户安装，本次跳过自动覆盖。' }
-        $install = Join-Path $validation 'installed'
+        $install = Join-Path $validation "installed-$preferenceSnapshotId"
         if (Test-Path -LiteralPath $install) { throw "安装验证目录已存在，请使用新的版本或手动检查：$install" }
         $installer = Join-Path $repo "artifacts/release/FrameTrail-Setup-$Version-win-x64.exe"
-        Run-OwnedProcess $installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$install", "/LOG=$(Join-Path $validation 'install.log')") $false 300
+        Run-OwnedProcess $installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$install", "/LOG=$(Join-Path $validation "install-$preferenceSnapshotId.log")") $false 300
         $registration = Get-ItemProperty -LiteralPath $registry
         $registeredPath = [IO.Path]::GetFullPath($registration.InstallLocation).TrimEnd('\')
         if ($registeredPath -ne [IO.Path]::GetFullPath($install).TrimEnd('\')) { throw "安装注册路径不匹配：$registeredPath" }
         $installedExe = Join-Path $install 'FrameTrail.exe'
         $installedSample = Join-Path $install 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
+        $installedPlaybackSample = Copy-SampleProjectForPlayback $installedSample (Join-Path $validation "installed-playback-sample-$preferenceSnapshotId")
         $installedReport = Join-Path $validation 'installed-playback.json'
-        Run-OwnedProcess $installedExe @('--open', $installedSample, '--playback-smoke', $installedReport) $true
+        Run-OwnedProcess $installedExe @('--open', $installedPlaybackSample, '--playback-smoke', $installedReport) $true
         Check-Report $installedReport 'installed-playback' 'per-user 安装版样例打开及有声播放'
         $uninstaller = Join-Path $install 'unins000.exe'
-        Run-OwnedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $validation 'uninstall.log')") $false 300
+        Run-OwnedProcess $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', "/LOG=$(Join-Path $validation "uninstall-$preferenceSnapshotId.log")") $false 300
         if ((Test-Path -LiteralPath $registry) -or (Test-Path -LiteralPath $installedExe)) { throw '卸载后仍残留应用主程序或安装注册项。' }
         $report.Checks += [ordered]@{ Id='installed-uninstall'; Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
@@ -244,7 +292,13 @@ finally {
             $report.Checks += [ordered]@{ Id='preferences-restored'; Name='交互验收后恢复并逐字节核对四个固定用户偏好文件'; Passed=$false; SnapshotId=$preferenceSnapshotId; SnapshotRetained=$true }
         }
     }
+    $portableArchiveUnchanged = $true
+    if ($portableArchiveBaselineVerified) {
+        $portableArchiveUnchanged = Record-PortableArchiveUnchanged (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+        if (-not $portableArchiveUnchanged) { $report.Passed = $false }
+    }
     $report.CompletedUtc = [DateTime]::UtcNow.ToString('O')
     $resultName = if ($ContentOnly) { 'content-result.json' } else { 'result.json' }
     Write-ValidationReport (Join-Path $validation $resultName) $report $preferenceRestoreFailed
+    if (-not $portableArchiveUnchanged) { throw '整轮包验收后发布目录与原始 ZIP 不一致；验证报告已记录失败。' }
 }

@@ -8,3 +8,8 @@
 *.ps1 text eol=lf
 *.json text eol=lf
 *.ico binary
+# Keep the exact upstream bytes referenced by Microsoft-NET10.0.12-SOURCE.md.
+licenses/Microsoft.NETCore.App-Runtime-10.0.12-LICENSE.txt -text whitespace=cr-at-eol
+licenses/Microsoft.NETCore.App-Runtime-10.0.12-THIRD-PARTY-NOTICES.txt -text whitespace=cr-at-eol,-blank-at-eof
+licenses/Microsoft.WindowsDesktop.App-Runtime-10.0.12-LICENSE.txt -text whitespace=cr-at-eol
+licenses/SharpGenTools-MIT-6990bcafe124a4c22515ad19cee5a081da8db67b.txt -text

@@ -3,13 +3,13 @@
 ## 项目参数
 
 - 产品名：FrameTrail（Windows 迁移工程内部代号）
-- 版本：0.2.5（开发候选，包运行与安装卸载验收尚未完成）
+- 版本：0.2.5（本机交互包验收8/8、源码归档验证通过；未公开发布）
 - 目标：.NET 10 WPF、`win-x64`、自包含发布目录
 - 主项目：`src/FrameTrail.App/FrameTrail.App.csproj`
 - 发布目录：`artifacts/release/FrameTrail-0.2.5-win-x64/app`
 - 输出：便携目录、ZIP、per-user Inno Setup 安装程序
 
-应用主程序名为 `FrameTrail.exe`。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`，与应用的工具查找路径一致。
+应用主程序名为 `FrameTrail.exe`。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`，与应用的工具查找路径一致。当前0.2.5包对应源码提交 `e4bfd5ed44deb93272df4d3f52217e3cb8e43420`，固定DogSC上游基线为 `e207d11b111c5e58152238fb64115b2009850547`。便携、安装/卸载和源码ZIP独立构建结果见 `artifacts/release/FrameTrail-0.2.5-manifest.json`；该候选用于本机验收，不表示已公开发布。
 
 ## 构建和测试
 
@@ -27,6 +27,12 @@
 源码验证的PowerShell子进程通过显式参数映射运行，并使用UTF-8记录stdout/stderr；`test-utf8-script.ps1` 验证命名参数、开关、特殊字符文本和失败退出码，不改变调用者的控制台代码页。
 
 独立的 `FrameTrail.App.Smoke` 会操作真实鼠标键盘，必须显式传入 `--interactive-desktop`。启动后每次输入前核对前台属于本次测试应用；用户切走时停止输入并释放测试按住的键和鼠标按钮，结果标记未完成，不反复抢回焦点。Windows 拒绝自动激活时，可加 `--wait-for-foreground`，等待180秒内手动切入测试窗口一次。测试前将四个应用偏好文件的原始状态保存到本次临时目录；异常强停后可用 `FrameTrail.App.Smoke.exe --restore-user-data <测试临时目录>` 恢复，先核对该目录确属需要恢复的测试轮次。
+PNG贴图生命周期专项可使用已授权的交互桌面运行：
+
+命令：
+dotnet run --project tests/FrameTrail.App.Smoke/FrameTrail.App.Smoke.csproj -c Release -- <FrameTrail.exe> <project.frametrail> <report.json> --interactive-desktop --png-overlay-undo-only
+
+该模式、测试源码和回归入口是在冻结的0.2.5源码ZIP提交 e4bfd5ed44deb93272df4d3f52217e3cb8e43420 之后新增；冻结源码ZIP不含此模式，不能用该ZIP重现本次UI证据。
 
 ```powershell
 .\scripts\package.ps1
@@ -37,7 +43,7 @@
 
 便携版和安装版均随附 `samples/FrameTrail-Demo` 原创合成工程与8秒导出样片。每次打包均调用 `scripts/create-sample.ps1` 在全新临时目录生成，只复制八个固定生成物；这一步需要本机可用的 FFmpeg。不会从开发目录收集残留文件，样例不包含用户桌面或原版截图。样例说明见 `sample-project.md`。
 
-`validate-package.ps1` 在隔离 PATH、DOTNET_ROOT 的子进程中打开样例、播放/暂停、实际录制及导出，随后在独立目录执行当前用户安装和卸载。它会使用当前交互桌面，环境变量隔离不隔离鼠标键盘；必须显式传入 `-InteractiveDesktop`，缺少时在启动任何应用或安装程序前停止。若已有 FrameTrail 安装或测试安装目录，会停止而不覆盖。可用 `-SkipInstallation` 只验证便携包；结果在 `artifacts/validation/package-0.2.5/result.json`。
+validate-package.ps1 使用隔离 PATH、DOTNET_ROOT子进程验证便携播放/暂停、真实录制/编辑/重开/导出及per-user安装/卸载。0.2.5最终验收8/8通过，包含交互前偏好快照、ZIP内容、便携播放与工作流、安装版播放、卸载、偏好逐字节恢复和结束时477个发布目录文件与原ZIP逐字节一致。早期7项报告和ContentOnly样例副作用保留为历史，Demo已恢复；最终验收使用隔离播放副本。运行验收须显式传入 -InteractiveDesktop；脚本发现已有FrameTrail安装时会拒绝覆盖。-SkipInstallation只跳过安装阶段，结果范围为portable-only且不能生成完整验收清单。源码ZIP验证调用package.ps1 -WithoutFfmpeg -SkipInstaller，不会安装或更改全局依赖。manifest为validated-local-delivery，源码ZIP验证通过。
 
 源码归档命令（工作区必须已全部提交）：
 
@@ -47,7 +53,7 @@
 .\scripts\write-release-manifest.ps1
 ```
 
-校验清单脚本只有在程序包与源码包的已测SHA256、源码提交均一致时才生成 `DELIVERY-MANIFEST.json` 和 `SHA256SUMS.txt`；同时保留带版本号的 `FrameTrail-0.2.5-manifest.json` 和 `FrameTrail-0.2.5-SHA256SUMS.txt`，便于后续版本交付后继续核对本版。
+校验清单脚本只有在程序包与源码包的已测SHA256、源码提交均一致时才生成 `DELIVERY-MANIFEST.json` 和 `SHA256SUMS.txt`；同时保留带版本号的 `FrameTrail-0.2.5-manifest.json` 和 `FrameTrail-0.2.5-SHA256SUMS.txt`，便于后续版本交付后继续核对本版。0.2.5最终清单已生成。清单状态表示本机Windows 11 x64本地交付验收通过；它不代表干净虚拟机、其他硬件、完整多DPI/多显示器、真实Mac工程或公开发行许可义务已验证。
 
 没有交互桌面时可先生成后台候选：
 
@@ -62,7 +68,7 @@
 
 从源码 ZIP 构建时，上游快照已经包含在 `FrameTrail/upstream/dogsc/`，不需要运行 `git submodule update`。从 Git 克隆仓库时，才需要按仓库说明初始化上游 submodule。源码 ZIP 中没有 `.git` 元数据；`package-source.ps1` 只在发行者重新生成源码 ZIP 时需要 Git。 `package.ps1` 仅当源码目录拥有自己的 Git 元数据且Git根目录匹配时读取提交与上游基线；源码 ZIP 构建读取 `SOURCE-METADATA.json`，即使解压在其他Git仓库内部，也不继承父仓库的提交。无 Git 源码归档路径的验证状态以 `artifacts/validation/package-0.2.5/source-validation.json` 为准。
 
-本机验证版包含 GPLv3 的 Gyan FFmpeg full static build。它可以供本地功能验证使用，生成的 ZIP/安装程序不得直接公开发布。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
+0.2.5本机验证包包含 GPLv3 的 Gyan FFmpeg full static build。当前ZIP和安装程序用于本地功能验证，不得直接公开发布。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
 
 当前源获取脚本精确下载 FFmpeg 本体 commit `239f2c733d`；它还没有抓取 Gyan full build 静态包含的全部第三方库源码、精确版本、补丁及构建脚本。公开发行前需补齐完整对应源代码材料，核对许可证/NOTICE，并由发行负责人确认 GPLv3 义务。公共发布流程目前没有启用。
 

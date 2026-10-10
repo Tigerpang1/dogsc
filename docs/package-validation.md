@@ -1,12 +1,22 @@
-# FrameTrail 0.2.2 本机打包验证
+# FrameTrail 0.2.5 本机包验收
 
-本轮准备 Windows 11 x64 的0.2.2本地候选包。用户当前只允许后台工作，最终全量UIA、发行包实际播放录制和安装卸载尚待交互时段。便携包、per-user 安装程序和源码归档使用同一已提交版本，源码归档要求 Git 工作区干净。每个产物的实际提交、哈希及最后验证结果由包内 `BUILD-INFO.txt`、源码内 `SOURCE-METADATA.json` 和工作区机器可读报告确定；应用编译成功不代替包运行验收。
+0.2.5完整包验收现为8/8通过，结果见 `artifacts/validation/package-0.2.5/result.json`（2026-10-10 04:00:41–04:01:40 UTC）。检查包括交互前偏好快照、ZIP内容核验、便携播放、便携录制/编辑/导出、安装版播放、卸载、偏好逐字节恢复，以及最后对发布目录477个文件与原始ZIP逐字节核对。偏好快照ID为`402fe3a1fbf84680b7ccd668512cdfe1`，恢复检查通过；便携归档未变检查通过。随后生成的manifest状态为`validated-local-delivery`，源码提交`e4bfd5ed44deb93272df4d3f52217e3cb8e43420`、DogSC基线`e207d11b111c5e58152238fb64115b2009850547`及归档SHA见 `artifacts/release/FrameTrail-0.2.5-manifest.json`。
 
-0.2.2 使用 `scripts/validate-package.ps1 -Version 0.2.2 -InteractiveDesktop` 和 `scripts/validate-source-package.ps1 -Version 0.2.2 -SourceZip <ZIP>`。前者需要真实交互桌面，后者可在后台执行。最终结果分别写入 `artifacts/validation/package-0.2.2/result.json` 和 `source-validation.json`，必须分别为 `Passed: true`、`status: passed`，并与发布清单中的包哈希对应。下面的 0.2.0 记录作为已完成的历史基线保留；0.2.1包和源码独立重建也已完成，报告保存在 `package-0.2.1/`。
+旧7项验收及两次ContentOnly失败保留为历史：早期便携工作流曾把发布目录Demo工程`camera.assetAspectRatio`从`null`写成`1.77777`；ZIP和安装器未变，样例已恢复。失败与恢复证据见 `artifacts/validation/package-025-post-ui-content-failure-v1/`。修复版使用隔离播放副本，最终新增检查确认本轮运行后发布目录477个文件仍与原ZIP一致。
 
-完整包验收检查必要文件与两份上游 MIT 来源、隔离开发环境后的便携播放、真实录制与暂停/编辑/重开/导出、per-user 安装播放及卸载注册清理，共五项。源码验收在工作区之外的 TEMP 独立解压且没有 `.git`，运行 Core/导入器及采集纯逻辑测试、应用构建和不附带 FFmpeg 的重新打包。两组报告通过后才允许 `write-release-manifest.ps1` 写出完整交付清单；该脚本再次核对三个交付文件的实际哈希以及程序包、源码包的版本和提交一致性。
+源码ZIP独立解压构建见 `artifacts/validation/package-0.2.5/source-validation.json`，SHA256为 `7bd42394ceae21fb84113c303628a6b85054c8b43fd8685d8e855d5ad42fc0dd`。包内编辑53项、导出21项、文件锁12项、辅助素材重定位10项均通过；App DLL SHA256为 `D46FE2FDBA4393E0D6925EC57598A42EDC9CD388FF30F9FCA624DF86298C6491`。重定位使用Demo隔离副本，验证四类素材的副本SHA、保存重开、MP4/M4A解码和信号/像素结果。
 
-后台候选使用 `validate-package.ps1 -Version 0.2.2 -ContentOnly`，结果写入独立的 `content-result.json`，范围标记为 `content-only`。它检查必要程序与运行库、样例、许可，并按路径、长度、SHA256逐文件核对ZIP与发布目录；安装器只计算哈希，不执行安装。对应源码验证通过后可运行 `write-release-manifest.ps1 -Version 0.2.2 -Candidate`，只生成带 `candidate` 的版本清单和校验和，明确保留待验项，不覆盖0.2.1已验版通用清单。各项是否完成以本轮实际报告为准。
+同包100%、150%、200%单显示器全量UIA各44/44，三档浮层UIA各20/20。全量UIA使用旧合成testsrc2工程；首次启动窗口边界通过只读工作区检查，备忘录重启步骤由harness调用`SetWindowPos`重新定位。三档指定浮层截图均已人工查看；150%截图包含浅色主窗、深色下拉、嵌套菜单和预设确认弹窗，目录为 `artifacts/validation/ui-transient-package-025-dpi150-v1.surfaces-92102496fec545cb8772fc8faf736b4c/`。
+
+0.2.5同包30秒音画探针 `artifacts/validation/capture-025-av-30s-v1/` 检出18/18组cue。1800秒同包验收 `artifacts/validation/capture-025-av-1800s-audit-v1.json` 通过：1071个flash、1070个tone、匹配1070组（1070/1080名义事件，99.07%）；双向覆盖99.9066%，事件跨度1797.866667秒。raw音画绝对偏差P95为80.9143ms、最大99.2483ms；映射并导出后P95为43.333ms、最大63.333ms。360次会话音量租约观察及音量/静音状态恢复均通过。
+
+同包窗口目标探针 `artifacts/validation/capture-025-target-v1/target.target.json` 通过。Capture DLL SHA256为`30B5F8737D8692EC7229BF46E41490AE4AB66DD25D808D64BCE7547B8DDF20BA`；遮挡前、遮挡中和移动/缩放后各三个颜色样点均保持预期，关闭目标拒绝、录制中关闭/最小化收尾及区域录制回归通过。这些结果限于本机Windows 11 x64单显示器和测试窗口；不覆盖混合DPI、多显示器、真实Mac工程、物理摄像头、干净虚拟机或公开分发许可审查。 同一App SHA另有真实PNG贴图导入生命周期22/22专项，证据见 artifacts/validation/png-overlay-undo-025-v1.json；导入副本哈希与源文件一致，Undo/Redo、保存重开后基线保持通过，测试driver确认原包Demo样例未变；Smoke在退出前恢复偏好。该测试只覆盖PNG引用、复制和持久化。
+
+## 0.2.2 历史验证说明
+
+以下0.2.2验证流程只记录当时的版本状态，不代表当前用户授权或当前包验收。0.2.2当时要求使用 scripts/validate-package.ps1 -Version 0.2.2 -InteractiveDesktop 和 scripts/validate-source-package.ps1 -Version 0.2.2 -SourceZip <ZIP>；前者需要交互桌面，后者可后台运行。0.2.2旧版完整包口径为五项；后续0.2.5早期流程扩展到七项，本次最终版本新增归档未变第八项，现行完整验收为八项。
+
+0.2.2当时的后台候选使用 `validate-package.ps1 -Version 0.2.2 -ContentOnly`，报告范围标记为`content-only`；候选manifest由 `write-release-manifest.ps1 -Version 0.2.2 -Candidate` 生成，并保留待验项、不覆盖当时已验版本的通用清单。具体历史结果应以 `artifacts/validation/package-0.2.2/` 为准。
 
 ## 0.2.0 历史包验证
 
