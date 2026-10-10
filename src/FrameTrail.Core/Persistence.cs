@@ -179,8 +179,23 @@ public sealed class UndoRedoHistory<T> where T : class
     { if (capacity < 1) throw new ArgumentOutOfRangeException(nameof(capacity)); Current = clone(initial); this.clone = clone; this.capacity = capacity; }
     public void Commit(T next)
     { undo.Add(clone(Current)); if (undo.Count > capacity) undo.RemoveAt(0); Current = clone(next); redo.Clear(); }
-    public T Undo()
-    { if (!CanUndo) throw new InvalidOperationException("没有可撤销的操作。"); redo.Add(clone(Current)); Current = undo[^1]; undo.RemoveAt(undo.Count - 1); return clone(Current); }
-    public T Redo()
-    { if (!CanRedo) throw new InvalidOperationException("没有可重做的操作。"); undo.Add(clone(Current)); Current = redo[^1]; redo.RemoveAt(redo.Count - 1); return clone(Current); }
+    public T Undo() => Undo(null);
+    public T Redo() => Redo(null);
+
+    /// <summary>Runs persistence before changing either history stack; a failure leaves history intact.</summary>
+    public T Undo(Action<T>? persist) => Restore(undo, redo, persist, "没有可撤销的操作。");
+    public T Redo(Action<T>? persist) => Restore(redo, undo, persist, "没有可重做的操作。");
+
+    private T Restore(List<T> source, List<T> destination, Action<T>? persist, string emptyMessage)
+    {
+        if (source.Count == 0) throw new InvalidOperationException(emptyMessage);
+        var previous = clone(Current);
+        var next = clone(source[^1]);
+        var result = clone(next);
+        persist?.Invoke(result);
+        destination.Add(previous);
+        Current = next;
+        source.RemoveAt(source.Count - 1);
+        return result;
+    }
 }

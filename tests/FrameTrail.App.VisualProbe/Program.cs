@@ -24,6 +24,7 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            VerifyPlacementGeometry();
             window = new MainWindow();
             var project = new FrameTrailProject
             {
@@ -97,6 +98,29 @@ internal static class Program
         {
             checks.Add(new { Name = name, Passed = passed, Detail = detail });
             if (!passed) throw new InvalidOperationException(name);
+        }
+
+        void VerifyPlacementGeometry()
+        {
+            var negativeMonitorWork = new MainWindowPlacement.RectPx(-1920, -40, 0, 1040);
+            var oversized = new MainWindowPlacement.RectPx(-2100, -180, 200, 1180);
+            var centered = MainWindowPlacement.CenterAndFit(oversized, negativeMonitorWork, 32);
+            Check(centered.Left >= negativeMonitorWork.Left + 32 && centered.Right <= negativeMonitorWork.Right - 32 &&
+                  centered.Top >= negativeMonitorWork.Top + 32 && centered.Bottom <= negativeMonitorWork.Bottom - 32,
+                "main-window initial placement fits a negative-origin monitor in physical pixels", centered);
+            Check(Math.Abs((centered.Left + centered.Right) - (negativeMonitorWork.Left + negativeMonitorWork.Right)) <= 1 &&
+                  Math.Abs((centered.Top + centered.Bottom) - (negativeMonitorWork.Top + negativeMonitorWork.Bottom)) <= 1,
+                "initial placement centers within the usable monitor work area", centered);
+
+            var fitting = new MainWindowPlacement.RectPx(-1700, 180, -740, 780);
+            var fittingClamped = MainWindowPlacement.ClampAndFit(fitting, negativeMonitorWork, 32);
+            Check(fittingClamped == fitting,
+                "DPI clamp preserves a user-sized window that already fits", fittingClamped);
+
+            var outside = new MainWindowPlacement.RectPx(120, 40, 3920, 2400);
+            var clamped = MainWindowPlacement.ClampAndFit(outside, new MainWindowPlacement.RectPx(0, 0, 3840, 2064), 32);
+            Check(clamped.Left == 32 && clamped.Top == 32 && clamped.Right == 3808 && clamped.Bottom == 2032,
+                "DPI clamp shrinks and repositions an overflowing window without leaving the work area", clamped);
         }
     }
 

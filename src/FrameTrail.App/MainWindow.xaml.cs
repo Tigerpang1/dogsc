@@ -56,6 +56,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent(); InitializeEditorShell(); SurfaceWindow.AttachNativeEdges(this);
+        MainWindowPlacement.Attach(this);
         SurfaceWindow.FitToWorkArea(this);
         AutomationProperties.SetItemStatus(PreviewImage, "idle");
         AutomationProperties.SetItemStatus(TimelineView, "idle");
@@ -96,6 +97,20 @@ public partial class MainWindow : Window
         var args = Environment.GetCommandLineArgs();
         var open = Array.IndexOf(args, "--open");
         if (open >= 0 && args.Length > open + 1) await Guard(() => OpenProject(args[open + 1]));
+        var persistenceSmoke = Array.IndexOf(args, "--persistence-smoke");
+        if (persistenceSmoke >= 0 && args.Length > persistenceSmoke + 1)
+        {
+            await VerifyPersistenceFailureRecovery(args[persistenceSmoke + 1]);
+            closeReady = true; Close(); return;
+        }
+        var recordingIsolationSmoke = Array.IndexOf(args, "--recording-isolation-smoke");
+        if (recordingIsolationSmoke >= 0 && args.Length > recordingIsolationSmoke + 1)
+        {
+            try { await RunRecordingIsolationSmoke(args[recordingIsolationSmoke + 1]); }
+            catch (Exception error) { Environment.ExitCode = 1; App.Log(error); }
+            closeReady = true; Close(); return;
+        }
+
         var recordingBarSmoke=Array.IndexOf(args,"--recordingbar-lifecycle-smoke");if(recordingBarSmoke>=0&&recordingBarSmoke+1<args.Length){await VerifyRecordingBarLifecycle(args[recordingBarSmoke+1]);closeReady=true;Close();return;}
         var editorSmoke=Array.IndexOf(args,"--editor-smoke");if(editorSmoke>=0&&args.Length>editorSmoke+1){await VerifyEditorRegression(args[editorSmoke+1]);closeReady=true;Close();return;}
         var recoverySmoke=Array.IndexOf(args,"--recovery-smoke");if(recoverySmoke>=0&&args.Length>recoverySmoke+2){try{var recovered=await RecoverReadableRecording(args[recoverySmoke+1]);var p=FrameTrailProjectStore.Load(recovered);await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=true,Project=recovered,AudioTracks=p.AudioTracks.Count,Markers=p.Markers.Count,PointerEvents=p.PointerEvents.Count}));}catch(Exception ex){await File.WriteAllTextAsync(args[recoverySmoke+2],JsonSerializer.Serialize(new{Passed=false,Error=ex.ToString()}));}closeReady=true;Close();return;}
@@ -389,8 +404,18 @@ public partial class MainWindow : Window
     private async void SpeedClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.SetPlaybackRate(Selected(p).Id, new[] {.25,.5,.75,1d,1.5,2,4}[Speed.SelectedIndex])); return Task.CompletedTask; });
     private async void RestoreClick(object sender, RoutedEventArgs e) => await Guard(() => { Edit(p => p.Timeline.Segments = [new() { SourceDuration = p.Media.Duration }]); return Task.CompletedTask; });
     private void ClipSelected(object sender, SelectionChangedEventArgs e) { if (refreshing || project == null || Clips.SelectedItem is not ClipItem item) return; var time = 0d; foreach (var s in project.Timeline.Segments) { if (s.Id == item.Id) break; time += s.OutputDuration; } Playhead.Value = time; }
-    private void UndoClick(object sender, RoutedEventArgs e) { if (history?.CanUndo != true) return; var selection=CaptureEffectSelectionForHistory(); project = history.Undo(); SaveProject(); InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
-    private void RedoClick(object sender, RoutedEventArgs e) { if (history?.CanRedo != true) return; var selection=CaptureEffectSelectionForHistory(); project = history.Redo(); SaveProject(); InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject(); _ = Guard(() => RenderPreview(Playhead.Value)); }
+    private void UndoClick(object sender, RoutedEventArgs e) => _ = Guard(() => { ApplyHistoryChange(false); return Task.CompletedTask; });
+    private void RedoClick(object sender, RoutedEventArgs e) => _ = Guard(() => { ApplyHistoryChange(true); return Task.CompletedTask; });
+    private void ApplyHistoryChange(bool redo)
+    {
+        if (history is null || (redo ? !history.CanRedo : !history.CanUndo)) return;
+        var selection = CaptureEffectSelectionForHistory();
+        void Persist(FrameTrailProject next) => FrameTrailProjectStore.Save(projectFile!, next);
+        project = redo ? history.Redo(Persist) : history.Undo(Persist);
+        Status.Text = "已保存 · " + projectFile;
+        InvalidateProxy(); RestoreEffectSelectionAfterHistory(selection); RefreshProject();
+        _ = Guard(() => RenderPreview(Playhead.Value));
+    }
     private void MarkerJump(object sender, MouseButtonEventArgs e) { if (Markers.SelectedItem is MarkerItem m && project != null) { var at = project.Timeline.MapSourceToOutput(m.SourceTime); if (at.HasValue) Playhead.Value = at.Value; else Status.Text = "此标记所在素材已从时间线裁去。"; } }
     private void DeleteMarkerClick(object sender, RoutedEventArgs e) { if (Markers.SelectedItem is MarkerItem m) Edit(p => p.Markers.RemoveAll(x => x.Id == m.Id)); }
     private async void ApplySettingsClick(object sender, RoutedEventArgs e) => await Guard(() => { if (!System.Text.RegularExpressions.Regex.IsMatch(BackgroundColor.Text,"^#[0-9a-fA-F]{6}$")) throw new ArgumentException("背景色请使用 #RRGGBB 格式。"); Edit(p => { p.Settings.Background = BackgroundColor.Text; p.Settings.Padding = PaddingSlider.Value; p.Settings.CornerRadius = RadiusSlider.Value; p.Settings.Shadow = ShadowSlider.Value; p.Settings.CursorVisible = ShowCursor.IsChecked == true; }); return Task.CompletedTask; });

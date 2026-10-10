@@ -7,6 +7,7 @@ var jsonOptions = new JsonSerializerOptions { WriteIndented = true };
 var parsed = ParseArguments(args);
 var repoRoot = FindRepositoryRoot();
 if (parsed.SyncOnly) return await RunSyncFixtureAsync(repoRoot, parsed.OutputPath);
+if (parsed.RangeAudioExport) return await RangeAudioExportProbe.RunAsync(parsed.OutputPath);
 if (parsed.FfmpegProbeOnly)
 {
     try
@@ -398,15 +399,16 @@ static int GetEnumValue(JsonElement root, string property)
         : text switch { "None" => 0, "Left" => 1, "Right" => 2, _ => -1 };
 }
 
-static (string? RealMediaPath, string? PointerEventsPath, string? OutputPath, bool SyncOnly, bool FfmpegProbeOnly) ParseArguments(string[] values)
+static (string? RealMediaPath, string? PointerEventsPath, string? OutputPath, bool SyncOnly, bool FfmpegProbeOnly, bool RangeAudioExport) ParseArguments(string[] values)
 {
-    string? media = null, pointers = null, output = null; var sync = false; var ffmpegProbe = false;
+    string? media = null, pointers = null, output = null; var sync = false; var ffmpegProbe = false; var rangeAudioExport = false;
     for (var i = 0; i < values.Length; i++)
     {
         switch (values[i])
         {
             case "--sync": sync = true; break;
             case "--ffmpeg-probe": ffmpegProbe = true; break;
+            case "--range-audio-export": rangeAudioExport = true; break;
             case "--real" when i + 1 < values.Length:
                 media = Path.GetFullPath(values[++i]);
                 break;
@@ -417,11 +419,12 @@ static (string? RealMediaPath, string? PointerEventsPath, string? OutputPath, bo
                 output = Path.GetFullPath(values[++i]);
                 break;
             default:
-                throw new ArgumentException("参数用法：FrameTrail.Integration [--real PATH] [--pointer-jsonl PATH] [--out PATH]");
+                throw new ArgumentException("参数用法：FrameTrail.Integration [--real PATH] [--pointer-jsonl PATH] [--sync] [--range-audio-export] [--out PATH]");
         }
     }
     if (pointers is not null && media is null) throw new ArgumentException("--pointer-jsonl 只能与 --real 一起使用。");
-    return (media, pointers, output, sync, ffmpegProbe);
+    if (rangeAudioExport && (media is not null || pointers is not null || sync || ffmpegProbe)) throw new ArgumentException("--range-audio-export 不能与其他运行模式混用。");
+    return (media, pointers, output, sync, ffmpegProbe, rangeAudioExport);
 }
 
 static string FindRepositoryRoot()

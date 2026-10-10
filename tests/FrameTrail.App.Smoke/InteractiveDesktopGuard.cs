@@ -139,14 +139,14 @@ internal static class InteractiveDesktopGuard
         }
     }
 
-    public static bool ActivateTargetOnceAtStartup(IntPtr targetWindow)
+    public static bool ActivateTargetOnceAtStartup(IntPtr targetWindow, bool requireExactForeground = false)
     {
         lock (Gate)
         {
             var processId = _targetProcessId;
             if (targetWindow == IntPtr.Zero || !TryBeginStartupActivationLocked(processId))
                 return false;
-            if (IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
+            if (GetForegroundWindow() == targetWindow || !requireExactForeground && IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
             _ = ShowWindowNative(targetWindow, SwRestore);
             var foregroundWindow = GetForegroundWindow();
             var foregroundThread = foregroundWindow == IntPtr.Zero ? 0u : GetWindowThreadProcessId(foregroundWindow, out _);
@@ -158,7 +158,7 @@ internal static class InteractiveDesktopGuard
             var until = DateTime.UtcNow + TimeSpan.FromSeconds(1);
             while (DateTime.UtcNow < until)
             {
-                if (IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
+                if (GetForegroundWindow() == targetWindow || !requireExactForeground && IsOwnedByProcess(GetForegroundWindow(), processId)) return true;
                 Thread.Sleep(40);
             }
             GetWindowThreadProcessId(GetForegroundWindow(), out var foregroundPid);
@@ -180,7 +180,7 @@ internal static class InteractiveDesktopGuard
         lock (Gate) return !_aborted && OwnedProcessIds.Contains(processId) && IsOwnedByProcess(GetForegroundWindow(), processId);
     }
 
-    public static bool WaitForTargetForegroundAtStartup(IntPtr targetWindow, TimeSpan timeout)
+    public static bool WaitForTargetForegroundAtStartup(IntPtr targetWindow, TimeSpan timeout, bool requireExactForeground = false)
     {
         int targetPid;
         lock (Gate)
@@ -196,16 +196,20 @@ internal static class InteractiveDesktopGuard
         {
             if (IsAborted) return false;
             var foreground = GetForegroundWindow();
-            if (IsOwnedByProcess(foreground, targetPid))
+            if (requireExactForeground ? foreground == targetWindow : IsOwnedByProcess(foreground, targetPid))
             {
-                AppendProgress($"测试应用已自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。");
+                AppendProgress(requireExactForeground
+                    ? $"目标模态窗口已自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。"
+                    : $"测试应用已自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。");
                 return true;
             }
 
             if (DateTime.UtcNow >= nextProgress)
             {
                 GetWindowThreadProcessId(foreground, out var foregroundPid);
-                AppendProgress($"等待测试应用自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}，当前前台PID={foregroundPid}；请在等待期限内手动切换一次。");
+                AppendProgress(requireExactForeground
+                    ? $"等待目标模态窗口自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}，当前前台PID={foregroundPid}，当前前台HWND=0x{foreground.ToInt64():X}；请在等待期限内切换到该对话框。"
+                    : $"等待测试应用自然成为前台：PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}，当前前台PID={foregroundPid}；请在等待期限内手动切换一次。");
                 nextProgress = DateTime.UtcNow + TimeSpan.FromSeconds(5);
             }
             Thread.Sleep(100);
@@ -213,7 +217,9 @@ internal static class InteractiveDesktopGuard
 
         lock (Gate)
         {
-            AbortLocked($"等待测试应用自然成为前台超时（{timeout.TotalSeconds:0}秒）；未发送输入，结果未完成。目标PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。");
+            AbortLocked(requireExactForeground
+                ? $"等待目标模态窗口自然成为前台超时（{timeout.TotalSeconds:0}秒）；未发送输入，结果未完成。目标PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。"
+                : $"等待测试应用自然成为前台超时（{timeout.TotalSeconds:0}秒）；未发送输入，结果未完成。目标PID={targetPid}，HWND=0x{targetWindow.ToInt64():X}。");
         }
         return false;
     }

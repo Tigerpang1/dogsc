@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
+using FrameTrail;
 using FrameTrail.Media;
 
 namespace FrameTrail.App;
@@ -63,25 +64,51 @@ public sealed partial class ExportWindow
         outputDirectory = outputFolder;
         RefreshPreview();
         Click(resolutionChoices[0]);
+        var targetPath = Path.Combine(outputFolder, "panel-video.mp4");
+        var originalTarget = System.Text.Encoding.UTF8.GetBytes("既有目标内容：取消不得覆盖");
+        await File.WriteAllBytesAsync(targetPath, originalTarget);
+        var cancelConfirm = ArmOverwriteConfirmation();
         Click(exportButton);
-        await WaitUntil(() => !running || progressBar.Value > .05);
-        Check(running && progressBar.Value > .05 && stageText.Text.Contains("编码"), "真实视频合成进度到达后可以取消");
+        await cancelConfirm;
+        var cancelProgress = BeginProgressSampling();
+        await WaitUntil(() => !running || progressBar.Value > .05 && cancelProgress.Count >= 3);
+        cancelProgress.Add((progressBar.Value, stageText.Text));
+        Check(running && progressBar.Value > .05 && stageText.Text.Contains("编码"), "覆盖确认后实际编码进度到达后可以取消");
         Check(!videoModeButton.IsEnabled && !audioModeButton.IsEnabled && !browseButton.IsEnabled && !fileName.IsEnabled,
             "导出进行中锁定内容类型和输出位置，摘要与当前任务一致");
+        Check(cancelProgress.Count >= 1 && cancelProgress.Max(x => x.Fraction) > 0 && IsMonotonic(cancelProgress),
+            $"取消前进度单调且大于零（{DescribeProgress(cancelProgress)}）");
         Snapshot("running");
         Click(cancelButton);
         await WaitUntil(() => !running);
         Check(completedPath is null && stageText.Text == "已取消导出" && exportButton.IsEnabled && cancelButton.IsEnabled,
             "取消完成后恢复导出按钮且不标记成功");
-        Check(!File.Exists(Path.Combine(outputFolder, "panel-video.mp4")) && !Directory.EnumerateFiles(outputFolder, ".frametrail-*").Any(),
-            "取消后没有成片或导出临时文件残留");
+        Check(File.Exists(targetPath) && (await File.ReadAllBytesAsync(targetPath)).AsSpan().SequenceEqual(originalTarget),
+            "取消覆盖任务保留原有目标文件的完整字节");
+        Check(!Directory.EnumerateFiles(outputFolder, ".frametrail-*", SearchOption.TopDirectoryOnly).Any(),
+            "取消后没有导出临时文件残留");
         Snapshot("cancelled");
+        var retryConfirm = ArmOverwriteConfirmation();
         Click(exportButton);
+        await retryConfirm;
+        var retryProgress = BeginProgressSampling();
         await WaitUntil(() => !running);
+        retryProgress.Add((progressBar.Value, stageText.Text));
         Check(completedPath is not null && File.Exists(completedPath), "取消后在同一面板重新导出成功");
+        Check(completedPath == targetPath && !(await File.ReadAllBytesAsync(targetPath)).AsSpan().SequenceEqual(originalTarget),
+            "同面板重试完成后才替换既有目标文件");
+        Check(retryProgress.Select(x => x.Fraction).Distinct().Count() >= 2
+            && Math.Abs(retryProgress[^1].Fraction - 1) < 1e-9
+            && IsMonotonic(retryProgress),
+            $"重试进度单调、包含变化并到达100%（{DescribeProgress(retryProgress)}）");
         var video = await MediaTools.ProbeAsync(completedPath!);
         Check(video.Width > 0 && Math.Abs(video.Duration - project.Timeline.Duration) < .12,
             "重试成片可解码且时长正确");
+        Check(!Directory.EnumerateFiles(outputFolder, ".frametrail-*", SearchOption.TopDirectoryOnly).Any(),
+            "重试成功后没有导出临时文件残留");
+        var decoded = await DecodeAllAsync(completedPath!);
+        Check(decoded.ExitCode == 0,
+            $"重试成片完整解码成功（FFmpeg退出码 {decoded.ExitCode}；{MediaTools.Tail(decoded.Error)}）");
         Snapshot("completed");
         // A close request during export must wait for actual engine cleanup.
         fileName.Text = "panel-close-during-export";
@@ -98,6 +125,90 @@ public sealed partial class ExportWindow
             Close();
             Check(IsVisible && closeAfterCancellation, "关闭请求被暂缓，取消状态立即显示");
             await task;
+        }
+
+        List<(double Fraction, string Stage)> BeginProgressSampling()
+        {
+            var values = new List<(double Fraction, string Stage)>();
+            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
+            timer.Tick += (_, _) =>
+            {
+                if (!running) timer.Stop();
+                else if (double.IsFinite(progressBar.Value) && progressBar.Value > 0)
+                    values.Add((progressBar.Value, stageText.Text));
+            };
+            timer.Start();
+            return values;
+        }
+
+        Task ArmOverwriteConfirmation()
+        {
+            var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(25) };
+            var started = Stopwatch.StartNew();
+            timer.Tick += (_, _) =>
+            {
+                var dialog = Application.Current?.Windows.OfType<Window>().FirstOrDefault(window => window != this && window.Title == "确认覆盖");
+                if (dialog is not null)
+                {
+                    var yes = FindLogicalButton(dialog, "是");
+                    if (yes is not null)
+                    {
+                        timer.Stop();
+                        yes.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                        completion.TrySetResult();
+                        return;
+                    }
+                }
+                if (started.Elapsed > TimeSpan.FromSeconds(5))
+                {
+                    timer.Stop();
+                    if (dialog is not null && FindLogicalButton(dialog, "否") is { } no)
+                        no.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    completion.TrySetException(new TimeoutException("未能在期限内确认既有导出目标覆盖。"));
+                }
+            };
+            timer.Start();
+            return completion.Task;
+        }
+
+        static Button? FindLogicalButton(DependencyObject root, string label)
+        {
+            if (root is Button button && string.Equals(Convert.ToString(button.Content), label, StringComparison.Ordinal)) return button;
+            foreach (var child in LogicalTreeHelper.GetChildren(root))
+                if (child is DependencyObject dependency && FindLogicalButton(dependency, label) is { } found) return found;
+            return null;
+        }
+
+        static bool IsMonotonic(IReadOnlyList<(double Fraction, string Stage)> values)
+        {
+            for (var index = 1; index < values.Count; index++)
+                if (values[index].Fraction + 1e-9 < values[index - 1].Fraction) return false;
+            return true;
+        }
+
+        static string DescribeProgress(IReadOnlyList<(double Fraction, string Stage)> values)
+        {
+            var minimum = values.Min(x => x.Fraction);
+            var maximum = values.Max(x => x.Fraction);
+            var stages = string.Join("、", values.Select(x => x.Stage).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct());
+            return $"count={values.Count}, min={minimum:0.000}, max={maximum:0.000}, stages=[{stages}]";
+        }
+
+        static async Task<(int ExitCode, string Error)> DecodeAllAsync(string path)
+        {
+            using var process = MediaTools.Start(MediaTools.Ffmpeg,
+                ["-v", "error", "-i", path, "-f", "null", "NUL"]);
+            var errorTask = process.StandardError.ReadToEndAsync();
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            try { await process.WaitForExitAsync(timeout.Token); }
+            catch
+            {
+                MediaTools.Kill(process);
+                await process.WaitForExitAsync();
+                throw;
+            }
+            return (process.ExitCode, await errorTask);
         }
     }
 }
@@ -117,6 +228,7 @@ public partial class MainWindow
             foreach (var audio in new[] { true, false })
             {
                 var snapshot = Clone(project);
+                if (!audio) ExtendExportProgressFixture(snapshot, targetDurationSeconds: 32);
                 var file = projectFile;
                 var source = FrameTrailProjectStore.ResolveMediaPath(file, snapshot);
                 var window = new ExportWindow(snapshot, PreviewImage.Source, "导出面板回归", (path, options, progress, token) =>
@@ -128,5 +240,16 @@ public partial class MainWindow
         }
         catch (Exception ex) { App.Log(ex); result = new { Passed = false, Checks = checks, Output = output, Error = ex.ToString() }; }
         await File.WriteAllTextAsync(reportPath, System.Text.Json.JsonSerializer.Serialize(result, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static void ExtendExportProgressFixture(FrameTrailProject snapshot, double targetDurationSeconds)
+    {
+        var template = snapshot.Timeline.Segments.FirstOrDefault()
+            ?? throw new InvalidDataException("导出进度夹具没有主时间线片段。");
+        var repeatCount = (int)Math.Clamp(Math.Ceiling(targetDurationSeconds / template.OutputDuration), 2d, 16d);
+        snapshot.Timeline.Segments = Enumerable.Range(0, repeatCount)
+            .Select(_ => template.Copy(Guid.NewGuid()))
+            .ToList();
+        snapshot.Timeline.Validate();
     }
 }

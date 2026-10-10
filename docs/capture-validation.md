@@ -1,12 +1,12 @@
 # Windows 原生录制验证
 
-## 当前候选验收状态（0.2.3开发候选）
+## 当前发行包与实录状态（0.2.4）
 
-0.2.3候选尚未完成发行包运行验收。当前30秒区域实录 `artifacts/validation/capture-aligned-audio-clock-30s-v1/raw-analysis.json` 检出18/18 cue，原始 A−V 中位数−9.7205ms、绝对P95 35.22095ms、最大38.054ms，覆盖率100%。刺激来自独立生成的 `aligned-capture-stimulus-v2`，其解码音视频cue起始差为+0.020833ms；本次实录尚未扣除fixture偏差。现行分析器基线为−15ms，因此该短测按原始值通过；它不是30分钟或实际工程素材验收。音频位置复位边界已修正代码路径并通过纯逻辑回归，麦克风已有一次15秒物理设备采集及一次含暂停实录，细节和限制见下文；物理设备热插拔/复位尚未验证。此前v8长测仅匹配485/1080 cue，明确作为旧版失败记录。旧20秒交互样本为全SILENT，仅作历史诊断；不能据此解释其他版本。没有物理摄像头、第二显示器、真实Mac工程或clean machine验收。
+0.2.4包已通过本机发行包验收，详见 `artifacts/validation/package-0.2.4/result.json`。30秒区域实录 `capture-aligned-audio-clock-30s-v1/raw-analysis.json` 检出18/18 cue，raw A−V中位数−9.7205ms、绝对P95 35.22095ms、最大38.054ms。刺激 `aligned-capture-stimulus-v2` 解码音视频cue起始差为+0.020833ms；偏差未从本次raw数据扣除。工程保存、重开并导出M4A后亦检出18/18，raw绝对P95 32.91695ms、最大40ms；fixture三cue中位偏差估计−15ms，校正估值仅供单独参考，不作门槛值。1800秒样本已采集并由冻结v3分析器复核：原始采集1070/1080名义cue（99.0741%）、双向覆盖99.9066%、匹配跨度1797.8425秒、raw绝对P95 74.4448ms、最大96.1118ms；项目映射导出1070/1080、双向覆盖99.9066%、P95 38.333ms、最大56.667ms。两条路径均达到本轮预设长测门槛。该长测使用capture v6冻结程序集，0.2.4新增timestamp-errorgap条件没有触发，不宣称最终包逐字节录制了30分钟。v2旧检测器在同一素材上未检出音调，保留为历史失败；v3仅改变候选阈值统计并沿用频谱分类，不作时间校正。v3分析器和Smoke work-area修正未包含在0.2.4源码归档中。DPI方面，100%旧包工作区适配专项通过；200%新开发快照只读启动定位20/20通过，旧0.2.4包负对照失败且没有该修复。该快照不是0.2.5发行包，也不是摄像/采集验证。没有物理摄像头、第二显示器、真实Mac工程或clean machine验收。
 
-窗口录制已有两类当前证据。`artifacts/validation/wgc-first-frame-matrix-v1/matrix-summary.json` 在同一toolchain下对比未修复与修复版：控制组静态窗口只有1帧raw callback、0个source preview帧，解码网格全黑；修复组静态窗口同样只有1帧raw callback，但有15个source preview帧且解码非黑。两组动态画面均正常，支持首帧修复结论。`artifacts/validation/window-wgc-patched-product-v2/target.target.json` 记录产品WGC窗口目标实录通过：目标被不透明窗口遮挡及移动/缩放后，解码样点仍为目标图案颜色；输出H.264 640×360、30fps、5.933秒/178帧，关闭和最小化时自动收尾也通过。该探针使用PerMonitorV2；较早v1黑帧记录中的探针坐标受DPI虚拟化影响，不能沿用为当前失败结论。产品目标探针实际输入bin为`capture-audio-clock-build-v5`，manifest可对应Recorder DLL SHA `3d366dd95eeddde20bf66b6c0cc8b10e5f9bf7c9489e8d0b5aaee0c838118151`，但报告未直接记录加载程序集哈希；下一版probe应写入assembly SHA。两项结果均未覆盖多显示器。
+窗口录制已通过同工具链首帧对照和0.2.4包快照目标探针。`wgc-first-frame-matrix-v1/matrix-summary.json` 对照未修复/修复版本；修复组静态画面有15个source preview帧且解码非黑，动态组正常。`window-wgc-package-024-v4/target.target.json` 通过遮挡、移动/缩放采样、关闭/最小化自动收尾及区域录制回归。其二进制来源由 `capture-package-024-snapshot-v3/snapshot-provenance.json` 记录，Capture SHA为`911595F6C6D1768525E5D8F7B07ABDDC6D13E1729F71F91D840C121012078586`，ScreenRecorderLib SHA为`3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151`。早期v1黑帧探针未声明PerMonitorV2，物理坐标被DPI虚拟化；不能将其作为当前失败结论。当前测试仅覆盖本机单显示器指定目标窗口，其他窗口、第二显示器和混合DPI仍待验。
 
-统一后台回归日志 `artifacts/validation/net10-023-background-regression-v2.log` exit0，包含Capture纯逻辑回归；复位边界覆盖QPC倒退和无效时间戳回退，验证有效重锚tick不会早于已映射样本边界，停止映射帧数保持48000。此前漂移拟合由1.001切换到0.9995时，边界映射从1200480修正为1199760；QPC倒退至99秒或无效时间戳回退到99.5秒、而映射已到100.02秒时，停止帧数不再错误变为96960或72960。上述为源码和纯逻辑测试结果，不是物理设备复位测试。
+0.2.3后台回归日志 `artifacts/validation/net10-023-background-regression-v2.log` 的复位纯逻辑结果仍有效：覆盖QPC倒退、无效时间戳和映射边界，停止帧数保持单调。0.2.4源码包测试也通过；本机物理热插拔/时钟复位仍未测。
 
 ## 实现与公共 API
 
@@ -18,9 +18,9 @@
 
 当前映射把 `IAudioCaptureClient.GetBuffer` 的device position视为其文档定义的音频帧计数。`IAudioClock.GetFrequency` 只作诊断记录，不拿来换算GetBuffer位置；两者并无已确认的通用单位对应关系。若GetBuffer位置与本次mix frame count持续不符，映射器经有界检查后切换到QPC fallback：QPC及包FrameCount用于锚定和放置，连续包不会因到达抖动被移动，真实缺口仍保留。首帧QPC（100ns）也用于Stopwatch锚定和暂停边界换算；复位时保存原始计时诊断，同时以不早于已映射边界的有效tick重锚，活动段按有效重锚分段，暂停边界保持冻结。`artifacts/validation/microphone-device-023-v3/default-microphone.wav.diagnostics.json` 的一次实录观察到每包device position约+441而FrameCount为480，AudioClock frequency为384000；模式为`qpc-fallback`，不是把这组frequency误当GetBuffer帧率。该实录支持QPC回退与暂停处理在此端点可用，不证明语音质量、热插拔或普适端点行为。对应逻辑复位测试位于 `artifacts/validation/net10-023-background-regression-v2.log`；它不替代设备复位实测。20ms时钟泵保留100ms重排窗口，按样本时钟补静音、裁掉启动前样本及停止后的尾包；暂停区间按样本位置剪除。暂停期间仍按源时钟排空输入队列，避免录音暂停越久内存越大。包缓冲在同一采集线程的`finally`中释放后才进入应用回调。单位与缓冲规则依据[Microsoft GetBuffer 文档](https://learn.microsoft.com/en-us/windows/win32/api/audioclient/nf-audioclient-iaudiocaptureclient-getbuffer)。音频WAV使用端点实际采样率、通道数及PCM/IEEE-float格式，UI不应假定固定48kHz PCM16。音频设备时钟不消除视频首帧观察、播放器和声卡的端到端误差。
 
-麦克风实录于 `artifacts/validation/microphone-device-023-v3/`：15.025秒墙钟录制，包含2.013秒暂停，WAV时长13.013秒，分成2个活动时钟段。诊断中1502个数据包、720954帧、0个timestamp错误/回退包，WAV有非零样本。这个结果只证明本次设备的数值采集、暂停裁切和QPC fallback，不是语音质量、设备热插拔或长期漂移认证。报告中的历史诊断字段名为`DevicePositionFrequency`和`ObservedPositionToMixRateRatio`，前者实际来自AudioClock frequency，后者按Mix/Observed比值计算；新诊断已改为更准确的字段名。
+麦克风实录有两轮。早期诊断 `microphone-device-023-v3/` 为15.025秒墙钟、暂停2.013秒、13.013秒WAV和2个活动段。0.2.4包对应快照的 `microphone-package-024-v1/microphone-capture.summary.json` 记录15.0185633秒墙钟、暂停2.0104253秒、WAV 13.008333秒/624400帧、FrameDifference=0、2个时钟段。该文件有99.814%非零样本，但峰值仅3.89e-5、RMS 1.31e-6，报告明确不分类语音或音频内容。这些证据只证明相应采集快照上的数值采集和暂停映射，不代表语音质量、热插拔或长期漂移认证。历史诊断字段`DevicePositionFrequency`和`ObservedPositionToMixRateRatio`已改成更准确名称。
 
-另一次30秒音画短测使用独立fixture `artifacts/validation/aligned-capture-stimulus-v2/`，0.5、2.0、4.0秒各有一个画面/音调cue。分别解码视频和PCM确认fixture cue起始差为0.020833ms。实录结果见 `artifacts/validation/capture-aligned-audio-clock-30s-v1/raw-analysis.json`，18/18匹配，A−V原始P95 35.22095ms、最大38.054ms、中位−9.7205ms；这组数尚未扣除fixture偏差。旧fixture结果 `capture-audio-clock-appsync-30s-v2` 的raw P95 52.5704ms及其派生时钟结果保留为历史；采集代理仍在检查`atempo`派生路径，不能把该历史结果或新独立刺激短测写成现有工程导出音画同步通过。当前30秒测试不代替30分钟长测。
+另一次30秒音画短测使用独立fixture `artifacts/validation/aligned-capture-stimulus-v2/`，0.5、2.0、4.0秒各有一个画面/音调cue。分别解码视频和PCM确认fixture cue起始差为0.020833ms。实录结果见 `artifacts/validation/capture-aligned-audio-clock-30s-v1/raw-analysis.json`，18/18匹配，A−V原始P95 35.22095ms、最大38.054ms、中位−9.7205ms；这组数尚未扣除fixture偏差。另有 `project-output-source-rate-v1/validation-summary.json` 实际保存、重开并导出M4A后检出18/18，映射成片raw绝对P95 32.91695ms、最大40ms。旧fixture结果 `capture-audio-clock-appsync-30s-v2` 的raw P95 52.5704ms及其派生时钟结果保留为历史。短测不代替长测。
 
 ## 历史候选：QPC包时钟长测记录（v8）
 
@@ -107,7 +107,7 @@ py -3 tests/FrameTrail.Capture.Probe/analyze-sync.py $ffmpeg $ffprobe capture.mp
 
 新后端 1080p60 全屏桌面活动负载压测于2026-10-09 06:44:37 UTC启动，并于07:14:37 UTC正常结束。使用本机 FFmpeg 8.1.1 的 Desktop Duplication→`hwdownload`/缩放→NVENC 路径。ffprobe 验证输出 H.264 1920×1080、`r_frame_rate=60/1`、`avg_frame_rate=60/1`、时长1800秒、108000帧，文件103,507,353 bytes；FFmpeg 最终进度为59.99fps、dup_frames=2419、drop_frames=41、speed=1x。CSV 每10秒记录 CPU/private/working set/系统可用内存和文件大小；private bytes 在约140秒后维持约970–975MiB平台，结束前最高约975MiB，系统可用内存约7.5–8GiB。录制期间桌面存在实际变化，但不是受控测试图案；此实验没有音轨，也未测受控音画脉冲。因此它验证本机该负载下30分钟封装与内存平台，不代表其他 GPU、显示器或音轨设备。
 
-历史候选的一轮 DDA/NVENC 4K全屏输入并缩放至1080p60的30分钟测试通过：时长1800秒、108000帧。该测试验证当时本机4K显示器采集到1080p编码的长时视频路径；没有系统音轨，也没有受控音画同步测量。独立WASAPI loopback另有一轮30分钟测试通过。两项独立结果均不代表0.2.3当前候选的端到端视听同步；当前候选长测尚未完成。
+历史候选的一轮 DDA/NVENC 4K全屏输入并缩放至1080p60的30分钟测试通过：时长1800秒、108000帧。该测试验证当时本机4K显示器采集到1080p编码的长时视频路径；没有系统音轨，也没有受控音画同步测量。独立WASAPI loopback另有一轮30分钟测试通过。两项结果不能代替0.2.4端到端音画测试；当前版本的1800秒音画采集及v3分析见本文件开头的当前状态段。
 
 首帧时钟锚点实验将 `setpts=PTS+0*print(time(0)*1000000*eq(N\,0))` 放在 `ddagrab` 后，滤镜输出首帧时打印 Unix 微秒，再用启动附近成对采样的 UTC/QPC 换算成 Stopwatch ticks；零乘数不改动帧 PTS。表达式在首帧打印非零 epoch 值、后续为0；输出 MP4 首帧 PTS 为0，后续按30fps递增。一次3秒 1280×720@30探针的首帧观测锚相对录制进程基线为314.924ms；同一录制中第一个progress反推锚为348.943ms，progress锚晚34.019ms。该差值只表示本机此轮短测，不能当固定校正值。ffprobe验证输出为30/1 CFR、92帧、3.066667秒。首帧墙钟观察换算不是硬件PTS，UTC/QPC配对和FFmpeg日志回调仍有有限精度。
 
@@ -129,6 +129,12 @@ App层 Display-only 恢复回归于2026-10-09 07:43:57 UTC通过：`CaptureTarge
 
 ## 窗口录制排除验证
 
+### FrameTrail 实际编辑/录制隔离（0.2.5 开发快照）
+
+`artifacts/validation/recording-isolation-v4/recording-isolation-smoke.json` 与 `driver-result.json` 均通过，driver ExitCode=0 且偏好恢复成功。该次在主显示器3840×2160、150% DPI下，用自有纯色背景窗口和合成工程实际启动录制；产品设置主编辑器、录制条和备忘录的 `WDA_EXCLUDEFROMCAPTURE` 均读回17。DDA基线视频在三窗采样点分别读到编辑器(17,119,154)、录制条(255,255,255)、备忘录(222,223,226)，且 `WindowFromPoint`/根窗口检查均命中预期 HWND。设置排除后，视频三个对应点均为(208,41,195)，接近背景(208,42,196)。停止后主窗 affinity 恢复为0、录制条 HWND已销毁、备忘录仍为17。测试期间编辑旧隔离工程的Padding并保存，重开后ProjectId和修改值一致；主素材SHA256前后均为`BFF327280437B540D5D36E0FD9DAE02D15277D75CA7DEB29EBAC4339A0B41A90`。用户偏好恢复由driver确认。
+
+这项证据来自0.2.5开发快照，不是正式发行包验收；采集对象是主显示器DDA，窗口布置使用测试自有的Topmost背景，不代表窗口/区域录制、所有层级遮挡、第二显示器或其他机器。早期v1因WPF禁止 `ShowActivated=false` 与 `Maximized` 组合而失败；v2/v3基线被其他窗口遮挡，三窗像素未出现在样片中，因此保留为诊断失败，不能据此判定产品排除失败。v4增加自有窗口排序及原生窗口命中核验后通过。
+
 Probe 新增`--exclusion-test`，只在自控的纯红无边框窗口上测试。测试于2026-10-09 08:19:31 UTC在 Windows 10.0.26200.0 主显示器物理ROI `(640,300,320,180)`完成。窗口所属子进程调用`SetWindowDisplayAffinity`并回读：`WDA_NONE (0)`成功且读回0；`WDA_EXCLUDEFROMCAPTURE (0x11)`成功且读回17。FrameTrail 当前 DDA 区域录制解码得到中心红色样本`#FD0000`，设置排除后得到桌面背景样本`#181818`。同一状态下用 FFmpeg `gdigrab` 录桌面固定区域，中心样本从`#FF0000`变为`#181818`。ffprobe确认 DDA 基线片段为 H.264 320×180、30/1 fps、1.100秒/33帧，排除片段1.033秒/31帧。像素样本是按色度格式约束从中心2×2区域解码的第一个 RGB 像素。
 
 这次实测说明本机的 FrameTrail DDA 和 FFmpeg gdigrab 都遵守这个窗口排除设置。可把它用于 FrameTrail 自己拥有的主窗体、录制条或备忘录窗口；跨进程调用失败，因为 Windows 要求目标顶层窗口属于调用进程，所以实际 WPF UI 应由拥有 HWND 的进程设置属性。该 API 依赖 DWM 合成，微软说明它不是安全或 DRM 边界，也不保证其他捕获实现都遵守。微软文档称 Windows 10 版本2004开始支持`WDA_EXCLUDEFROMCAPTURE`；具体可参考[SetWindowDisplayAffinity 官方文档](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-setwindowdisplayaffinity)。FFmpeg 的 gdigrab 是基于 GDI 的 Windows 桌面/区域捕获设备，选项说明见[FFmpeg 官方设备文档](https://ffmpeg.org/ffmpeg-devices.html#gdigrab)。本次只验证当前 Windows、DDA后端和 FFmpeg gdigrab，不代表所有录屏软件、远程桌面、驱动层捕获或外部摄像设备。
@@ -147,6 +153,6 @@ NAudio `RecordingStopped` 收到异常时现在会立即将音轨状态置为 `F
 
 独立系统音轨 `frametrail-wasapi-loopback-pause-test-v2.wav` 经 ffprobe 检查仅含 `pcm_f32le` 音频流，44.1kHz 双声道、2.920秒、1,030,234 bytes；Probe在约4秒墙钟时间内录制，并暂停约1秒，暂停区未写入WAV。它捕获本机生成的低音量440Hz音调，`volumedetect`报告mean -35.1dBFS、max -32.0dBFS。音轨文件直接由NAudio WASAPI写入，不生成视频轨或屏幕临时文件。WASAPI格式由端点决定，本样本为浮点PCM。该段最初记录时麦克风尚未实际打开；麦克风设备已在后续 `microphone-device-023-v3` 做15秒含暂停实录，详见当前候选状态段。暂停状态按WASAPI数据包丢弃，无法从公开回调拿到packet内样本的独立时间戳，停顿边界误差受最大packet时长限制，结果警告会报告本次测得的上限。
 
-早期窗口探针的黑帧报告属于旧实现/旧探针。`wgc-first-frame-matrix-v1` 的同toolchain矩阵及 `window-wgc-patched-product-v2` 的PerMonitorV2产品探针见当前候选状态段，已证明该目标窗口在本次遮挡和移动/缩放场景下仍有正确画面，并在关闭/最小化时自动收尾。早期v1探针按物理坐标启动却未声明PerMonitorV2，坐标被再次DPI缩放，导致窗口刺激位置错误；v2已显式初始化PerMonitorV2。上述实测不覆盖多显示器和跨DPI显示器行为。所有窗口关闭/最小化操作仅针对探针自建窗口。
+早期窗口探针的黑帧报告属于旧实现/旧探针。当前证据为`wgc-first-frame-matrix-v1`同toolchain矩阵和0.2.4包快照 `window-wgc-package-024-v4`；指定窗口的遮挡、移动/缩放、关闭/最小化收尾通过，区域录制回归也通过。早期v1探针按物理坐标启动却未声明PerMonitorV2，坐标被再次DPI缩放，导致窗口刺激位置错误。上述实测不覆盖多显示器和跨DPI显示器行为。所有窗口关闭/最小化操作仅针对探针自建窗口。
 
 `frametrail-independent-loopback-retry.mp4` 是旧 ScreenRecorderLib 音频实验遗留的诊断文件，虽然有 AAC 音轨，但 ffprobe 确认它也含真实桌面 H.264 画面；它和相邻的失败 `.mp4` 均不得作为独立音轨素材导入或发布。`frametrail-audio-wav-test.wav` 是切换 WASAPI 前 callback 验证的本地样本，不作为最终产品样片。

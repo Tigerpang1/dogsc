@@ -3,10 +3,10 @@
 ## 项目参数
 
 - 产品名：FrameTrail（Windows 迁移工程内部代号）
-- 版本：0.2.3（开发候选，包运行与安装卸载验收尚未完成）
+- 版本：0.2.5（开发候选，包运行与安装卸载验收尚未完成）
 - 目标：.NET 10 WPF、`win-x64`、自包含发布目录
 - 主项目：`src/FrameTrail.App/FrameTrail.App.csproj`
-- 发布目录：`artifacts/release/FrameTrail-0.2.3-win-x64/app`
+- 发布目录：`artifacts/release/FrameTrail-0.2.5-win-x64/app`
 - 输出：便携目录、ZIP、per-user Inno Setup 安装程序
 
 应用主程序名为 `FrameTrail.exe`。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`，与应用的工具查找路径一致。
@@ -37,30 +37,30 @@
 
 便携版和安装版均随附 `samples/FrameTrail-Demo` 原创合成工程与8秒导出样片。每次打包均调用 `scripts/create-sample.ps1` 在全新临时目录生成，只复制八个固定生成物；这一步需要本机可用的 FFmpeg。不会从开发目录收集残留文件，样例不包含用户桌面或原版截图。样例说明见 `sample-project.md`。
 
-`validate-package.ps1` 在隔离 PATH、DOTNET_ROOT 的子进程中打开样例、播放/暂停、实际录制及导出，随后在独立目录执行当前用户安装和卸载。它会使用当前交互桌面，环境变量隔离不隔离鼠标键盘；必须显式传入 `-InteractiveDesktop`，缺少时在启动任何应用或安装程序前停止。若已有 FrameTrail 安装或测试安装目录，会停止而不覆盖。可用 `-SkipInstallation` 只验证便携包；结果在 `artifacts/validation/package-0.2.3/result.json`。
+`validate-package.ps1` 在隔离 PATH、DOTNET_ROOT 的子进程中打开样例、播放/暂停、实际录制及导出，随后在独立目录执行当前用户安装和卸载。它会使用当前交互桌面，环境变量隔离不隔离鼠标键盘；必须显式传入 `-InteractiveDesktop`，缺少时在启动任何应用或安装程序前停止。若已有 FrameTrail 安装或测试安装目录，会停止而不覆盖。可用 `-SkipInstallation` 只验证便携包；结果在 `artifacts/validation/package-0.2.5/result.json`。
 
 源码归档命令（工作区必须已全部提交）：
 
 ```powershell
 .\scripts\package-source.ps1
-.\scripts\validate-source-package.ps1 -SourceZip .\artifacts\release\FrameTrail-0.2.3-source.zip
+.\scripts\validate-source-package.ps1 -SourceZip .\artifacts\release\FrameTrail-0.2.5-source.zip
 .\scripts\write-release-manifest.ps1
 ```
 
-校验清单脚本只有在程序包与源码包的已测SHA256、源码提交均一致时才生成 `DELIVERY-MANIFEST.json` 和 `SHA256SUMS.txt`；同时保留带版本号的 `FrameTrail-0.2.3-manifest.json` 和 `FrameTrail-0.2.3-SHA256SUMS.txt`，便于后续版本交付后继续核对本版。
+校验清单脚本只有在程序包与源码包的已测SHA256、源码提交均一致时才生成 `DELIVERY-MANIFEST.json` 和 `SHA256SUMS.txt`；同时保留带版本号的 `FrameTrail-0.2.5-manifest.json` 和 `FrameTrail-0.2.5-SHA256SUMS.txt`，便于后续版本交付后继续核对本版。
 
 没有交互桌面时可先生成后台候选：
 
 ```powershell
-.\scripts\validate-package.ps1 -Version 0.2.3 -ContentOnly
-.\scripts\write-release-manifest.ps1 -Version 0.2.3 -Candidate
+.\scripts\validate-package.ps1 -Version 0.2.5 -ContentOnly
+.\scripts\write-release-manifest.ps1 -Version 0.2.5 -Candidate
 ```
 
-`-ContentOnly` 不启动应用或安装程序，只检查自包含运行库、样例和许可，逐文件核对便携ZIP与发布目录的路径、长度及SHA256，并保存 `content-result.json`。仍须先完成源码归档独立构建验证。`-Candidate` 只写 `FrameTrail-0.2.3-candidate-manifest.json` 和 `FrameTrail-0.2.3-candidate-SHA256SUMS.txt`，状态为 `candidate-awaiting-interactive-validation`；保留上一已验版本的通用清单。候选内容验证不能替代播放、录制、安装卸载或全量UIA。完整清单按稳定编号逐项核对包内容、便携版播放与录制流程、安装版播放、卸载，以及交互前后用户偏好的原始字节保存与恢复；要求每项唯一且通过。`-SkipInstallation` 结果不能生成完整清单。
+`-ContentOnly` 不启动应用或安装程序，只检查自包含运行库、样例和许可，逐文件核对便携ZIP与发布目录的路径、长度及SHA256，并保存 `content-result.json`。仍须先完成源码归档独立构建验证。`-Candidate` 只写 `FrameTrail-0.2.5-candidate-manifest.json` 和 `FrameTrail-0.2.5-candidate-SHA256SUMS.txt`，状态为 `candidate-awaiting-interactive-validation`；保留上一已验版本的通用清单。候选内容验证不能替代播放、录制、安装卸载或全量UIA。完整清单按稳定编号逐项核对包内容、便携版播放与录制流程、安装版播放、卸载，以及交互前后用户偏好的原始字节保存与恢复；要求每项唯一且通过。`-SkipInstallation` 结果不能生成完整清单。
 
-该命令把 FrameTrail `git archive HEAD` 和 `upstream/dogsc` 的固定基线 `e207d11b111c5e58152238fb64115b2009850547` 放进同一个 `FrameTrail-0.2.3-source.zip`；上游快照位于 `FrameTrail/upstream/dogsc/`。压缩包内 `FrameTrail/SOURCE-METADATA.json` 记录 FrameTrail HEAD、上游基线和打包时工作区状态。Git 归档只收录提交中的文件，不含未提交修改，也不会打包 `artifacts/`、`bin/`、`obj/` 或真实录制素材。
+该命令把 FrameTrail `git archive HEAD` 和 `upstream/dogsc` 的固定基线 `e207d11b111c5e58152238fb64115b2009850547` 放进同一个 `FrameTrail-0.2.5-source.zip`；上游快照位于 `FrameTrail/upstream/dogsc/`。压缩包内 `FrameTrail/SOURCE-METADATA.json` 记录 FrameTrail HEAD、上游基线和打包时工作区状态。Git 归档只收录提交中的文件，不含未提交修改，也不会打包 `artifacts/`、`bin/`、`obj/` 或真实录制素材。
 
-从源码 ZIP 构建时，上游快照已经包含在 `FrameTrail/upstream/dogsc/`，不需要运行 `git submodule update`。从 Git 克隆仓库时，才需要按仓库说明初始化上游 submodule。源码 ZIP 中没有 `.git` 元数据；`package-source.ps1` 只在发行者重新生成源码 ZIP 时需要 Git。 `package.ps1` 仅当源码目录拥有自己的 Git 元数据且Git根目录匹配时读取提交与上游基线；源码 ZIP 构建读取 `SOURCE-METADATA.json`，即使解压在其他Git仓库内部，也不继承父仓库的提交。无 Git 源码归档路径的验证状态以 `artifacts/validation/package-0.2.3/source-validation.json` 为准。
+从源码 ZIP 构建时，上游快照已经包含在 `FrameTrail/upstream/dogsc/`，不需要运行 `git submodule update`。从 Git 克隆仓库时，才需要按仓库说明初始化上游 submodule。源码 ZIP 中没有 `.git` 元数据；`package-source.ps1` 只在发行者重新生成源码 ZIP 时需要 Git。 `package.ps1` 仅当源码目录拥有自己的 Git 元数据且Git根目录匹配时读取提交与上游基线；源码 ZIP 构建读取 `SOURCE-METADATA.json`，即使解压在其他Git仓库内部，也不继承父仓库的提交。无 Git 源码归档路径的验证状态以 `artifacts/validation/package-0.2.5/source-validation.json` 为准。
 
 本机验证版包含 GPLv3 的 Gyan FFmpeg full static build。它可以供本地功能验证使用，生成的 ZIP/安装程序不得直接公开发布。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
 

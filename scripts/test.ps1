@@ -41,6 +41,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "合成媒体集成测试失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration -- --sync
         if ($LASTEXITCODE -ne 0) { throw "1080p60 音画同步集成测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Integration/FrameTrail.Integration.csproj') --configuration $Configuration -- --range-audio-export
+        if ($LASTEXITCODE -ne 0) { throw "跨剪辑范围与双音轨同步导出测试失败，退出码 $LASTEXITCODE" }
     }
 
     if ($IncludeVisualProbe) {

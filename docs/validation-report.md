@@ -1,14 +1,34 @@
 # FrameTrail 验证报告
 
-## 当前开发候选：0.2.3（2026-10-09）
+## 当前发行候选：0.2.4（源码提交 `1a13291115536787f01ceb65ee99efcd64b4d166`）
 
-仓库和打包脚本已更新为0.2.3候选；发行包运行验收尚未完成。下文0.2.2及更早版本的测试记录只属于对应候选，不自动继承到0.2.3。
+0.2.4便携包、安装/卸载、包内真实录制暂停编辑重开导出和源码归档闭环通过。`artifacts/validation/package-0.2.4/result.json` 全部7项通过，包内清单核验477个文件；源码包验证和内容核验见同目录 `source-validation.json`、`content-result.json`。该发行包对应的源码归档固定在上述提交，不包含其后的验证文档更新，也不包含后来在独立开发快照中验证的200%初始窗口定位修复。
 
-统一后台回归 `artifacts/validation/net10-023-background-regression-v2.log` exit 0：Core、DogSC导入、Render/GPU、时间线资产20项、逐片段音量、媒体Integration、VisualProbe、7项Capture纯逻辑检查、发行清单16项及源码身份6项均通过；其中媒体与导入为合成/fixture验证，Capture不代表设备实测。WPF离屏主题探针 `artifacts/validation/theme-offscreen-v4/result.json` 与 `theme-offscreen-8e71d3521e604702895b18144e61c0a4/result.json` 均为15/15；MainWindow未Show且没有HWND，实际渲染时间线glyph像素，并以1.648:1旧黑字负控证明检测有效。对应PNG证据已保存；新版时间线没有实机主窗口截图。v6浮层专项为19/19；v5全量43/43和导出15/15属于较早候选。音频时钟/设备位置复位修正通过纯逻辑边界回归，物理设备复位尚未实测。
+当前桌面证据包括 `ui-full-package-024-v1.json` 43/43、`ui-transient-package-024-v1.json` 19/19、导出面板15项（`export-panel-surfaces-net10-v5.json`）、包内应用编辑回归53项与录制栏生命周期5项（`package-024-extra-v1/result.json`）。100%旧包Smoke工作区适配20/20通过；该项由harness移动测试窗，不验证产品主窗启动定位。200%旧0.2.4包负对照 `ui-startup-package-024-dpi200-negative-v1.json` 如预期记录初始窗口超出工作区；新开发快照 `ui-startup-placement-dpi200-v2.json`（应用快照目录为 `window-placement-app-v2/`）为20/20，且只读检查未调用 `SetWindowPos`：DPI=192 (200%)，窗口边界 `[32,32..3808,2032]`，工作区 `[0,0..3840,2064]`。该快照不是0.2.5发行包，不能把修复归到0.2.4包或视作发行验收。
+
+## 0.2.5 开发快照（未打包）
+
+辅助素材重定位专项尚未取得有效通过结果。`ui-auxiliary-relink-v8.json` 记录 Windows 拒绝文件选择模态的一次性前台激活，输入守卫在输入前中止；此前的 UIA 模态查询出现缓存和瞬态缺失，不能以“对话框消失”证明选择成功。测试现改为验证工程内副本的精确SHA256与解码，并提供等待精确模态前台的入口。需要一次真实焦点交接后续验，当前不将其计入素材重定位通过范围。
+
+本候选还修复了撤销时内存与磁盘项目状态可能分离的问题。artifacts/validation/persistence-negative-v2/result.json 保留旧行为的失败复现；修复后 artifacts/validation/persistence-fixed-v1/result.json 的12项真实文件锁检查通过，覆盖普通保存、撤销/重做写入失败后的状态与历史一致性、解锁重试和保存重开，并核对测试素材未变。Core测试通过。范围音频导出探针 artifacts/validation/range-audio-export-v1/result.json 与标准合成媒体集成 artifacts/validation/integration-after-range-v1/result.json 通过，分别验证范围裁切、多段音轨与视频导出。导出面板新回归 artifacts/validation/export-progress-025-v2/result.json 为21项通过，包含真实进度采样、取消时保留既有目标文件、同窗重试、完整解码及临时文件清理；取消前进度采样4个值，范围0.055–0.059，阶段为“合成与编码”；重试采样146个值，范围0.055–1.000，覆盖合成编码、媒体核验、完成和导出完成阶段。driver-result.json 记录 PreferencesRestored=true、退出码0；该运行应用SHA256为3B8DEA573CB43057BF7D5E40089F88187F454D819FFC58D64AAFE75CAF57C4D3。此证据来自合成工程与当前开发快照，不代表0.2.5发行包验证；发行包尚未生成。
+
+高DPI主窗启动定位修复已在新开发快照验证。旧0.2.4包的200%只读负对照失败；修复版200%定位20/20通过，详见 `artifacts/validation/ui-startup-placement-dpi200-v2.json`。在150%单显示器环境，`recording-isolation-app-v4` 快照的 `artifacts/validation/ui-full-placement-dpi150-v1.json` 为44/44、`status=passed`、`complete=true`；启动时窗口边界 `[480,107..3360,1981]` 位于工作区 `[0,0..3840,2088]`。后续备忘录重启步骤仍由harness定位窗口，不能据此声称全程不调整窗口。`artifacts/validation/visual-025-offscreen-v1/result.json` 的离屏视觉探针19项通过。0.2.5发行包尚未生成，本节不代表安装、卸载或发行包验收。
+
+0.2.4精确发行包麦克风探针 `artifacts/validation/microphone-package-024-v1/microphone-capture.summary.json` 完成15秒录制，其中请求暂停约2秒；WAV有效时长13.008秒、48kHz、624400帧、两个活动时钟段，数值样本非零。报告明确没有对声音内容或语音质量分类。200%窗口排除报告 `artifacts/validation/exclusion-package-024-dpi200-v1/exclusion.exclusion.json` 记录WDA affinity 0x11成功设置和回读；中心像素在DDA中从红色变暗，在gdigrab中也从红色变暗。这只说明本机窗口在这两条受测捕获路径中被排除，不是安全边界。
+
+正确ROI的30分钟视听长测及真实回工程导出分析见 `artifacts/validation/capture-aligned-audio-clock-1800s-v1/offline-analysis-source-rate-v3/validation-summary.json`。v3固定tone检测规则在同一长测原始素材上检测到1071个视频flash、1070个tone并匹配1070对；其中80.316667秒视频flash没有匹配tone，另有9个名义视频事件未检。名义cue匹配率为1070/1080（99.0741%），双向覆盖99.907%，事件跨度1797.843秒，raw P95绝对偏差74.445ms、最大96.112ms；按产品SourceRate映射并经ExportEngine导出的工程成片匹配1070/1080，P95 38.333ms、最大56.667ms。fixture测得的−15ms仅作为检测链基线单列，未从raw或mapped数据扣除。该运行使用Capture.Probe v6快照；TimestampFallbackPackets和TimestampErrorPackets均为0，但它不含后续新增的timestamp-error gap门禁，不能替代最终包版本的全长设备验收。音频SILENT标志比例93.335%，事件检测通过不证明其他音频内容完整。
+
+以下按标题保留0.2.3及更早候选的历史证据；旧的“当前候选”结论仅适用于对应版本，不描述0.2.4。
+
+## 0.2.3 历史候选验证（2026-10-09）
+
+仓库和打包脚本当时处于0.2.3候选。该候选的发行包运行验收尚未完成；以下旧版本测试记录不自动继承到0.2.4。
+
+统一后台回归 `artifacts/validation/net10-023-background-regression-v2.log` exit 0：Core、DogSC导入、Render/GPU、时间线资产20项、逐片段音量、媒体Integration、VisualProbe、7项Capture纯逻辑检查、发行清单16项及源码身份6项均通过；其中媒体与导入为合成/fixture验证，Capture不代表设备实测。WPF离屏主题探针 `artifacts/validation/theme-offscreen-v4/result.json` 与 `theme-offscreen-8e71d3521e604702895b18144e61c0a4/result.json` 均为15/15；当时MainWindow未Show且没有HWND。v6浮层专项为19/19；v5全量43/43和导出15/15属于当时候选。
 
 浮层主题继承修正的 `ui-transient-surfaces-net10-v6.json` 为19/19通过，截图目录为 `artifacts/validation/ui-transient-surfaces-net10-v6.surfaces-719540a267d04fe0b444020240dcf30c/`。新时间线高对比绘制已随App v7构建通过（0警告、0错误），离屏像素探针15/15并保存PNG；尚未取得新版实机主窗口截图。对比度计算不能替代实际显示检查。
 
-窗口捕获结论需按目标进程和测试条件区分。产品的跨进程可见窗口探针 `artifacts/validation/window-wgc-product-probe-v6/window-wgc-target.target.json` 首帧9/9采样为暗、编码MP4在遮挡前/中和移动缩放后9/9采样为 `#000000`。另一个产品服务在同一进程录制自有窗口的探针 `artifacts/validation/wgc-investigation/product-capture-self-window-v1.json` 首帧9/9亮，解码156帧的非暗采样比例为1。独立ScreenRecorderLib跨进程可见窗口探针v1/v2也输出黑帧。当前只证明这些特定条件下出现过相反结果；动态/静态刺激条件混杂，不能据此判定进程边界是原因，也不能声称0.2.3当前候选已复现或修复。raw WGC与SLR对同一窗口的静态/动态矩阵尚待执行。
+窗口捕获旧探针需按目标进程和测试条件区分。0.2.3历史跨进程样本曾出现暗帧，同进程样本也曾出现亮帧，条件不完全相同，不能据此判定进程边界是原因。0.2.4包内 `window-wgc-package-024-v4/target.target.json` 对自有窗口的移动、调整大小、遮挡、最小化和关闭收尾完成专项验证；该证据限定于当前Windows主机、单显示器与测试窗口。
 
 ## 0.2.2 历史候选验证（2026-10-09）
 
@@ -18,22 +38,22 @@
 
 当前QPC实现的30秒区域音画探针 `capture-audio-clock-appsync-30s-v1/validation-summary.json` 检出18/18个cue。原始音画偏差P95绝对值54.736ms；以同一分析器对3个fixture cue测得的−35ms中位数作修正后，估计P95绝对值21.885ms。修正值是fixture校正估计，不是物理时钟校准；该短测不能替代30分钟长测。
 
-v5/v6窗口目标探针记录了跨进程样本黑帧（P0待复核）：v6 `artifacts/validation/window-wgc-product-probe-v6/window-wgc-target.target.json` 首帧预览9/9采样亮度为0，编码后MP4在遮挡前、遮挡期间及窗口移动/缩放后9/9均为 `#000000`。同进程产品服务自录窗口探针 `artifacts/validation/wgc-investigation/product-capture-self-window-v1.json` 则首帧9/9亮、解码156帧非暗采样比例为1。独立ScreenRecorderLib跨进程窗口v1/v2也记录黑帧。不同测试的静态/动态刺激条件混杂，根因未定位，也未证明0.2.3当前候选可在同条件下复现；不能把这些结果泛化为所有产品WGC路径。遮挡、最小化、关闭及跨显示器行为仍待验。
+0.2.3历史探针曾记录跨进程样本黑帧：v6 `artifacts/validation/window-wgc-product-probe-v6/window-wgc-target.target.json` 首帧预览9/9采样亮度为0，编码后MP4在遮挡前、期间和窗口移动缩放后9/9为 `#000000`；同进程探针则记录亮帧。0.2.4包内窗口目标专项见本报告当前候选段落；旧测试条件不完全相同，不能用来概括所有WGC路径。
 
 后台收尾的 `polish-app-build-release-candidate.log` 再次为0警告0错误；`polish-release-product-hashes.json` 确认本次重建的App/Core/Capture/Media四个产品DLL与final8逐一SHA256相同。`polish-capture-pure-final4.log` 的Core、导入器和六项采集纯逻辑测试通过，`polish-desktop-guard-final.log` 的模拟桌面守卫测试通过；这些检查没有启动GUI、播放音频或采集设备。发行脚本的临时ZIP对照测试确认同长度异内容、缺文件与重复条目均被拒绝。
 
 `editor-polish-final8.json` 为53/53通过。`export-panel-polish-final8.json` 为12/12通过：直接进入M4A模式，真实生成纯音频且时长正确；不可用输出目录失败后恢复按钮、原占位文件不变；真实编码进度出现后取消、控件锁定、清理临时文件；同一面板再次导出MP4并探测流和时长。诊断调用实际WPF按钮和真实ExportEngine，没有用假进度替代导出。`ui-shortcuts-polish-final10.json` 为12/12通过，使用App final7，覆盖鼠标定位、快捷键及主窗口自然关闭。
 
 Net10候选 `ui-full-surfaces-net10-v5.json` 为43/43，`passed=true`、`complete=true`；独立 `ui-transient-surfaces-net10-v5.json` 为19/19，人工查看确认嵌套子菜单和稳定下拉截图完整；`export-panel-surfaces-net10-v5.json` 为15/15。此前v2/v3浮层截图缺陷和较早 `export-panel-surfaces-net10-v1.json` 均保留为历史候选结果，不替代v5。全量UI流程覆盖合成工程打开、面板编辑、设置、预设、时间线操作、保存关闭重开及正常退出。
-当前开发候选0.2.3另有v6浮层主题继承结果19/19，见本节开头；新版时间线通过离屏像素验收并保存PNG，但尚无实机主窗口截图。
+0.2.3候选另有v6浮层主题继承结果19/19及时间线离屏像素验收；这些是历史版本证据。0.2.4桌面UIA与高DPI浮层专项结果见本报告开头。
 
-音频包时钟纯测试、三次实际区域视听短测、含10秒暂停的30秒队列测试，以及启动失败后再次录制的真实探针见 `capture-validation.md`。另有独立30秒App同步探针匹配18/18 cue，raw P95绝对偏差54.736ms、扣除3个fixture cue中位偏差后的估计21.885ms；修正估计不是物理校准。长测尚未完成，不将旧版30分钟到达时刻音轨结果当作新QPC实现的验收。
+0.2.3历史音频包时钟纯测试、短测和队列测试见 `capture-validation.md`。0.2.4长测v3和工程映射结果见当前候选段落；更早的到达时刻音轨长测不用于证明当前QPC实现。
 
 53项编辑回归覆盖效果分割、主片段按播放头分割、重排/变速后Q/W映射，以及屏幕和相机运动裁短后的返回时长上限。快捷键专项包含中文IME的`ImeProcessedKey`修复和撤销后的效果选择恢复。早期专项保留失败报告：测试曾未定位播放头或未滚到标尺；五帧键的测试注入修正为带左右修饰键扫描码的输入。
 
 参考工程11页和原创填充样例12页分别保存于 `visual-polish-final4/`、`visual-polish-populated-final4/`，后一组实际展示开启的开场、摄像头、选中缩放和贴图参数。截图范围及不同构图时间见 `visual-spec.md`。
 
-历史 `ui-full-polish-final10` 在7/32后由前台保护中断；final9曾出现多实例守卫误判，已修正。更早的 `ui-full-polish-final3.json` 42/42及final7失败日志属于历史证据，不能继承为当前候选全量结果。3840×2160屏幕内的输入坐标2698×1294并未越界，现有证据不足以将早期交互失败归因于DPI。final8另有采集诊断侧车与4项纯测试通过，详见采集验证文档。当前0.2.3全量桌面UIA未运行；Net10 v5及旧候选流程只按各自版本记录。
+历史 `ui-full-polish-final10` 在7/32后由前台保护中断；final9曾出现多实例守卫误判，已修正。更早的 `ui-full-polish-final3.json` 42/42及final7失败日志属于历史证据。0.2.4全量桌面UIA为43/43，详见当前候选段落。
 
 较早 `surfaces-app-v2` 候选全量桌面报告 `artifacts/validation/ui-full-surfaces-v2.json` 为41/43；v2全量UIA曾通过43/43，v3浮层截图存在覆盖缺陷。当前v5全量UIA为43/43、浮层专项为19/19且经人工检查截图完整；旧报告仅保留为版本历史，不覆盖v5结果。
 
@@ -65,7 +85,7 @@ final15媒体产物为 `overlay-export-20261009-112311`、`camera-media-20261009
 
 ## 0.2.0 历史基线
 
-验证日期：2026-10-09。当前结论：Core、GPU合成、实时预览、主要编辑流程和数项真实录制闭环已有本机自动与桌面验收；单机长时视频采集、WASAPI测量及正确区域视听长测达到各自记录的阈值。其他硬件/音源组合、干净环境和最终发行包仍待验收。
+验证日期：2026-10-09。当时结论：Core、GPU合成、实时预览、主要编辑流程和数项真实录制闭环已有本机自动与桌面验收；单机长时视频采集、WASAPI测量及正确区域视听长测达到各自记录的阈值。其他硬件/音源组合、干净环境和最终发行包仍待验收。此段为0.2.0历史基线。
 
 ## 验证环境
 
@@ -75,7 +95,7 @@ Windows 11 Pro x64（`10.0.26200`），AMD Ryzen 7 9850X3D、NVIDIA GeForce RTX 
 
 | 范围 | 结果与证据 |
 |---|---|
-| Core 时间线和持久化 | `dotnet run --project tests/FrameTrail.Core.Tests/FrameTrail.Core.Tests.csproj -c Release` 通过。覆盖分割、裁短、变速、重排、重复/不连续源区间映射、鼠标时钟校准、自动缩放、项目备份恢复、路径安全，全源鼠标焦点到 `Canvas.Crop` 的转换，以及摄像头暂停分段、重排映射、分段裁切/滑移和备份恢复序列化。RecordingTimelineMapper覆盖首帧偏移、启动延迟、三次暂停及重叠暂停合并、首尾裁切和空交集。源视频帧率元数据要求有限且 `0 < fps ≤ 240`，旧项目缺字段时读取为30fps。 |
+| Core 时间线和持久化 | `dotnet run --project tests/FrameTrail.Core.Tests/FrameTrail.Core.Tests.csproj -c Release` 通过。覆盖分割、裁短、变速、重排、重复/不连续源区间映射、鼠标时钟校准、自动缩放、项目备份恢复、路径安全，全源鼠标焦点到 `Canvas.Crop` 的转换，以及摄像头暂停分段、重排映射、分段裁切/滑移和备份恢复序列化。RecordingTimelineMapper覆盖首帧偏移、启动延迟、三次暂停及重叠暂停合并、首尾裁切和空交集。新增 `RecordingMarkerTimelineProbe` 组合验证：暂停压缩后的源时间标记经过裁短、分割、两段不同速率、重排和保存重开后保留ID/名称/源时间，映射到预期输出跳转点，裁掉的标记无跳转目标；这不验证采集端暂停时钟压缩本身。源视频帧率元数据要求有限且 `0 < fps ≤ 240`，旧项目缺字段时读取为30fps。 |
 | 动画 | 同一 Core 测试通过相邻和重叠 zoom、ScreenMotion、CameraMotion 接缝；核对 Cubic、Quintic 和默认 Spring 数值样本，并检查重排后的目标源时间。Opening的8种预设均检查初始画面、元素错开顺序和完成状态。这些是根据上游Swift源码语义建立的C#样本；本机没有运行Swift实现，不能称为跨语言逐帧golden对照。 |
 | GPU与场景 | `dotnet run --project tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj -c Release` 通过，报告后端为 `Direct3D 11 GPU hardware`。覆盖裁切/缩放/圆角/光标、Phone与Tablet各自的机身和边框像素、焦点透视点反算、屏幕标题和窗口控制点透视、背景视频真实帧变化、循环与非循环末帧行为、预览与导出共享视频背景帧。GPU帧合成加回读40帧平均0.15ms；仅代表该小尺寸probe。 |
 | 实时预览 | Render.Probe的静态与动态1080p源缩至960输出，stdout背压期间decoder Private Bytes分别179→179MiB、181→181MiB；均值1.90/1.67ms，p95 2.77/2.12ms，对照30fps的33.33ms预算。Probe还覆盖seek、倒退seek、取消和Dispose清理。此结果来自本机合成输入和硬件，不保证复杂真实素材在所有机器上的实时帧率。 |
@@ -100,13 +120,13 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 
 ## 仍有限或待验的验收
 
-以下均为历史候选的长时测量，不继承为0.2.3当前实现的验收。ScreenRecorderLib旧后端完成的30分钟样片有4,095帧、1800.049秒视频，平均约2.27fps；private bytes先增长后稳定在约1.28GiB，不能算60fps通过。另一版 FFmpeg Desktop Duplication/NVENC 全屏视频压测完成4K显示器缩放到1920×1080/60fps、1800秒及108000帧；它没有音轨或同步刺激。独立WASAPI loopback WAV也完成过30分钟测量，时长1800.037188秒、221/221受控脉冲检测、音频相对触发中位1.979ms、绝对P95 7.671ms、估算漂移0.0944ms/min；这仅代表当时本机端点。另一次正确区域的视听同时30分钟试验使用320×180 ROI视频和独立WAV，机器可读报告显示1072/1072检测事件配对，P95绝对偏差70.790ms、最大94.123ms、漂移+0.02696ms/min，达到那次测试的100ms阈值。名义1080组中8组未检测，原因未分类；系统回环声源可能混入桌面音频。当前候选仅有上方记录的30秒18/18结果；长时测量及短时启动边界仍待验。
+以下旧长测作为历史候选记录保留。ScreenRecorderLib旧后端30分钟样片有4,095帧、1800.049秒视频，平均约2.27fps；它不构成60fps验收。FFmpeg Desktop Duplication/NVENC全屏视频压测完成4K缩放至1920×1080、60fps、1800秒及108000帧，但没有音轨或同步刺激。独立WASAPI WAV曾完成30分钟测量，时长1800.037188秒，221/221脉冲检测；这些数据只代表当时本机端点。旧区域视听试验为1072/1080配对、P95 70.790ms、最大94.123ms。当前0.2.4同步长测数据及其v6快照限制以本报告开头为准。
 
-显示器短测和区域路径有实现及本机探针。产品同进程自有窗口探针有非黑动态样本，产品窗口v6及SLR子进程目标探针出现黑帧；不同测试的内容/动态条件混杂，不能归因进程边界。raw WGC与SLR在同一子窗口的静态/动态矩阵尚未执行。麦克风未实际采集，物理摄像头未实际打开。长时区域音画结果已在上方报告；首20秒未达到短时50ms目标，不能宣称采集启动边界也满足短时阈值。App恢复验收由 `recovery-parts-app-final/app-recovery.json` 确认通过，并生成 UUID 工程 `recovered-20261009-014446-971.frametrail`（projectId `08779c62-6d16-4d18-a8f1-9d3b0c71b133`）；工程引用 `media/screen.mp4`。对应恢复媒体 `media/screen-recovered.mp4` 为203,497 bytes，ffprobe为H.264 1280×720、30/1fps、2.066667秒、62帧；工程中的音轨、标记和指针事件均为0，符合此无音频、无输入探针的配置。另一次 API 级 display-only 恢复的日志位于 `probe-logs/display-id-regression/`，其 `screen-recovered.mp4` 为207,598 bytes、2.100秒、63帧；这是独立探针结果，不是上述 App UUID 工程媒体。窗口排除测试于Windows 10.0.26200.0的受控红色窗口ROI `(640,300,320,180)`验证通过：`WDA_EXCLUDEFROMCAPTURE (0x11)`设置并回读成功；DDA中心像素从`#FD0000`变为`#181818`，FFmpeg gdigrab从`#FF0000`变为`#181818`。机器可读结果和样片位于`artifacts/validation/window-exclusion-20261009b/affinity.exclusion.json`及同目录MP4；这只证明本机这两条捕获路径遵守设置。没有干净VM；`WindowsSandbox.exe` 不存在，不能报告干净系统安装验收。便携版已在隔离 `PATH` 和 `DOTNET_ROOT` 的开发机环境通过播放及真实录制导出，安装版播放与卸载清理亦已通过；源码归档单独验收。当前FFmpeg验证构建含GPL组件，FFmpeg全静态依赖许可材料仍有公开发行缺口；本机安装验收不代表干净机器。
+本机存在单显示器DDA与窗口录制证据；物理摄像头及真实Mac工程仍未测试。0.2.4麦克风数值采集和窗口排除证据已列于本报告开头。App恢复、便携包/安装包和源码包闭环也已由0.2.4验证。没有干净VM；`WindowsSandbox.exe` 不存在，不能报告干净系统安装验收。当前FFmpeg验证构建含GPL组件；公开再分发仍需随发行包提供对应依赖的许可材料。本机安装验收不等于干净机器验证。
 
 本报告和测试结果不代表完整DogSC兼容或整个迁移阶段结束。平台光标资源、部分原生采集时钟精度、真实设备矩阵以及长录制质量仍有限制。
 
-0.2.0源码包曾完成工作区外独立重建预验；该历史结果不覆盖0.2.2候选。0.2.2源码包和包内容结果只属于该候选，见 `artifacts/validation/package-0.2.2/source-validation.json` 与 `content-result.json`。0.2.3候选的发行包运行与安装器验收尚未完成，需针对对应候选manifest和验证报告确认实际归档及运行结果。
+0.2.0至0.2.3的包验收只属于各自候选。当前0.2.4程序包及源码包文件、提交、哈希和验收范围见 `artifacts/release/FrameTrail-0.2.4-manifest.json`、`artifacts/validation/package-0.2.4/result.json`、`source-validation.json` 和 `content-result.json`。
 
 ## 当前运行时说明
 
@@ -118,7 +138,7 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 
 - 主素材重定位 UIA `ui-relink-audit-v5.json` 为2/2通过：缺失素材重新选择后复制入工程、哈希一致、原文件未改、可解码、关闭重开不再提示缺失。
 - `fault-lifecycle-probe/synthetic-runtime-fault.mp4` 在真实受控窗口录制中注入服务故障通知，再执行实际 StopAsync。结果 Completed、完成事件仅一次、录制器释放，ffprobe为H.264、640×360、31帧、1.0333秒。这证明服务故障收尾路径，不代表原生设备故障、热拔或损坏残片恢复已实测。屏幕/摄像头Faulted状态可停止，主界面会停止独立轨道；在验证主视频前即保存独立轨道时钟，媒体成功打开后才删除恢复记录。
-## 0.2.3附加后台验收
+## 0.2.3 历史附加后台验收
 
 - `captured-project-synthetic-cli-v2/validation-summary.json` 记录完整合成metadata驱动的素材复制、实际App音轨映射、保存重开、M4A导出与派生分析输入；5秒素材的3个合成视听脉冲全部配对。这是CLI正向接线验证，尚不能替代真实录制的完整metadata随工程恢复。
 - `analyze-ffplay-sync-v2.py` 改用ffprobe JSON读取帧时间戳，忽略H.264 SEI side data；解析器纯测与H.264合成3/3验证通过。原30秒实录离线重分析仍为1820帧、18/18配对，原始中位数/P95/P99/最大值逐项不变，见 `capture-audio-clock-appsync-30s-v1/analyzer-json-fix-v1/comparison.json`。未改变cue判定或偏差阈值。
@@ -127,4 +147,4 @@ dotnet run --project tests/FrameTrail.Integration/FrameTrail.Integration.csproj 
 - 源码ZIP结构策略的17项合成用例通过，拒绝根目录外文件、规范路径重复、文件目录冲突、Windows路径歧义及无效元数据类型；只测试临时归档，不构建或运行应用。独立验证的子PowerShell使用UTF-8输出，`package-log-encoding-repro-v2/summary.json` 确认中文stdout/stderr完整、特殊字符参数不被执行、失败退出码传播及父进程代码页保持。
 - 后续完整源码验证暴露了UTF-8启动脚本的命名参数传递错误，失败报告保留在 `source-validation-logs-82092e451a504be7a23f390e093d620a/result.json`。已改成JSON对象与命名参数映射，并将 `test-utf8-script.ps1` 纳入发行规则回归，覆盖实际配置参数和开关绑定；该失败报告不会被改写成通过。
 
-当前程序包和源码包的最终文件、提交、哈希及验收范围以 `artifacts/release/FrameTrail-0.2.3-candidate-manifest.json`、`artifacts/validation/package-0.2.3/source-validation.json` 和 `content-result.json` 为准；候选清单不表示实际安装、卸载或设备录制已经通过。
+0.2.3程序包与源码包的历史文件、提交和哈希以 `artifacts/release/FrameTrail-0.2.3-candidate-manifest.json`、`artifacts/validation/package-0.2.3/source-validation.json` 和 `content-result.json` 为准。当前0.2.4状态见报告开头。

@@ -31,7 +31,7 @@ if (!InteractiveDesktopGuard.HasExplicitConsent(args))
 }
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop [--reopen-only|--transient-surfaces-only]");
+    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop [--fit-work-area|--verify-startup-placement] [--reopen-only|--transient-surfaces-only]");
     return 2;
 }
 
@@ -42,7 +42,7 @@ var progressPath = Path.ChangeExtension(reportPath, ".progress.log");
 File.WriteAllText(progressPath, $"UIA 开始 {DateTimeOffset.Now:O}{Environment.NewLine}");
 SmokeProgress.Path = progressPath;
 InteractiveDesktopGuard.Initialize(consented: true, progressPath);
-var testRoot = args.Contains("--relink-only")
+var testRoot = args.Contains("--relink-only") || args.Contains("--relink-aux-only") || args.Contains("--relink-aux-external-input")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-relink-fixture-audit-" + Guid.NewGuid().ToString("N"))
     : args.Contains("--effects-only")
     ? Path.Combine(Environment.CurrentDirectory, "artifacts", "validation", "ui-effect-fixture-audit-" + Guid.NewGuid().ToString("N"))
@@ -78,6 +78,16 @@ try
         RunRelinkOnly(appPath, sourceProject, projectCopyFile, results);
         throw new SmokeEarlyExitException();
     }
+    if (args.Contains("--relink-aux-only") || args.Contains("--relink-aux-external-input"))
+    {
+        var auxiliaryReport = Path.Combine(testRoot, "auxiliary-relink-result.json");
+        var auxiliaryResults = await AuxiliaryRelinkSmoke.RunAsync(appPath, sourceProject, projectCopyFile, auxiliaryReport,
+            waitForForeground: args.Contains("--wait-for-foreground", StringComparer.Ordinal),
+            externalInput: args.Contains("--relink-aux-external-input", StringComparer.Ordinal),
+            sendKey: (key, control) => SendKey(key, control), progress: SmokeProgress.AppendMessage);
+        foreach (var result in auxiliaryResults) AddResult(result);
+        throw new SmokeEarlyExitException();
+    }
     PrepareFeatureFixture(projectCopyFile);
     if ((args.Contains("--effects-only") && !args.Contains("--preserve-reordered-timeline")) || args.Contains("--full-uncut-effects") || args.Contains("--timeline-shortcuts-only"))
         PrepareUncutEffectTimeline(projectCopyFile);
@@ -102,7 +112,15 @@ try
     SmokeProgress.AppendMessage(args.Contains("--wait-for-foreground", StringComparer.Ordinal)
         ? "测试应用已自然成为前台；后续失焦会立即中止输入。"
         : "测试应用已在启动阶段完成唯一一次前台激活；后续失焦会立即中止输入。");
-    NativeMethods.SetWindowPos((IntPtr)window.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004 | 0x0010);
+    var fitWorkArea = args.Contains("--fit-work-area", StringComparer.Ordinal);
+    var verifyStartupPlacement = args.Contains("--verify-startup-placement", StringComparer.Ordinal);
+    if (fitWorkArea && verifyStartupPlacement)
+        throw new ArgumentException("启动定位验收不能同时让测试工具调整窗口。");
+    var startupPlacement = PositionTestWindow((IntPtr)window.Current.NativeWindowHandle, app.Id, fitWorkArea || verifyStartupPlacement, verifyOnly: verifyStartupPlacement);
+    SmokeProgress.AppendMessage(startupPlacement.Detail);
+    if (fitWorkArea || verifyStartupPlacement)
+        AddResult(new(verifyStartupPlacement ? "应用自身启动窗口位于显示器工作区" : "测试窗口位于显示器工作区", startupPlacement.Passed, startupPlacement.Detail));
+    if (verifyStartupPlacement && !startupPlacement.Passed) throw new SmokeEarlyExitException();
     var projectTitle = WaitForProjectTitle(window, TimeSpan.FromSeconds(20));
     var projectLoaded = projectTitle is not null && projectTitle.Current.Name != "未命名项目";
     AddResult(new("命令行项目确实已打开", projectLoaded, projectLoaded ? projectTitle!.Current.Name : "标题仍为未命名项目；本轮后续交互结果只作界面诊断，不计功能通过。"));
@@ -635,7 +653,10 @@ try
         AddResult(new("备忘录重启实例完成一次性前台交接", memoStartupReady,
             $"新 PID={app!.Id}，启动激活={memoStartupReady}；未成功时不执行备忘录输入。"));
         if (!memoStartupReady) throw new SmokeEarlyExitException();
-        NativeMethods.SetWindowPos((IntPtr)memoWindow.Current.NativeWindowHandle, IntPtr.Zero, 960, 200, 0, 0, 0x0001 | 0x0004 | 0x0010);
+        var memoPlacement = PositionTestWindow((IntPtr)memoWindow.Current.NativeWindowHandle, app!.Id, args.Contains("--fit-work-area", StringComparer.Ordinal));
+        SmokeProgress.AppendMessage("备忘录窗口：" + memoPlacement.Detail);
+        if (args.Contains("--fit-work-area", StringComparer.Ordinal))
+            AddResult(new("备忘录窗口位于显示器工作区", memoPlacement.Passed, memoPlacement.Detail));
         _ = WaitForProjectTitle(memoWindow, TimeSpan.FromSeconds(10));
         TestMemoPersistence(memoWindow, app!.Id, results);
     }
@@ -746,7 +767,7 @@ finally
     }, new JsonSerializerOptions { WriteIndented = true }));
     Console.WriteLine($"UIA_REPORT={reportPath}");
     foreach (var result in results) Console.WriteLine($"{(result.Passed ? "通过" : "未通过")}：{result.Name} — {result.Detail}");
-    if (userDataRestored && cleanupErrors.Count == 0 && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only")) try { Directory.Delete(testRoot, true); } catch { }
+        if (userDataRestored && cleanupErrors.Count == 0 && !args.Contains("--effects-only") && !args.Contains("--keep-fixture") && !args.Contains("--relink-only") && !args.Contains("--relink-aux-only") && !args.Contains("--relink-aux-external-input")) try { Directory.Delete(testRoot, true); } catch { }
 }
 return results.Any(x => !x.Passed && x.Name != "交互中止（本轮结果不完整，需复核）") ? 1
     : results.Count == 0 || !SmokeProgress.IsComplete || InteractiveDesktopGuard.IsAborted ? 2 : 0;
@@ -1330,6 +1351,99 @@ static bool DecodeFrameWithBundledFfmpeg(string appPath, string mediaPath)
         return process.ExitCode == 0;
     }
     catch { return false; }
+}
+
+static WindowPlacementResult PositionTestWindow(IntPtr hWnd, int expectedOwnerPid, bool fitWorkArea, bool verifyOnly = false)
+{
+    const int requestedMargin = 48;
+    var previousDpiContext = IntPtr.Zero;
+    if (fitWorkArea)
+    {
+        previousDpiContext = NativeMethods.SetThreadDpiAwarenessContext(new IntPtr(-4)); // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        if (previousDpiContext == IntPtr.Zero)
+            return new(false, "无法切换到 PerMonitorV2；没有移动测试窗口。");
+    }
+
+    try
+    {
+        if (hWnd == IntPtr.Zero || !NativeMethods.IsWindow(hWnd))
+            return new(false, $"无效测试窗口句柄：0x{hWnd.ToInt64():X}。");
+        NativeMethods.GetWindowThreadProcessId(hWnd, out var ownerPid);
+        if (ownerPid != (uint)expectedOwnerPid)
+            return new(false, $"拒绝移动非目标应用窗口：hwnd=0x{hWnd.ToInt64():X}, ownerPid={ownerPid}, expectedPid={expectedOwnerPid}。");
+        if (!NativeMethods.GetWindowRect(hWnd, out var before))
+            return new(false, "无法读取测试窗口的物理像素边界。");
+
+        var dpi = NativeMethods.GetDpiForWindow(hWnd);
+        if (dpi == 0) dpi = 96;
+        var scale = dpi / 96d;
+        var x = 960;
+        var y = 200;
+        var targetWidth = before.Right - before.Left;
+        var targetHeight = before.Bottom - before.Top;
+        if (fitWorkArea && (targetWidth <= 0 || targetHeight <= 0))
+            return new(false, $"窗口还没有有效像素尺寸；DPI={dpi}, bounds={FormatRect(before)}。");
+        RectNative workArea = default;
+        var effectiveMarginX = 0;
+        var effectiveMarginY = 0;
+
+        if (fitWorkArea)
+        {
+            var monitor = NativeMethods.MonitorFromWindow(hWnd, 2); // MONITOR_DEFAULTTONEAREST
+            var monitorInfo = new MonitorInfoNative { Size = Marshal.SizeOf<MonitorInfoNative>() };
+            if (monitor == IntPtr.Zero || !NativeMethods.GetMonitorInfo(monitor, ref monitorInfo))
+                return new(false, $"无法读取窗口所在显示器的工作区；hwnd=0x{hWnd.ToInt64():X}, dpi={dpi}, bounds={FormatRect(before)}。");
+
+            workArea = monitorInfo.WorkArea;
+            if (verifyOnly)
+            {
+                var inside = before.Left >= workArea.Left && before.Top >= workArea.Top
+                    && before.Right <= workArea.Right && before.Bottom <= workArea.Bottom;
+                return new(inside, $"只读启动定位验收，未移动或缩放窗口：DPI={dpi} ({scale:P0})，窗口像素边界={FormatRect(before)}，工作区={FormatRect(workArea)}，工作区内={inside}。");
+            }
+            var workWidth = workArea.Right - workArea.Left;
+            var workHeight = workArea.Bottom - workArea.Top;
+            var maxWidth = Math.Max(1, workWidth - requestedMargin * 2);
+            var maxHeight = Math.Max(1, workHeight - requestedMargin * 2);
+            targetWidth = Math.Min(targetWidth, maxWidth);
+            targetHeight = Math.Min(targetHeight, maxHeight);
+            effectiveMarginX = Math.Min(requestedMargin, Math.Max(0, (workWidth - targetWidth) / 2));
+            effectiveMarginY = Math.Min(requestedMargin, Math.Max(0, (workHeight - targetHeight) / 2));
+            x = ClampCentered(workArea.Left, workArea.Right, targetWidth, effectiveMarginX);
+            y = ClampCentered(workArea.Top, workArea.Bottom, targetHeight, effectiveMarginY);
+        }
+
+        var flags = fitWorkArea ? 0x0004 | 0x0010 : 0x0001 | 0x0004 | 0x0010;
+        var positioned = NativeMethods.SetWindowPos(hWnd, IntPtr.Zero, x, y, targetWidth, targetHeight, (uint)flags);
+        var readAfter = NativeMethods.GetWindowRect(hWnd, out var after);
+        var withinWorkArea = !fitWorkArea || (readAfter
+            && after.Left >= workArea.Left && after.Top >= workArea.Top
+            && after.Right <= workArea.Right && after.Bottom <= workArea.Bottom);
+        var fits = positioned && readAfter && withinWorkArea;
+        var details = fitWorkArea
+            ? $"DPI={dpi} ({scale:P0})，窗口像素边界 {FormatRect(before)} → {FormatRect(after)}；目标尺寸={targetWidth}x{targetHeight}px，工作区 {FormatRect(workArea)}；请求边距={requestedMargin}px，有效边距={effectiveMarginX}x{effectiveMarginY}px；工作区内={withinWorkArea}；SetWindowPos={positioned}。"
+            : $"默认定位保持为 (960,200)；DPI={dpi} ({scale:P0})，窗口像素边界 {FormatRect(before)} → {FormatRect(after)}；SetWindowPos={positioned}。";
+        return new(fits, details);
+    }
+    catch (Exception ex)
+    {
+        return new(false, $"窗口定位失败：{ex.GetType().Name}: {ex.Message}");
+    }
+    finally
+    {
+        if (previousDpiContext != IntPtr.Zero)
+            _ = NativeMethods.SetThreadDpiAwarenessContext(previousDpiContext);
+    }
+
+    static int ClampCentered(int workStart, int workEnd, int windowSize, int margin)
+    {
+        var min = workStart + margin;
+        var max = workEnd - margin - windowSize;
+        if (max < min) return workStart;
+        return Math.Clamp(workStart + (workEnd - workStart - windowSize) / 2, min, max);
+    }
+
+    static string FormatRect(RectNative rect) => $"[{rect.Left},{rect.Top}..{rect.Right},{rect.Bottom}]";
 }
 
 static AutomationElement? WaitForWindow(Process process, TimeSpan timeout)
@@ -3920,6 +4034,7 @@ static class SmokeProgress
 }
 
 record StepResult(string Name, bool Passed, string Detail);
+record WindowPlacementResult(bool Passed, string Detail);
 sealed record UserDataSnapshotEntry(string Path, bool Exists, string? ContentBase64);
 sealed record UserDataSnapshotDocument(int Version, UserDataSnapshotEntry[] Files);
 sealed class ApplicationErrorDialogException(string message) : Exception(message);
@@ -3933,6 +4048,9 @@ static class NativeMethods
     }
     [DllImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)] private static extern bool SetWindowPosNative(IntPtr hWnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
     [DllImport("user32.dll")] internal static extern uint GetDpiForWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] internal static extern IntPtr MonitorFromWindow(IntPtr hWnd, uint flags);
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern bool GetMonitorInfo(IntPtr hMonitor, ref MonitorInfoNative monitorInfo);
     internal static bool SetCursorPos(int x, int y) => InteractiveDesktopGuard.RunGuardedInput("SetCursorPos", () => SetCursorPosNative(x, y));
     [DllImport("user32.dll", EntryPoint = "SetCursorPos")] private static extern bool SetCursorPosNative(int x, int y);
     [DllImport("user32.dll")] internal static extern bool GetCursorPos(out PointNative point);
@@ -3968,3 +4086,11 @@ static class NativeMethods
 }
 struct PointNative { public int X, Y; }
 struct RectNative { public int Left, Top, Right, Bottom; }
+[StructLayout(LayoutKind.Sequential)]
+struct MonitorInfoNative
+{
+    public int Size;
+    public RectNative MonitorArea;
+    public RectNative WorkArea;
+    public uint Flags;
+}

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.4', [switch]$Candidate)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.5', [switch]$Candidate)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo 'artifacts/release'
