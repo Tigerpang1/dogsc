@@ -21,12 +21,12 @@ function Test-Case([string]$Name, [bool]$Candidate, [bool]$ExpectPass, [scriptbl
     $script = Join-Path $scripts 'write-release-manifest.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'write-release-manifest.ps1') -Destination $script
     $artifacts = @()
-    foreach ($name in @("FrameTrail-$version-win-x64.zip", "FrameTrail-Setup-$version-win-x64.exe", "FrameTrail-$version-source.zip")) {
-        $path = Join-Path $release $name
+    foreach ($artifactName in @("FrameTrail-$version-win-x64.zip", "FrameTrail-Setup-$version-win-x64.exe", "FrameTrail-$version-source.zip")) {
+        $path = Join-Path $release $artifactName
         [IO.File]::WriteAllText($path, 'Synthetic release-gate fixture; not an executable or delivery package.')
-        $artifacts += @{ Name=$name; SHA256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+        $artifacts += @{ Name=$artifactName; SHA256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
     }
-    $required = @('portable-archive-content', 'preferences-snapshot', 'portable-playback', 'portable-workflow', 'installed-playback', 'installed-uninstall', 'preferences-restored')
+    $required = @('portable-archive-content', 'preferences-snapshot', 'portable-playback', 'portable-workflow', 'installed-playback', 'installed-uninstall', 'preferences-restored', 'portable-archive-unchanged')
     $package = @{
         Passed=$true; Scope='interactive-package'; Version=$version; CompletedUtc=[DateTime]::UtcNow.ToString('o')
         Checks=@($required | ForEach-Object { @{ Id=$_; Passed=$true } })
@@ -65,6 +65,7 @@ try {
     Test-Case 'candidate-cannot-be-final' $false $false { param($p) $p.Scope='content-only' }
     Test-Case 'portable-cannot-be-final' $false $false { param($p) $p.Scope='portable-only' }
     Test-Case 'missing-uninstall' $false $false { param($p) $p.Checks=@($p.Checks | Where-Object Id -ne 'installed-uninstall') }
+    Test-Case 'missing-archive-unchanged' $false $false { param($p) $p.Checks=@($p.Checks | Where-Object Id -ne 'portable-archive-unchanged') }
     Test-Case 'duplicate-restore' $false $false { param($p) $p.Checks += @{ Id='preferences-restored'; Passed=$true } }
     Test-Case 'failed-restore' $false $false { param($p) ($p.Checks | Where-Object Id -eq 'preferences-restored').Passed=$false }
     Test-Case 'string-is-not-a-boolean' $false $false { param($p) $p.Passed='true' }
