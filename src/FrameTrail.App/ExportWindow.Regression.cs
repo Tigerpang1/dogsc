@@ -34,6 +34,11 @@ public sealed partial class ExportWindow
         outputDirectory = outputFolder;
         fileName.Text = audioOnly ? "panel-audio" : "panel-video";
         RefreshPreview();
+        UpdateLayout();
+        var cancelBoundsReady = GetButtonBounds(cancelButton);
+        var primaryBoundsReady = GetButtonBounds(exportButton);
+        Check(openFolderButton.Visibility == Visibility.Hidden && Math.Abs(openFolderButton.ActualWidth - 104) <= 1,
+            "导出就绪时文件夹按钮隐藏但保留104 DIP固定位置");
         Snapshot("ready");
         if (audioOnly)
         {
@@ -47,6 +52,8 @@ public sealed partial class ExportWindow
                 "M4A只有音频且时长与剪辑一致");
             Check(openFileButton.IsVisible && openFolderButton.IsVisible && !exportButton.IsVisible,
                 "成功后展示打开文件与文件夹操作");
+            CheckCancelButtonBounds(cancelBoundsReady, "音频完成");
+            CheckButtonBounds(primaryBoundsReady, openFileButton, "音频完成主操作");
             Snapshot("completed");
             return checks;
         }
@@ -59,8 +66,11 @@ public sealed partial class ExportWindow
         await WaitUntil(() => !running);
         Check(completedPath is null && stageText.Text == "导出失败，可修改设置后重试" && exportButton.IsEnabled,
             "输出目录不可用时显示失败并恢复重试操作");
+        Check(errorDetailsButton.Visibility == Visibility.Visible && !string.IsNullOrWhiteSpace(exportErrorDetails),
+            "导出失败时显示错误详情入口并保留异常文本");
         Check(await File.ReadAllTextAsync(blockedDirectory) == "preserve-existing-file", "失败不会改写已有目标文件");
         Snapshot("failed");
+        VerifyErrorDetailsDialog();
         outputDirectory = outputFolder;
         RefreshPreview();
         Click(resolutionChoices[0]);
@@ -74,6 +84,10 @@ public sealed partial class ExportWindow
         await WaitUntil(() => !running || progressBar.Value > .05 && cancelProgress.Count >= 3);
         cancelProgress.Add((progressBar.Value, stageText.Text));
         Check(running && progressBar.Value > .05 && stageText.Text.Contains("编码"), "覆盖确认后实际编码进度到达后可以取消");
+        CheckCancelButtonBounds(cancelBoundsReady, "视频运行中");
+        CheckButtonBounds(primaryBoundsReady, exportButton, "视频运行中主操作");
+        Check(openFolderButton.Visibility == Visibility.Hidden && errorDetailsButton.Visibility == Visibility.Hidden,
+            "运行中保留文件夹按钮位置并清除旧错误详情入口");
         Check(!videoModeButton.IsEnabled && !audioModeButton.IsEnabled && !browseButton.IsEnabled && !fileName.IsEnabled,
             "导出进行中锁定内容类型和输出位置，摘要与当前任务一致");
         Check(cancelProgress.Count >= 1 && cancelProgress.Max(x => x.Fraction) > 0 && IsMonotonic(cancelProgress),
@@ -109,6 +123,10 @@ public sealed partial class ExportWindow
         var decoded = await DecodeAllAsync(completedPath!);
         Check(decoded.ExitCode == 0,
             $"重试成片完整解码成功（FFmpeg退出码 {decoded.ExitCode}；{MediaTools.Tail(decoded.Error)}）");
+        Check(openFolderButton.Visibility == Visibility.Visible && openFileButton.MinWidth == 145 && exportButton.MinWidth == 145,
+            "完成后文件夹按钮显示且打开文件与导出按钮保持相同主操作宽度");
+        CheckCancelButtonBounds(cancelBoundsReady, "视频完成");
+        CheckButtonBounds(primaryBoundsReady, openFileButton, "视频完成主操作");
         Snapshot("completed");
         // A close request during export must wait for actual engine cleanup.
         fileName.Text = "panel-close-during-export";
@@ -139,6 +157,58 @@ public sealed partial class ExportWindow
             };
             timer.Start();
             return values;
+        }
+
+        Rect GetButtonBounds(Button button)
+        {
+            var origin = button.TranslatePoint(new Point(0, 0), this);
+            return new Rect(origin, new Size(button.ActualWidth, button.ActualHeight));
+        }
+
+        void CheckCancelButtonBounds(Rect expected, string state)
+        {
+            CheckButtonBounds(expected, cancelButton, state + "取消");
+        }
+
+        void CheckButtonBounds(Rect expected, Button button, string state)
+        {
+            UpdateLayout();
+            var actual = GetButtonBounds(button);
+            Check(Math.Abs(actual.X - expected.X) <= 1 && Math.Abs(actual.Y - expected.Y) <= 1
+                && Math.Abs(actual.Width - expected.Width) <= 1 && Math.Abs(actual.Height - expected.Height) <= 1,
+                $"{state}按钮边界相对就绪状态变化不超过1 DIP（ready={expected}; actual={actual}）");
+        }
+
+        void VerifyErrorDetailsDialog()
+        {
+            Window? dialog = null;
+            string? detailsText = null;
+            var copyButtonFound = false;
+            var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(20) };
+            var started = Stopwatch.StartNew();
+            timer.Tick += (_, _) =>
+            {
+                dialog = Application.Current?.Windows.OfType<Window>().FirstOrDefault(window => window != this && window.Title == "导出错误详情");
+                if (dialog is not null)
+                {
+                    timer.Stop();
+                    detailsText = FindLogicalTextBox(dialog)?.Text;
+                    copyButtonFound = FindLogicalButton(dialog, "复制详情") is not null;
+                    MainWindow.CaptureWindowVisual(dialog, Path.Combine(outputFolder, "panel-video-error-details.png"));
+                    if (FindLogicalButton(dialog, "关闭") is { } close)
+                        close.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    else
+                        dialog.Close();
+                    return;
+                }
+                if (started.Elapsed > TimeSpan.FromSeconds(5)) timer.Stop();
+            };
+            timer.Start();
+            errorDetailsButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            timer.Stop();
+            Check(dialog is not null && detailsText is not null && detailsText == exportErrorDetails && detailsText.Contains("blocked-output", StringComparison.Ordinal),
+                "错误详情弹窗显示完整失败信息并由应用内测试关闭");
+            Check(copyButtonFound, "错误详情弹窗提供复制详情操作");
         }
 
         Task ArmOverwriteConfirmation()
@@ -177,6 +247,14 @@ public sealed partial class ExportWindow
             if (root is Button button && string.Equals(Convert.ToString(button.Content), label, StringComparison.Ordinal)) return button;
             foreach (var child in LogicalTreeHelper.GetChildren(root))
                 if (child is DependencyObject dependency && FindLogicalButton(dependency, label) is { } found) return found;
+            return null;
+        }
+
+        static TextBox? FindLogicalTextBox(DependencyObject root)
+        {
+            if (root is TextBox textBox) return textBox;
+            foreach (var child in LogicalTreeHelper.GetChildren(root))
+                if (child is DependencyObject dependency && FindLogicalTextBox(dependency) is { } found) return found;
             return null;
         }
 

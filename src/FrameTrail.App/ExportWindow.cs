@@ -43,7 +43,7 @@ public sealed partial class ExportWindow : Window
     private readonly Button openFolderButton = new();
     private readonly Button closeButton = new();
     private readonly Button browseButton = new();
-    private RowDefinition? progressSpacerRow;
+    private readonly Button errorDetailsButton = new();
     private bool audioOnly;
     private bool running;
     private bool closeAfterCancellation;
@@ -52,6 +52,7 @@ public sealed partial class ExportWindow : Window
     private int frameRateIndex;
     private string outputDirectory;
     private string? completedPath;
+    private string? exportErrorDetails;
     private CancellationTokenSource? cancellation;
 
     public ExportWindow(FrameTrailProject project, ImageSource? preview, string projectName,
@@ -183,13 +184,14 @@ public sealed partial class ExportWindow : Window
         Grid.SetRow(bodyScroll, 1); root.Children.Add(bodyScroll);
 
         var footer = new Grid { Background = Brush("Chrome"), Margin = new Thickness(0) };
-        footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) }); progressSpacerRow = new RowDefinition { Height = new GridLength(0) }; footer.RowDefinitions.Add(progressSpacerRow); footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(29) }); footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(5) }); footer.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         var progressPanel = new Grid { Margin = new Thickness(30, 2, 30, 0) };
         progressPanel.ColumnDefinitions.Add(new ColumnDefinition()); progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto }); progressPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         stageText.Text = ""; stageText.SetResourceReference(TextBlock.ForegroundProperty, "Ink"); stageText.FontSize = 12; stageText.TextTrimming = TextTrimming.CharacterEllipsis; stageText.VerticalAlignment = VerticalAlignment.Center; progressPanel.Children.Add(stageText);
         timeText.Text = ""; timeText.SetResourceReference(TextBlock.ForegroundProperty, "Secondary"); timeText.FontSize = 11; timeText.TextTrimming = TextTrimming.CharacterEllipsis; timeText.MaxWidth = 390; timeText.Margin = new Thickness(14, 0, 0, 0); timeText.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(timeText, 1); progressPanel.Children.Add(timeText);
-        progressValue.FontSize = 11; progressValue.SetResourceReference(TextBlock.ForegroundProperty, "Secondary"); progressValue.Margin = new Thickness(12, 0, 0, 0); progressValue.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(progressValue, 2); progressPanel.Children.Add(progressValue);
+        errorDetailsButton.Content = "查看详情"; errorDetailsButton.Visibility = Visibility.Hidden; errorDetailsButton.Height = 26; errorDetailsButton.MinWidth = 68; errorDetailsButton.Padding = new Thickness(6, 2, 6, 2); errorDetailsButton.Margin = new Thickness(8, 0, 0, 0); errorDetailsButton.Style = FindStyle("PlainButton"); errorDetailsButton.Click += (_, _) => ShowExportErrorDetails(); System.Windows.Automation.AutomationProperties.SetName(errorDetailsButton, "查看导出错误详情"); Grid.SetColumn(errorDetailsButton, 2); progressPanel.Children.Add(errorDetailsButton);
+        progressValue.FontSize = 11; progressValue.SetResourceReference(TextBlock.ForegroundProperty, "Secondary"); progressValue.Margin = new Thickness(12, 0, 0, 0); progressValue.VerticalAlignment = VerticalAlignment.Center; Grid.SetColumn(progressValue, 3); progressPanel.Children.Add(progressValue);
         System.Windows.Automation.AutomationProperties.SetName(progressValue, "导出进度百分比");
         System.Windows.Automation.AutomationProperties.SetLiveSetting(stageText, System.Windows.Automation.AutomationLiveSetting.Polite);
         Grid.SetRow(progressPanel, 0); footer.Children.Add(progressPanel);
@@ -201,9 +203,9 @@ public sealed partial class ExportWindow : Window
         estimate.Foreground = Brush("Secondary"); estimate.VerticalAlignment = VerticalAlignment.Center; estimate.FontSize = 11; estimate.TextWrapping = TextWrapping.Wrap;
         actions.Children.Add(estimate);
         cancelButton.Content = "取消"; cancelButton.Style = FindStyle("PlainButton"); cancelButton.Padding = new Thickness(0); cancelButton.MinWidth = 58; cancelButton.Height = 40; cancelButton.Click += (_, _) => CancelExport(); Grid.SetColumn(cancelButton, 1); actions.Children.Add(cancelButton);
-        openFolderButton.Content = "打开文件夹"; openFolderButton.Visibility = Visibility.Collapsed; openFolderButton.Height = 40; openFolderButton.Click += (_, _) => OpenCompleted(false); Grid.SetColumn(openFolderButton, 2); actions.Children.Add(openFolderButton);
-        openFileButton.Content = "打开文件"; openFileButton.Visibility = Visibility.Collapsed; openFileButton.Style = FindStyle("PrimaryButton"); openFileButton.MinWidth = 130; openFileButton.Height = 42; openFileButton.Click += (_, _) => OpenCompleted(true); Grid.SetColumn(openFileButton, 3); actions.Children.Add(openFileButton);
-        exportButton.Content = ExportButtonContent("开始导出视频", true); System.Windows.Automation.AutomationProperties.SetName(exportButton, "开始导出视频"); exportButton.Style = FindStyle("PrimaryButton"); exportButton.MinWidth = 145; exportButton.Height = 42; exportButton.Margin = new Thickness(7, 0, 0, 0); exportButton.Click += async (_, _) => await StartExport(); Grid.SetColumn(exportButton, 3); actions.Children.Add(exportButton);
+        openFolderButton.Content = "打开文件夹"; openFolderButton.Visibility = Visibility.Hidden; openFolderButton.Width = 104; openFolderButton.Height = 40; openFolderButton.Click += (_, _) => OpenCompleted(false); Grid.SetColumn(openFolderButton, 2); actions.Children.Add(openFolderButton);
+        openFileButton.Content = "打开文件"; openFileButton.Visibility = Visibility.Collapsed; openFileButton.Style = FindStyle("PrimaryButton"); openFileButton.MinWidth = 145; openFileButton.Height = 42; openFileButton.Padding = new Thickness(18, 8, 18, 8); openFileButton.Margin = new Thickness(7, 0, 0, 0); openFileButton.Click += (_, _) => OpenCompleted(true); Grid.SetColumn(openFileButton, 3); actions.Children.Add(openFileButton);
+        exportButton.Content = ExportButtonContent("开始导出视频", true); System.Windows.Automation.AutomationProperties.SetName(exportButton, "开始导出视频"); exportButton.Style = FindStyle("PrimaryButton"); exportButton.MinWidth = 145; exportButton.Height = 42; exportButton.Padding = new Thickness(18, 8, 18, 8); exportButton.Margin = new Thickness(7, 0, 0, 0); exportButton.Click += async (_, _) => await StartExport(); Grid.SetColumn(exportButton, 3); actions.Children.Add(exportButton);
         Grid.SetRow(actions, 2); footer.Children.Add(actions);
         Border footerBorder = new() { Child = footer, BorderBrush = Brush("Hairline"), BorderThickness = new Thickness(0, 1, 0, 0) };
         Grid.SetRow(footerBorder, 2); root.Children.Add(footerBorder);
@@ -223,8 +225,8 @@ public sealed partial class ExportWindow : Window
     private static DrawingBrush DottedPreviewSurface()
     {
         var drawing = new DrawingGroup();
-        drawing.Children.Add(new GeometryDrawing(new SolidColorBrush(Color.FromRgb(248, 249, 249)), null, new RectangleGeometry(new Rect(0, 0, 14, 14))));
-        drawing.Children.Add(new GeometryDrawing(new SolidColorBrush(Color.FromRgb(218, 222, 223)), null, new EllipseGeometry(new Point(7, 7), 1, 1)));
+        drawing.Children.Add(new GeometryDrawing(Brush("Workspace"), null, new RectangleGeometry(new Rect(0, 0, 14, 14))));
+        drawing.Children.Add(new GeometryDrawing(Brush("Dot"), null, new EllipseGeometry(new Point(7, 7), 1, 1)));
         return new DrawingBrush(drawing) { Stretch = Stretch.Fill, TileMode = TileMode.Tile, Viewbox = new Rect(0, 0, 14, 14), ViewboxUnits = BrushMappingMode.Absolute, Viewport = new Rect(0, 0, 14, 14), ViewportUnits = BrushMappingMode.Absolute };
     }
     private static UIElement InfoLine(string label, TextBlock value)
@@ -296,6 +298,7 @@ public sealed partial class ExportWindow : Window
     private void RefreshPreview()
     {
         directoryText.Text = outputDirectory;
+        directoryText.ToolTip = outputDirectory;
         var (width, height) = GetSize();
         previewFormat.Text = audioOnly ? "M4A 音频" : "MP4 视频";
         previewSize.Text = audioOnly ? "—" : $"{width} × {height}";
@@ -380,11 +383,10 @@ public sealed partial class ExportWindow : Window
         if (string.IsNullOrWhiteSpace(fileName.Text)) { stageText.Text = "请输入文件名。"; return; }
         var outputPath = Path.Combine(outputDirectory, stem + (audioOnly ? ".m4a" : ".mp4"));
         if (File.Exists(outputPath) && SurfaceDialog.Show(this, "目标文件已存在，导出完成后将替换它。是否继续？", "确认覆盖", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        running = true; completedPath = null; closeAfterCancellation = false; cancellation = new CancellationTokenSource();
+        running = true; completedPath = null; exportErrorDetails = null; errorDetailsButton.Visibility = Visibility.Hidden; closeAfterCancellation = false; cancellation = new CancellationTokenSource();
         var generation = ++exportGeneration;
-        if (progressSpacerRow is not null) progressSpacerRow.Height = new GridLength(5);
         progressBar.Visibility = Visibility.Visible; progressBar.Value = 0; progressBar.Opacity = 1; stageText.Text = "正在准备…"; stageText.ToolTip = null; timeText.Text = ""; timeText.ToolTip = null; progressValue.Text = "";
-        exportButton.IsEnabled = false; openFileButton.Visibility = Visibility.Collapsed; openFolderButton.Visibility = Visibility.Collapsed; UpdateMode();
+        exportButton.IsEnabled = false; openFileButton.Visibility = Visibility.Collapsed; openFolderButton.Visibility = Visibility.Hidden; UpdateMode();
         var reporter = new Progress<ExportProgress>(p =>
         {
             // Progress<T> posts to the dispatcher. Ignore reports queued before cancel,
@@ -408,7 +410,7 @@ public sealed partial class ExportWindow : Window
             timeText.Text = "文件已保存"; openFileButton.Visibility = Visibility.Visible; openFolderButton.Visibility = Visibility.Visible;
         }
         catch (OperationCanceledException) { progressBar.Opacity = .4; progressValue.Text = ""; stageText.Text = "已取消导出"; timeText.Text = "可以调整设置后重新导出"; }
-        catch (Exception ex) { progressBar.Opacity = .4; progressValue.Text = ""; stageText.Text = "导出失败，可修改设置后重试"; timeText.Text = ex.Message; timeText.ToolTip = ex.Message; }
+        catch (Exception ex) { progressBar.Opacity = .4; progressValue.Text = ""; stageText.Text = "导出失败，可修改设置后重试"; timeText.Text = "导出出错，查看详情"; timeText.ToolTip = ex.Message; exportErrorDetails = ex.ToString(); errorDetailsButton.Visibility = Visibility.Visible; }
         finally
         {
             cancellation?.Dispose(); cancellation = null; running = false; exportButton.IsEnabled = true; UpdateMode();
@@ -421,11 +423,77 @@ public sealed partial class ExportWindow : Window
         if (!running) { Close(); return; }
         cancellation?.Cancel(); cancelButton.IsEnabled = false; stageText.Text = "正在取消…"; timeText.Text = "正在收尾并清理临时文件";
     }
+
+    private void ShowExportErrorDetails()
+    {
+        var errorDetails = exportErrorDetails;
+        if (string.IsNullOrWhiteSpace(errorDetails)) return;
+        var dialog = new Window { Title = "导出错误详情", Width = 680, Height = 440, MinWidth = 420, MinHeight = 280, ShowInTaskbar = false };
+        SurfaceWindow.Configure(dialog, this, resizable: true, captionHeight: 38);
+
+        var content = new Grid { Margin = new Thickness(18, 12, 18, 16) };
+        content.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        content.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        var details = new TextBox
+        {
+            Text = errorDetails,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            VerticalContentAlignment = VerticalAlignment.Top,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontFamily = new System.Windows.Media.FontFamily("Consolas, Microsoft YaHei UI, Segoe UI"),
+            FontSize = 12,
+            Padding = new Thickness(10),
+            Background = Brush("Surface"),
+            Foreground = Brush("Ink"),
+            BorderBrush = Brush("Hairline"),
+            BorderThickness = new Thickness(1)
+        };
+        System.Windows.Automation.AutomationProperties.SetName(details, "导出错误详情文本");
+        Grid.SetRow(details, 0);
+        content.Children.Add(details);
+
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 12, 0, 0) };
+        var copy = new Button { Content = "复制详情", MinWidth = 90, Height = 36, Margin = new Thickness(0, 0, 8, 0), Style = FindStyle("PlainButton") };
+        System.Windows.Automation.AutomationProperties.SetName(copy, "复制导出错误详情");
+        copy.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(errorDetails);
+                copy.Content = "已复制";
+            }
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                copy.ToolTip = "剪贴板暂不可用；可在文本框中选择并复制内容。";
+            }
+        };
+        actions.Children.Add(copy);
+        var close = new Button { Content = "关闭", MinWidth = 76, Height = 36, Padding = new Thickness(16, 5, 16, 5), Style = FindStyle("PrimaryButton") };
+        close.Click += (_, _) => dialog.Close();
+        actions.Children.Add(close);
+        Grid.SetRow(actions, 1);
+        content.Children.Add(actions);
+
+        dialog.Content = SurfaceWindow.WrapContent(dialog, content, dialog.Title);
+        dialog.ShowDialog();
+    }
+
     private static string FormatElapsed(TimeSpan value) => value.ToString(value.TotalHours >= 1 ? @"h\:mm\:ss" : @"m\:ss", CultureInfo.InvariantCulture);
     private StackPanel ExportButtonContent(string label, bool showIcon)
     {
         var content = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
-        if (showIcon) content.Children.Add(new EditorIcon { Kind = "export", Width = 16, Height = 16, Stroke = Brush("Workspace"), Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center });
+        if (showIcon)
+        {
+            var icon = new EditorIcon { Kind = "export", Width = 16, Height = 16, Margin = new Thickness(0, 0, 8, 0), VerticalAlignment = VerticalAlignment.Center };
+            icon.SetBinding(EditorIcon.StrokeProperty, new System.Windows.Data.Binding(nameof(Button.Foreground))
+            {
+                RelativeSource = new System.Windows.Data.RelativeSource(System.Windows.Data.RelativeSourceMode.FindAncestor, typeof(Button), 1)
+            });
+            content.Children.Add(icon);
+        }
         content.Children.Add(new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center });
         return content;
     }

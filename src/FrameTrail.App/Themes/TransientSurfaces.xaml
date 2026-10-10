@@ -210,6 +210,7 @@
     </Setter.Value></Setter>
   </Style>
   <Style TargetType="ComboBox">
+    <Setter Property="MinHeight" Value="32"/>
     <Setter Property="Foreground" Value="{DynamicResource Ink}"/>
     <Setter Property="Background" Value="{DynamicResource ControlSurface}"/>
     <Setter Property="BorderBrush" Value="{DynamicResource Hairline}"/>
@@ -237,7 +238,7 @@
             <Path Data="M 0 0 L 4 4 L 8 0" Stroke="{TemplateBinding Foreground}" StrokeThickness="1.2" Opacity="0.7"
                   HorizontalAlignment="Right" VerticalAlignment="Center"/>
           </Grid>
-          <TextBox x:Name="PART_EditableTextBox" Visibility="Hidden" Margin="8,1,28,1"
+          <TextBox x:Name="PART_EditableTextBox" Visibility="Collapsed" Margin="8,1,28,1"
                    Background="Transparent" BorderThickness="0" IsReadOnly="{TemplateBinding IsReadOnly}"/>
           <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom"
                  HorizontalOffset="-9" VerticalOffset="-3" AllowsTransparency="True" Focusable="False" PopupAnimation="Fade">

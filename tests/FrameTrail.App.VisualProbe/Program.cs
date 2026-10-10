@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail;
 using FrameTrail.App;
+using FrameTrail.App.VisualProbe;
 
 internal static class Program
 {
@@ -72,6 +73,7 @@ internal static class Program
                 var right = (int)(152 + 4 * scale - 8);
                 var darkPixels = CountDarkPixels(bitmap, left, 145, right, 169);
                 Check(darkPixels >= 12, theme + ": pastel effect clip contains dark, readable glyph pixels", new { darkPixels, left, right });
+                EditorControlProbe.Verify(window, theme, output, Check);
             }
             var currentStyle = window.Style;
             window.ClearValue(FrameworkElement.StyleProperty);

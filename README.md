@@ -14,6 +14,12 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 0.2.5 是本机 Windows 11 x64 本地交付候选。源码提交 `e4bfd5ed44deb93272df4d3f52217e3cb8e43420`，DogSC上游基线为 `e207d11b111c5e58152238fb64115b2009850547`。发行包和源码ZIP验证通过，包验收8/8，477个发布目录文件经完整流程后与ZIP逐字节一致；manifest状态为`validated-local-delivery`，产物见 [交付清单](artifacts/release/FrameTrail-0.2.5-manifest.json) 和 [包验收报告](artifacts/validation/package-0.2.5/result.json)。旧7项验收及ContentOnly发现的Demo字段变更保留为历史，样例已恢复；当前最终验收包含隔离播放副本和归档未变检查。包内编辑53项、导出21项、文件锁12项和辅助素材重定位10项通过，App DLL SHA256为 `D46FE2FDBA4393E0D6925EC57598A42EDC9CD388FF30F9FCA624DF86298C6491`。
 
+## 0.2.6 界面候选
+
+0.2.6 统一设置页、开关、滑块、复选框、输入框和滚动条，完善浅深主题；设置按任务分组，全部常用选项在本机 150% DPI 首屏可见。导出进度区与操作按钮保持稳定位置，失败详情可展开、滚动和复制。取消、撤销、时间线平移及真实导出已有本轮证据，导出状态回归 34/34 通过。
+
+本轮交付采用候选清单，范围见 [UI 验收记录](docs/ui-craft-validation.md) 和生成的 `artifacts/release/FrameTrail-0.2.6-candidate-manifest.json`。0.2.5 的历史采集与三档 DPI 结果不替代本轮全矩阵验收；系统高对比模式、模态窗口 Esc 送达及整体 95% 覆盖仍未证明。
+
 ## 构建与运行
 
 0.2.5发行包在100%、150%、200%单显示器缩放下全量UIA各44/44、浮层UIA各20/20。全量UIA使用旧合成testsrc2工程；首次启动边界通过只读工作区检查，备忘录重启步骤由harness调用SetWindowPos重新定位。三档指定浮层截图均已人工审阅；150%查看浅色主窗、深色下拉、嵌套菜单及预设确认弹窗。素材重定位v12为10/10通过；PNG贴图导入的撤销/重做、保存重开和工程副本保留已有22项实测；该证据不覆盖所有素材类型或渲染，当前没有工程素材自动清理机制。干净虚拟机、多显示器、真实Mac工程和物理摄像头仍未验收；功能覆盖95%尚未证明。

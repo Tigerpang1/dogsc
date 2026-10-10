@@ -617,38 +617,133 @@ public partial class MainWindow
     private void ShowUserPreferences()
     {
         var current = ReadUserPreferences();
-        var root = new DockPanel { Margin = new Thickness(22) };
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 82, Margin = new Thickness(4, 12, 0, 0) };
-        var save = new Button { Content = "保存设置", IsDefault = true, MinWidth = 100, Margin = new Thickness(4, 12, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
-        actions.Children.Add(cancel); actions.Children.Add(save); DockPanel.SetDock(actions, Dock.Bottom); root.Children.Add(actions);
-        var content = new StackPanel();
-        content.Children.Add(new TextBlock { Text = "默认录制设置", FontSize = 17, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 0, 0, 8) });
-        var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail") };
-        var browse = new Button { Content = "选择目录…", HorizontalAlignment = HorizontalAlignment.Left };
+        var root = new DockPanel { Margin = new Thickness(18, 12, 18, 14), LastChildFill = true };
+        var actions = new Border
+        {
+            BorderBrush = (System.Windows.Media.Brush)FindResource("Hairline"),
+            BorderThickness = new Thickness(0, 1, 0, 0),
+            Padding = new Thickness(0, 12, 0, 0),
+            Margin = new Thickness(0, 8, 0, 0)
+        };
+        var actionRow = new DockPanel { LastChildFill = false };
+        actionRow.Children.Add(new TextBlock
+        {
+            Text = "更改仅在保存后生效",
+            Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
+            FontSize = 11,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var cancel = new Button { Content = "取消", IsCancel = true, MinWidth = 82, Margin = new Thickness(4, 0, 0, 0) };
+        var save = new Button { Content = "保存设置", IsDefault = true, MinWidth = 100, Margin = new Thickness(8, 0, 0, 0), Style = TryFindResource("PrimaryButton") as Style };
+        buttons.Children.Add(cancel);
+        buttons.Children.Add(save);
+        DockPanel.SetDock(buttons, Dock.Right);
+        actionRow.Children.Add(buttons);
+        actions.Child = actionRow;
+        DockPanel.SetDock(actions, Dock.Bottom);
+        root.Children.Add(actions);
+
+        var content = new StackPanel { Margin = new Thickness(0, 0, 8, 0) };
+        Border Section(string title, UIElement body)
+        {
+            var stack = new StackPanel();
+            stack.Children.Add(new TextBlock
+            {
+                Text = title,
+                FontSize = 13,
+                FontWeight = FontWeights.SemiBold,
+                Margin = new Thickness(0, 0, 0, 10)
+            });
+            stack.Children.Add(body);
+            return new Border
+            {
+                Background = (System.Windows.Media.Brush)FindResource("Surface"),
+                BorderBrush = (System.Windows.Media.Brush)FindResource("Hairline"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(10),
+                Padding = new Thickness(14, 12, 14, 12),
+                Margin = new Thickness(0, 0, 0, 10),
+                Child = stack
+            };
+        }
+
+        TextBlock FieldLabel(string text) => new()
+        {
+            Text = text,
+            Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
+            FontSize = 11,
+            Margin = new Thickness(0, 0, 0, 4)
+        };
+
+        Grid FieldGrid(params (string Label, FrameworkElement Control)[] fields)
+        {
+            var grid = new Grid();
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+            grid.ColumnDefinitions.Add(new ColumnDefinition());
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            for (var i = 0; i < fields.Length; i++)
+            {
+                var column = i == 0 ? 0 : 2;
+                var label = FieldLabel(fields[i].Label);
+                Grid.SetColumn(label, column);
+                grid.Children.Add(label);
+                Grid.SetRow(fields[i].Control, 1);
+                Grid.SetColumn(fields[i].Control, column);
+                grid.Children.Add(fields[i].Control);
+            }
+            return grid;
+        }
+
+        var folder = new TextBox { Text = current.RecordingFolder ?? preferredRecordingRoot ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail"), Height = 36, VerticalContentAlignment = VerticalAlignment.Center };
+        var browse = new Button { Content = "选择目录…", MinWidth = 92, Height = 36, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8, 0, 0, 0) };
         browse.Click += (_, _) => { var picker = new OpenFolderDialog { Title = "选择默认录制保存目录", FolderName = Directory.Exists(folder.Text) ? folder.Text : Environment.GetFolderPath(Environment.SpecialFolder.MyVideos) }; if (picker.ShowDialog(this) == true) folder.Text = picker.FolderName; };
-        content.Children.Add(new TextBlock { Text = "录制保存目录", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 6, 0, 0) });
-        content.Children.Add(folder); content.Children.Add(browse);
-        var frameRate = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.FrameRate == 30 ? 30 : 60 };
-        var resolution = new ComboBox { ItemsSource = new[] { "最高 1080p", "原始分辨率" }, SelectedIndex = current.OriginalResolution ? 1 : 0 };
-        content.Children.Add(new TextBlock { Text = "帧率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 10, 0, 0) }); content.Children.Add(frameRate);
-        content.Children.Add(new TextBlock { Text = "分辨率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 5, 0, 0) }); content.Children.Add(resolution);
-        var previewWidth = new ComboBox { ItemsSource = new[] { 960, 1440, 1920 }, SelectedItem = current.PreviewResolution is 960 or 1440 or 1920 ? current.PreviewResolution : 1440 };
-        var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30 };
+        var folderRow = new DockPanel { LastChildFill = true };
+        DockPanel.SetDock(browse, Dock.Right);
+        folderRow.Children.Add(browse);
+        folderRow.Children.Add(folder);
+
+        var frameRate = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.FrameRate == 30 ? 30 : 60, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        var resolution = new ComboBox { ItemsSource = new[] { "最高 1080p", "原始分辨率" }, SelectedIndex = current.OriginalResolution ? 1 : 0, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        var recording = new StackPanel();
+        recording.Children.Add(FieldLabel("保存目录"));
+        recording.Children.Add(folderRow);
+        recording.Children.Add(FieldGrid(("录制帧率", frameRate), ("录制分辨率", resolution)));
+        content.Children.Add(Section("录制", recording));
+
+        var system = new CheckBox { Content = "录制系统声音", IsChecked = current.RecordSystemSound, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 1, 0, 4), MinHeight = 30 };
+        var microphone = new CheckBox { Content = "录制麦克风", IsChecked = current.RecordMicrophone, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
+        var camera = new CheckBox { Content = "录制摄像头", IsChecked = current.RecordCamera, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 1), MinHeight = 30 };
+        var sources = new StackPanel();
+        sources.Children.Add(system);
+        sources.Children.Add(microphone);
+        sources.Children.Add(camera);
+        content.Children.Add(Section("音视频来源", sources));
+
+        var previewWidth = new ComboBox { ItemsSource = new[] { 960, 1440, 1920 }, SelectedItem = current.PreviewResolution is 960 or 1440 or 1920 ? current.PreviewResolution : 1440, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         System.Windows.Automation.AutomationProperties.SetName(previewWidth, "预览分辨率");
         System.Windows.Automation.AutomationProperties.SetName(previewFps, "预览帧率");
-        content.Children.Add(new TextBlock { Text = "静帧与实时预览宽度", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 10, 0, 0) }); content.Children.Add(previewWidth);
-        content.Children.Add(new TextBlock { Text = "实时预览帧率", Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 5, 0, 0) }); content.Children.Add(previewFps);
-        var system = new CheckBox { Content = "录制系统声音", IsChecked = current.RecordSystemSound };
-        var microphone = new CheckBox { Content = "录制麦克风", IsChecked = current.RecordMicrophone };
-        var camera = new CheckBox { Content = "录制摄像头", IsChecked = current.RecordCamera };
-        var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme };
-        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。" };
-        content.Children.Add(system); content.Children.Add(microphone); content.Children.Add(camera); content.Children.Add(dark);
-        content.Children.Add(excludeEditor);
-        content.Children.Add(new TextBlock { Text = "保存后会立即更新录制面板和预览质量，并在下次启动时恢复。较大的预览尺寸会增加显存占用；麦克风和摄像头设备在录制面板中选择。", TextWrapping = TextWrapping.Wrap, Foreground = (System.Windows.Media.Brush)FindResource("Secondary"), Margin = new Thickness(0, 9, 0, 0) });
+        var appearance = new StackPanel();
+        appearance.Children.Add(FieldGrid(("预览宽度", previewWidth), ("预览帧率", previewFps)));
+        var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 8), MinHeight = 30 };
+        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
+        appearance.Children.Add(dark);
+        appearance.Children.Add(excludeEditor);
+        appearance.Children.Add(new TextBlock
+        {
+            Text = "较大的预览尺寸会增加显存占用。麦克风和摄像头设备可在录制面板中选择。",
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
+            FontSize = 11,
+            Margin = new Thickness(0, 7, 0, 0)
+        });
+        content.Children.Add(Section("编辑外观与预览", appearance));
+
         root.Children.Add(new ScrollViewer { Content = content, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
-        var dialog = new Window { Title = "录制与界面设置", Width = 470, Height = 752, ShowInTaskbar = false };
+        var dialog = new Window { Title = "录制与界面设置", Width = 560, Height = 720, ShowInTaskbar = false };
         SurfaceWindow.Configure(dialog, this);
         dialog.Content = SurfaceWindow.WrapContent(dialog, root, "录制与界面设置");
         save.Click += (_, _) =>

@@ -30,6 +30,14 @@
 
 0.2.4发行包交互已在本机单显示器150%缩放环境验收通过。100%下旧包的Smoke工作区适配测试20/20通过，但由harness移动测试窗；200%下新开发快照的只读主窗启动定位20/20通过，窗口 `[32,32..3808,2032]` 位于工作区 `[0,0..3840,2064]`。旧0.2.4包负对照未通过，且不含此定位修复；新快照不是0.2.5发行包。完整DPI交互、多显示器和高对比系统模式仍待验。12张窗口状态图由测试报告归档，视觉人工检查不等同于覆盖所有参数和工程素材，也不代表用户已认可最终审美。
 
+### 2026-10-10：设置页与导出面板增量
+
+设置页将录制、音视频来源、编辑外观与预览分组，采用紧凑并列字段、统一开关和固定底部操作区。app-v5 在本机150% DPI下实测首屏三组及提示完整，目录输入与下拉框未见裁切；修改麦克风选项后取消，`settings.json` 测试前后均不存在。暗色设置页和下拉框可读，Esc收起下拉框已确认；模态窗口Esc送达仍未确认。
+
+导出面板最终回归 `artifacts/validation/ui-craft-v1/export-panel-final-result.json` 为34/34通过，输出目录 `export-panel-5a06cc6318ee444d9169ade7a2454c0f`。24秒文件经ffprobe确认H.264 1920×1080、AAC、24.000秒。视觉离屏探针 `artifacts/validation/ui-craft-offscreen-final/result.json` 为63/63通过；它不覆盖桌面交互。高对比资源补强后的 `ui-craft-offscreen-release-final/result.json` 再次63/63通过，对应0.2.6 App SHA为 `FEC66CD8188E2A9DE734D67572CFACF6EAC06753914BA5B40032DA4DEBA9A015`；此检查未模拟或切换系统高对比状态。
+
+本轮详细记录见[0.2.6界面打磨与验收](ui-craft-validation.md)。0.2.6按本地候选交付，包与源码验证以生成的candidate manifest为准；整体95%目标未证明，0.2.5发行包的历史结果继续以各自报告为准。
+
 ## 已核验资料
 
 - [WinUI 3](https://learn.microsoft.com/en-us/windows/apps/winui/)：微软推荐用于新 Windows 桌面应用的原生框架。
