@@ -1,5 +1,7 @@
 # 0.2.10 桌面交互修复候选
 
+实机复验失败：用户确认“托盘右键菜单仍然会消失”。0.2.9已通过浮窗菜单正常退出，0.2.10已实际启动，进程路径和App DLL与候选一致；文稿哈希保持不变。证据在 `basic-desktop-v1/01-old-exit-confirmed.json`、`02-startup-observation.json` 和 `03-tray-retest-failed.json`。后续转入0.2.11的独立菜单窗口修复；以下后台结果不能代替该失败的交互验收。
+
 0.2.9基本交互验收中，用户报告托盘右键菜单展开后立即消失，无法选择退出。0.2.10将菜单打开排到系统托盘回调结束之后，并使用通知区事件提供的屏幕锚点，减少右键消息和菜单鼠标捕获交错造成的收起风险。实际稳定性仍需复验，不能以构建通过代替。
 
 提词器编辑框使用透明背景，避免默认输入框底色盖住可调透明底层，文字保持不透明。用户随后确认旧0.2.9进程的透明度已恢复，该现象不能归因于尚未部署的本次代码修改。
@@ -8,6 +10,6 @@
 
 候选源码提交为 `fb886ded796018107780bc59f06ba17a841525c6`，与随包 `BUILD-INFO.txt` 一致；后续文档提交不改变包内源码身份。Release构建0警告、0错误；提词器/保存恢复80项、独立浮窗11项通过；便携ZIP的492个文件逐字节一致，源码包在仓库外完成测试、构建和重新打包。证据位于 `artifacts/validation/package-0.2.10/`。
 
-便携包、安装器、源码包分别为 `artifacts/release/FrameTrail-0.2.10-win-x64.zip`、`FrameTrail-Setup-0.2.10-win-x64.exe`、`FrameTrail-0.2.10-source.zip`；SHA-256与验证范围见同目录 `FrameTrail-0.2.10-candidate-manifest.json`。状态仍为等待交互验收：0.2.9进程尚待用户从浮窗菜单正常退出，0.2.10尚未接替运行，托盘稳定性与保存重启不能标为通过。
+便携包、安装器、源码包分别为 `artifacts/release/FrameTrail-0.2.10-win-x64.zip`、`FrameTrail-Setup-0.2.10-win-x64.exe`、`FrameTrail-0.2.10-source.zip`；SHA-256与后台验证范围见同目录 `FrameTrail-0.2.10-candidate-manifest.json`。托盘稳定性复验失败，文稿与外观的实际重开恢复仍未验证。
 
 源码验证的140份细粒度结果已另存并逐文件核对；本次临时副本删除被工具策略以 `blocked by policy` 拒绝，约0.68GiB暂留，详见该次 `source-temp-cleanup.json`。摄像头继续延期，复杂权限场景暂缓；当前未达到95%。

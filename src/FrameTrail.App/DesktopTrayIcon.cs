@@ -49,6 +49,7 @@ internal sealed class DesktopTrayIcon : IDisposable
     private long lastMenuAt;
     private bool hasActivated;
     private bool hasShownMenu;
+    private int menuRequest;
     private string tooltip = "FrameTrail";
 
     /// <summary>The latest runtime tray registration failure, if Explorer recovery failed.</summary>
@@ -113,6 +114,7 @@ internal sealed class DesktopTrayIcon : IDisposable
         VerifyDispatcher();
         if (disposed) return;
         disposed = true;
+        menuRequest++;
 
         if (iconRegistered)
         {
@@ -196,6 +198,7 @@ internal sealed class DesktopTrayIcon : IDisposable
         if (hasActivated && now - lastActivationAt < ActivationDebounceMilliseconds) return;
         hasActivated = true;
         lastActivationAt = now;
+        menuRequest++;
         activateRecorder();
     }
 
@@ -205,16 +208,13 @@ internal sealed class DesktopTrayIcon : IDisposable
         if (hasShownMenu && now - lastMenuAt < MenuDebounceMilliseconds) return;
         hasShownMenu = true;
         lastMenuAt = now;
-        _ = SetForegroundWindow(messageSink.Handle);
-
-        // The notification-area callback is sent while Explorer is still processing
-        // the tray click. Opening a StaysOpen=false WPF ContextMenu here can acquire
-        // mouse capture before that click has finished, so WPF sees the click as an
-        // outside interaction and closes the menu immediately. Queue the open until
-        // this native callback has unwound; this is dispatcher ordering, not a delay.
+        var request = ++menuRequest;
+        // Let Explorer finish the icon gesture before showing a real activatable
+        // menu window. The invisible message sink must never become its foreground
+        // owner. Newer activation requests invalidate an older queued menu opening.
         messageSink.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
         {
-            if (disposed) return;
+            if (disposed || request != menuRequest) return;
             try
             {
                 showMenu(point);
@@ -344,7 +344,4 @@ internal sealed class DesktopTrayIcon : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
 }

@@ -25,12 +25,14 @@ internal static class Program
         var errorRecoveryOnly = args.FirstOrDefault() == "--error-recovery";
         var desktopInstanceOnly = args.FirstOrDefault() == "--desktop-instance";
         var desktopSurfacesOnly = args.FirstOrDefault() == "--desktop-surfaces";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var trayMenuWindowOnly = args.FirstOrDefault() == "--tray-menu-window";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
             : errorRecoveryOnly ? "artifacts/validation/error-recovery-offscreen"
+            : trayMenuWindowOnly ? "artifacts/validation/tray-menu-window-offscreen"
             : bundledResourcesOnly ? "artifacts/validation/bundled-resource-locator-offscreen"
             : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
@@ -53,6 +55,18 @@ internal static class Program
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} desktop surface checks; {output}");
+                return 0;
+            }
+            if (trayMenuWindowOnly)
+            {
+                TrayMenuWindowProbe.Verify(output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "托盘菜单条目迁移、命令分发、最近项目子项、浅深主题离屏渲染和物理坐标 Fit 纯函数；未创建或激活 HWND，不代表实机托盘稳定性",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} tray menu window checks; {output}");
                 return 0;
             }
             if (desktopInstanceOnly)

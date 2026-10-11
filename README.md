@@ -4,7 +4,7 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 当前：0.2.10 桌面交互修复候选
+## 当前：0.2.11 托盘菜单修复候选
 
 当前源码候选增加桌面常驻与口播提词器交互：正常启动显示录制浮窗，主编辑器保持隐藏；关闭主编辑器会收起到通知区域，后续启动会唤回主实例。托盘、录制浮窗菜单和主窗设置菜单都提供明确的“退出 FrameTrail”入口；录制进行中选择退出会先询问是否结束并保存。托盘初始化失败时会显示主编辑器作为前台回退。
 
@@ -12,7 +12,7 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 当前功能台账为28项通过、1项待修、1项待验、3项延期，分母仍为33项。FT-07桌面常驻/浮窗/提词器交互待修，权限拒绝后的实机恢复待验；该状态不代表达到95%门槛。下列0.2.5～0.2.8段落保留历史范围与证据，版本身份不能混用。
 
-0.2.10针对托盘菜单打开时机和提词器编辑区透明底层提供修复候选，见 [0.2.10修复说明](docs/release-0.2.10.md)。0.2.9已有便携包、安装器和源码包，其历史验证与已知问题见 [0.2.9候选交付](docs/release-0.2.9.md)。
+0.2.10托盘菜单的实机复验仍失败。0.2.11改由独立窗口承载菜单，沿用现有外观，并补齐菜单导航与焦点日志，见 [0.2.11修复说明](docs/release-0.2.11.md)。历史版本的包与验证边界见 [0.2.10](docs/release-0.2.10.md) 和 [0.2.9](docs/release-0.2.9.md)。
 
 ## 0.2.5 实现范围
 
@@ -49,7 +49,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.10
+pwsh -File scripts/package.ps1 -Version 0.2.11
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。

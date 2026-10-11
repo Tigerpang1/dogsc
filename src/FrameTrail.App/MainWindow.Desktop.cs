@@ -11,7 +11,7 @@ public partial class MainWindow
 {
     private DesktopTrayIcon? desktopTray;
     private MemoWindow? desktopMemo;
-    private ContextMenu? desktopMenu;
+    private TrayMenuWindow? desktopTrayMenu;
     private bool desktopResident;
     private bool desktopExiting;
     private bool desktopTrayAvailable;
@@ -173,9 +173,19 @@ public partial class MainWindow
 
     private void ShowDesktopTrayMenu(Point screenPoint)
     {
-        desktopMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
-        desktopMenu = CreateDesktopMenu();
-        TrayMenuPlacement.Open(desktopMenu, screenPoint);
+        if (desktopTrayMenu is { IsVisible: true } current)
+        {
+            current.CloseMenu();
+            return;
+        }
+
+        var window = new TrayMenuWindow(CreateDesktopMenu());
+        desktopTrayMenu = window;
+        window.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(desktopTrayMenu, window)) desktopTrayMenu = null;
+        };
+        window.ShowAt(screenPoint);
     }
 
     private void ShowDesktopMenu(Button button)
@@ -254,7 +264,7 @@ public partial class MainWindow
 
     internal void DisposeDesktop()
     {
-        desktopMenu?.SetCurrentValue(ContextMenu.IsOpenProperty, false);
+        desktopTrayMenu?.CloseMenu();
         desktopTray?.Dispose();
         desktopTray = null;
     }
