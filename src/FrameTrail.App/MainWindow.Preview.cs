@@ -12,10 +12,9 @@ public partial class MainWindow
     private sealed record PreviewTarget(FrameTrailProject Project, string ProjectFile, double Time,
         int Width, int Height, bool NativeSource, TimelineSelection? InspectorTarget);
 
-    private sealed class PreviewRequest(PreviewTarget target, bool hover, CancellationToken cancellation)
+    private sealed class PreviewRequest(PreviewTarget target, CancellationToken cancellation)
     {
         internal readonly PreviewTarget Target = target;
-        internal readonly bool Hover = hover;
         internal readonly CancellationTokenSource Cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         internal readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -42,14 +41,13 @@ public partial class MainWindow
         previewResizeTimer.Start();
     }
 
-    private Task RenderPreview(double time) => RequestPreview(time, timeline: false, hover: false);
-    private Task RenderTimelinePreview(double time, bool hover = false) => RequestPreview(time, timeline: true, hover);
+    private Task RenderPreview(double time) => RequestPreview(time, timeline: false, coalesce: false);
+    private Task RenderTimelinePreview(double time, bool coalesce = false) => RequestPreview(time, timeline: true, coalesce);
 
-    private Task RequestPreview(double time, bool timeline, bool hover)
+    private Task RequestPreview(double time, bool timeline, bool coalesce)
     {
         Dispatcher.VerifyAccess();
         if (closingInProgress || desktopExiting || closeReady || project is null || projectFile is null) return Task.CompletedTask;
-        if (!timeline) ClearTimelineHover();
         if (seekCancellation is null || seekCancellation.IsCancellationRequested)
         {
             seekCancellation?.Dispose();
@@ -60,10 +58,10 @@ public partial class MainWindow
             output.Width, output.Height, previewResolution == 0,
             !timeline && !playing && inspectorTab == "zoom" ? selectedEffect : null);
 
-        // Pointer movement replaces only the waiting target. Let the active frame
+        // Held-left scrubbing replaces only the waiting target. Let the active frame
         // finish so continuous movement cannot starve the image indefinitely.
         // A committed seek/edit interrupts work for a different frame immediately.
-        if (!hover && activePreview?.Target != target) activePreview?.Cancellation.Cancel();
+        if (!coalesce && activePreview?.Target != target) activePreview?.Cancellation.Cancel();
         if (pendingPreview is { } replaced)
         {
             pendingPreview = null;
@@ -81,7 +79,7 @@ public partial class MainWindow
         if (activePreview is { } active && active.Target == target && !active.Cancellation.IsCancellationRequested)
             return active.Completion.Task;
 
-        var request = new PreviewRequest(target, hover, seekCancellation.Token);
+        var request = new PreviewRequest(target, seekCancellation.Token);
         pendingPreview = request;
         AutomationProperties.SetItemStatus(PreviewImage, "rendering");
         if (!previewPumpRunning)
@@ -193,17 +191,17 @@ public partial class MainWindow
         finally { previewGate.Release(); }
     }
 
-    private void ClearTimelineHover()
-    {
-        timelineHoverPosition = null;
-        TimelineView.ClearHoverPreview(notify: false);
-    }
+    private void SeekTimeline(double time) => SetTimelinePosition(time, coalesce: false);
+    private void ScrubTimeline(double time) => SetTimelinePosition(time, coalesce: true);
 
-    private void SeekTimeline(double time)
+    private void SetTimelinePosition(double time, bool coalesce)
     {
-        ClearTimelineHover();
         StopPlayback();
-        if (Playhead.Value != time) Playhead.Value = time;
-        else { UpdateTime(); _ = Guard(() => RenderTimelinePreview(time)); }
+        var wasRefreshing = refreshing;
+        refreshing = true;
+        try { Playhead.Value = time; }
+        finally { refreshing = wasRefreshing; }
+        UpdateTime();
+        _ = Guard(() => RenderTimelinePreview(Playhead.Value, coalesce));
     }
 }

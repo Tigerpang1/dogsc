@@ -18,7 +18,7 @@ public partial class MainWindow
  }
  private async Task StartRealtimePlaybackCore(CancellationToken token)
  {
-  if(project==null||projectFile==null)return;ClearTimelineHover();completedPreview=null;seekCancellation?.Cancel();var snapshot=project;var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
+  if(project==null||projectFile==null)return;completedPreview=null;seekCancellation?.Cancel();var snapshot=project;var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
   var info=await MediaTools.ProbeAsync(source,token);
   var hasAudio=info.HasAudio&&MediaTools.HasAudibleMainAudio(snapshot.Timeline,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted)
    ||MediaTools.HasAudibleAudioTracks(snapshot.Timeline,snapshot.AudioTracks,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted);

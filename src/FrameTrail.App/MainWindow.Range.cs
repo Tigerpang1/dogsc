@@ -5,7 +5,7 @@ public partial class MainWindow
 {
  private void SetExportRange(bool start)
  {
-  if(project==null)return;var time=timelineHoverPosition??Playhead.Value;if(start){TimelineView.RangeStart=time;if(TimelineView.RangeEnd<=time)TimelineView.RangeEnd=project.Timeline.Duration;}else{TimelineView.RangeEnd=time;if(TimelineView.RangeStart>=time)TimelineView.RangeStart=0;}
+  if(project==null)return;var time=Playhead.Value;if(start){TimelineView.RangeStart=time;if(TimelineView.RangeEnd<=time)TimelineView.RangeEnd=project.Timeline.Duration;}else{TimelineView.RangeEnd=time;if(TimelineView.RangeStart>=time)TimelineView.RangeStart=0;}
   TimelineView.RangeStart??=0;TimelineView.RangeEnd??=project.Timeline.Duration;TimelineView.InvalidateVisual();Status.Text=$"导出范围 {TimelineView.RangeStart:0.00}s–{TimelineView.RangeEnd:0.00}s，右键可清除。";
  }
  private FrameTrailProject ExportSnapshot()

@@ -42,9 +42,9 @@ internal static class Program
         if (Directory.Exists(output)) throw new IOException("Use a fresh directory for visual evidence.");
         Directory.CreateDirectory(output);
         var checks = new List<object>();
-        var app = new App { ShutdownMode = ShutdownMode.OnExplicitShutdown };
+        var app = new App(startDesktop: false) { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.InitializeComponent();
-        // Do not call Application.Run: StartupUri must never open the desktop window.
+        // Suppress desktop startup even when a probe pumps the dispatcher.
         MainWindow? window = null;
         try
         {
@@ -68,7 +68,7 @@ internal static class Program
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     Passed = true,
-                    Scope = "真实媒体解码和MainWindow合成调度、连续悬停/单击提交/取消与换项目；未显示或激活窗口，不代表用户实机体验已认可",
+                    Scope = "真实媒体解码和MainWindow合成调度、无按键悬浮保持/左键定位/拖动合并/取消与换项目；未显示或激活窗口，不代表用户实机体验已认可",
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} preview interaction checks; {output}");
@@ -250,7 +250,7 @@ internal static class Program
                     var ratio = Contrast(foreground, surface);
                     Check(ratio >= 4.5, $"{theme}: {name} primary-text contrast >= 4.5", new { Foreground = foreground.ToString(), Background = surface.ToString(), Ratio = ratio });
                 }
-                foreach (var name in new[] { "SnapBoundaries", "HoverPreview" })
+                foreach (var name in new[] { "SnapBoundaries" })
                 {
                     var checkbox = (CheckBox)window.FindName(name);
                     var label = Descendants(checkbox).OfType<TextBlock>().Single();

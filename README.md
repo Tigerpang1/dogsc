@@ -4,19 +4,23 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 当前：0.2.12 录制、预览与画质候选
+## 当前：0.2.13 时间线定位与预览交互候选
 
-0.2.12 在录制条增加齿轮菜单，录制浮窗菜单沿用独立 `TrayMenuWindow`，最近项目子菜单单独设置录屏排除；录制完成提示简洁显示，采集格式、时钟和 backend 信息进入诊断，真实异常仍进入警告。新菜单和提词器、菜单及最近项目子菜单的录屏排除仍待实机验收。
+0.2.13 将时间线预览改为显式定位：鼠标悬浮且未按左键时不触发预览，画面停留在最近一次点击定位的帧；点击片段、效果或轨道刻度立即定位播放头。左键在标尺或空白轨道按住拖动时才连续预览，松开后停留在最后一帧。范围操作和新粘贴内容以当前播放头定位。工具条移除悬浮预览开关，不再产生悬浮预览事件、状态或灰色悬浮线。快速拖动沿用 active 加 latest pending 调度，不反复取消正在解码的请求。
 
-时间线悬停预览会保留到点击定位、开始播放或关闭预览；左键按下立即定位播放头。预览解码器按一个 active 请求加一个 latest pending 请求处理快速拖动，并保持同素材解码器会话。本轮确认的最近三段实录均为4K60；旧预览固定1440分辨率再放大，本轮改为按视口物理像素决定自动预览目标，同时保持源素材原始分辨率解码以保留缩放细节；用户也可选 960、1440 或 1920 预览尺寸。录制默认使用源分辨率，NVENC 使用 p5/hq/vbr/cq19，1080p60 目标约16 Mbps、4K60 最高目标64 Mbps。Shader bytecode 本地缓存和后台预热入口已接入。
+0.2.13后台验证通过：`artifacts/validation/package-0.2.13` 中时间线输入15项、真实媒体预览13项、尺寸12项、浅深主题111项；Core、Integration、Render.Probe和固定SDK构建通过。范围操作与新粘贴按播放头定位尚无独立专项验收；新版实机体验和安装卸载仍待验收。整体台账仍为28项通过、2项待验、3项延期，分母33；发行状态以候选 manifest 为准，详细证据见[0.2.13记录](docs/release-0.2.13.md)。
 
-0.2.12通过固定 SDK 10.0.401 的最终构建（0警告、0错误）。编码媒体 MainWindow 预览交互与尺寸探针各12项通过；物理视口、4K源分辨率解码和共享播放场景像素对照通过。独立 `PreviewPlaybackSession` 保留4K源解码、合成到2400×1350@30时，zoom 1/2连续30帧分别约34.3 fps，稳态中位数14.85/14.55ms，首帧438.62/407.19ms；这是无窗口的离屏吞吐，不代表用户实机拖动体验。证据见 [`playback-throughput`](artifacts/validation/capture-video-quality-v5/playback-throughput/result-named-pipe.json)、[`preview-interaction-pipe`](artifacts/validation/package-0.2.12/preview-interaction-pipe/result.json) 和 [`preview-sizing-pipe`](artifacts/validation/package-0.2.12/preview-sizing-pipe/result.json)。
+0.2.12在录制条增加齿轮菜单，录制浮窗菜单沿用独立 `TrayMenuWindow`，最近项目子菜单单独设置录屏排除；录制完成提示简洁显示，采集格式、时钟和 backend 信息进入诊断，真实异常仍进入警告。新菜单和提词器、菜单及最近项目子菜单的录屏排除仍待实机验收。
 
-质量策略对照使用合成4K60素材，2秒编码1.741秒，SSIM从旧6 Mbps档的0.827179升至0.988639，平均输出约60.15 Mbps；这不是实采画质证据。另有8.1秒、3840×2160@60、486帧的真实本机录制，H.264 NVENC成片完整解码且没有警告，但无音频，不能代表动态桌面、菜单排除或主观画质认可。新录制条菜单及浮窗排除仍待实机确认；预览操作和录制画质也需用户实机验收。便携包、安装器和源码归档尚待生成与核验，本版仍是候选。
+0.2.12的历史时间线悬停预览会保留到点击定位、开始播放或关闭预览；左键按下立即定位播放头。该行为由0.2.13的新交互替代。0.2.12预览解码器按一个 active 请求加一个 latest pending 请求处理快速拖动，并保持同素材解码器会话。本轮确认的最近三段实录均为4K60；旧预览固定1440分辨率再放大，本轮改为按视口物理像素决定自动预览目标，同时保持源素材原始分辨率解码以保留缩放细节；用户也可选 960、1440 或 1920 预览尺寸。录制默认使用源分辨率，NVENC 使用 p5/hq/vbr/cq19，1080p60 目标约16 Mbps、4K60 最高目标64 Mbps。Shader bytecode 本地缓存和后台预热入口已接入。
+
+0.2.12通过固定 SDK 10.0.401 的最终构建（0警告、0错误）。编码媒体 MainWindow 预览交互与尺寸探针各12项通过；物理视口、4K源分辨率解码和共享播放场景像素对照通过。独立 `PreviewPlaybackSession` 保留4K源解码、合成到2400×1350@30时，zoom 1/2连续30帧分别约34.3 fps，稳态中位数14.85/14.55ms，首帧438.62/407.19ms；这是无窗口的离屏吞吐，不代表用户实机拖动体验。上述探针验证的是0.2.12旧悬停交互，不作为0.2.13验收。证据见 [`playback-throughput`](artifacts/validation/capture-video-quality-v5/playback-throughput/result-named-pipe.json)、[`preview-interaction-pipe`](artifacts/validation/package-0.2.12/preview-interaction-pipe/result.json) 和 [`preview-sizing-pipe`](artifacts/validation/package-0.2.12/preview-sizing-pipe/result.json)。
+
+质量策略对照使用合成4K60素材，2秒编码1.741秒，SSIM从旧6 Mbps档的0.827179升至0.988639，平均输出约60.15 Mbps；这不是实采画质证据。另有8.1秒、3840×2160@60、486帧的真实本机录制，H.264 NVENC成片完整解码且没有警告，但无音频，不能代表动态桌面、菜单排除或主观画质认可。新录制条菜单及浮窗排除仍待实机确认；预览操作和录制画质也需用户实机验收。0.2.12便携包、安装器和源码归档已在 `artifacts/release` 生成；其具体历史验证见[0.2.12记录](docs/release-0.2.12.md)。
 
 口播提词器可编辑或阅读文稿，自动滚动默认停止；可调整速度、暂停/继续和回到开头。背景不透明度只作用于背景，文字保持清晰。正文自动保存，模式和外观设置在收起或关闭时保存；保存失败时窗口与文字会保留，可修复文件访问后重试。具体操作见[使用说明](docs/user-guide.md)。0.2.9已由用户确认主窗关闭后的浮窗独立、托盘找回和提词滚动；0.2.11进一步确认托盘菜单稳定、托盘退出、提词器文稿和外观重启恢复、重复启动召回及录制中关闭主窗后仍可结束录制。
 
-当前功能台账为28项通过、2项待验、3项延期，分母仍为33项。FT-07仅剩新录制条菜单及提词器、菜单和子菜单的录屏排除实机验证；权限拒绝后的复杂恢复按用户要求暂缓。Mac 工程互通不属于本轮要求。该状态不代表达到95%门槛。下列0.2.5～0.2.8段落保留历史范围与证据，版本身份不能混用。
+当前功能台账仍为28项通过、2项待验、3项延期，分母仍为33项；该台账数量沿用已完成验收集，不代表0.2.13新交互通过。FT-07仅剩新录制条菜单及提词器、菜单和子菜单的录屏排除实机验证；权限拒绝后的复杂恢复按用户要求暂缓。Mac 工程互通不属于本轮要求。该状态不代表达到95%门槛。下列0.2.5～0.2.8段落保留历史范围与证据，版本身份不能混用。
 
 0.2.11菜单稳定、托盘退出、提词器文稿与外观恢复、重复启动召回及录制中关闭编辑器的用户确认，证据见 [桌面常驻记录](docs/desktop-residency.md)。0.2.12菜单、预览调度/尺寸、shader 缓存、录制质量策略及后台构建已有候选证据；人工实机验收和发行包验证仍待完成。具体范围见 [0.2.12记录](docs/release-0.2.12.md)。
 
@@ -55,7 +59,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.12
+pwsh -File scripts/package.ps1 -Version 0.2.13
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。

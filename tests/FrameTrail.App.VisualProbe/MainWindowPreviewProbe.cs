@@ -44,35 +44,65 @@ internal static class MainWindowPreviewProbe
             playhead.Maximum = project.Timeline.Duration;
             playhead.Value = 0;
 
-            var cold = Stopwatch.StartNew();
-            Stage("cold hover render");
-            Pump(CallRender(window, "RenderTimelinePreview", 1.2, true), dispatcher);
-            cold.Stop();
-            var hoverImage = CurrentImage(window);
-            var hoverScene = CurrentScene(window);
-            check(hoverImage is not null && Math.Abs(playhead.Value) < 1e-9 &&
-                  Math.Abs(hoverScene.OutputTime - 1.2) < 1e-6,
-                "hover decodes and composes the requested frame without moving the playhead",
-                new { Playhead = playhead.Value, Scene = SceneIdentity(hoverScene),
-                    SourceFrame = SourceFrameIdentity(hoverScene, project.Media.FrameRate), ColdMilliseconds = cold.Elapsed.TotalMilliseconds,
+            Stage("click seek and passive movement");
+            var timeline = (EditorTimelineControl)window.FindName("TimelineView");
+            typeof(EditorTimelineControl).GetProperty("Project", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .SetValue(timeline, project);
+            timeline.Snap = false;
+            timeline.Refresh();
+            timeline.Measure(new Size(1152, 400));
+            timeline.Arrange(new Rect(0, 0, 1152, timeline.Height));
+            timeline.UpdateLayout();
+            timeline.HandlePointerDown(new Point(352, 12), System.Windows.Input.MouseButton.Left,
+                System.Windows.Input.ModifierKeys.None, false);
+            timeline.HandlePointerUp(System.Windows.Input.MouseButton.Left, new Point(352, 12), false);
+            Pump(CallRender(window, "RenderTimelinePreview", 1.2, false), dispatcher);
+            var clickImage = CurrentImage(window);
+            var clickScene = CurrentScene(window);
+            timeline.HandlePointerMove(new Point(800, 12), false);
+            Pump(Task.Delay(50), dispatcher);
+            dispatcher.Invoke(DispatcherPriority.ApplicationIdle, new Action(() => { }));
+            var activeAfterPassiveMove = GetNullable(window, "activePreview");
+            var pendingAfterPassiveMove = GetNullable(window, "pendingPreview");
+            check(clickImage is not null && Math.Abs(playhead.Value - 1.2) < 1e-9 &&
+                  Math.Abs(clickScene.OutputTime - 1.2) < 1e-6 && ReferenceEquals(clickImage, CurrentImage(window)) &&
+                  Math.Abs(CurrentScene(window).OutputTime - 1.2) < 1e-6 && activeAfterPassiveMove is null && pendingAfterPassiveMove is null,
+                "real timeline click renders the frame; passive movement leaves its bitmap and preview queue unchanged",
+                new { Playhead = playhead.Value, Scene = SceneIdentity(clickScene),
+                    SourceFrame = SourceFrameIdentity(clickScene, project.Media.FrameRate),
+                    ActivePreviewAfterMove = activeAfterPassiveMove is not null, PendingPreviewAfterMove = pendingAfterPassiveMove is not null,
                     MediaPath = sourcePath, MediaBytes = new FileInfo(sourcePath).Length, MediaSha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(sourcePath))) });
 
             var burstTimes = new[] { 1.4, 1.7, 2.15, 2.6, 2.2 };
-            Stage("latest-pending burst");
-            var burst = burstTimes.Select(time => CallRender(window, "RenderTimelinePreview", time, true)).ToArray();
-            Pump(Task.WhenAll(burst), dispatcher);
+            Stage("coalesced scrub burst");
+            var previewGate = Get<SemaphoreSlim>(window, "previewGate");
+            previewGate.Wait();
+            bool activeScrubWasKept;
+            try
+            {
+                Invoke(window, "ScrubTimeline", burstTimes[0]);
+                var activeRequest = GetNullable(window, "activePreview")
+                    ?? throw new InvalidOperationException("Scrub did not start an active preview request.");
+                var cancellation = (CancellationTokenSource)(activeRequest.GetType()
+                    .GetField("Cancellation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(activeRequest)
+                    ?? throw new InvalidOperationException("Active scrub request has no cancellation source."));
+                foreach (var time in burstTimes.Skip(1)) Invoke(window, "ScrubTimeline", time);
+                activeScrubWasKept = !cancellation.IsCancellationRequested;
+            }
+            finally { previewGate.Release(); }
+            Pump(CallRender(window, "RenderTimelinePreview", burstTimes[^1], true), dispatcher);
             var burstScene = CurrentScene(window);
-            check(Math.Abs(burstScene.OutputTime - burstTimes[^1]) < 1e-6,
-                "rapid hover updates finish on the latest requested scene instead of starving",
-                new { Requested = burstTimes, Scene = SceneIdentity(burstScene), Identity = SourceFrameIdentity(burstScene, project.Media.FrameRate) });
+            check(activeScrubWasKept && Math.Abs(playhead.Value - burstTimes[^1]) < 1e-9 && Math.Abs(burstScene.OutputTime - burstTimes[^1]) < 1e-6,
+                "rapid scrub keeps the active decode alive and finishes on the latest requested scene",
+                new { Requested = burstTimes, ActiveDecodeCancelled = !activeScrubWasKept, Playhead = playhead.Value, Scene = SceneIdentity(burstScene), Identity = SourceFrameIdentity(burstScene, project.Media.FrameRate) });
 
             var forward = Stopwatch.StartNew();
             Stage("forward and reverse scrub");
-            Pump(CallRender(window, "RenderTimelinePreview", 4.1, true), dispatcher);
+            Pump(CallRender(window, "RenderTimelinePreview", 4.1, false), dispatcher);
             forward.Stop();
             var forwardScene = CurrentScene(window);
             var backward = Stopwatch.StartNew();
-            Pump(CallRender(window, "RenderTimelinePreview", .55, true), dispatcher);
+            Pump(CallRender(window, "RenderTimelinePreview", .55, false), dispatcher);
             backward.Stop();
             var backwardScene = CurrentScene(window);
             check(Math.Abs(forwardScene.OutputTime - 4.1) < 1e-6 && Math.Abs(backwardScene.OutputTime - .55) < 1e-6 &&
@@ -87,7 +117,7 @@ internal static class MainWindowPreviewProbe
             Pump(CallRender(window, "RenderPreview", referenceTime), dispatcher);
             var standardSamples = SamplePixels(CurrentImage(window)!);
             Set(window, "completedPreview", (object?)null);
-            Pump(CallRender(window, "RenderTimelinePreview", referenceTime, true), dispatcher);
+            Pump(CallRender(window, "RenderTimelinePreview", referenceTime, false), dispatcher);
             var referenceImage = CurrentImage(window)!;
             var referenceSamples = SamplePixels(referenceImage);
             check(referenceSamples.SequenceEqual(standardSamples),
@@ -101,7 +131,7 @@ internal static class MainWindowPreviewProbe
             Pump(CallRender(window, "RenderPreview", referenceTime), dispatcher);
             var inspectorTargetScene = CurrentScene(window);
             Set(window, "completedPreview", (object?)null);
-            Pump(CallRender(window, "RenderTimelinePreview", referenceTime, true), dispatcher);
+            Pump(CallRender(window, "RenderTimelinePreview", referenceTime, false), dispatcher);
             var selectedTimelineImage = CurrentImage(window)!;
             var selectedTimelineScene = CurrentScene(window);
             check(SamplePixels(selectedTimelineImage).SequenceEqual(referenceSamples) &&
@@ -124,23 +154,38 @@ internal static class MainWindowPreviewProbe
                 "committing the already previewed frame moves the playhead immediately and reuses its BitmapSource",
                 new { Playhead = playhead.Value, BitmapReused = ReferenceEquals(sameFrameImage, CurrentImage(window)), ClickMilliseconds = clickLatency.Elapsed.TotalMilliseconds });
 
-            Pump(CallRender(window, "RenderTimelinePreview", .72, true), dispatcher);
-            Stage("same-playhead recommit after different hover");
-            var differentHover = CurrentImage(window);
-            var differentHoverScene = CurrentScene(window);
-            var playheadBeforeRecommit = playhead.Value;
-            Invoke(window, "SeekTimeline", playheadBeforeRecommit);
-            Pump(CallRender(window, "RenderTimelinePreview", playheadBeforeRecommit, false), dispatcher);
-            check(Math.Abs(CurrentScene(window).OutputTime - playheadBeforeRecommit) < 1e-6 &&
-                  !ReferenceEquals(differentHover, CurrentImage(window)),
-                "clicking the existing playhead after hovering elsewhere restores the playhead frame",
-                new { Playhead = playhead.Value, Scene = SceneIdentity(CurrentScene(window)),
-                    HoverScene = SceneIdentity(differentHoverScene), BitmapChanged = !ReferenceEquals(differentHover, CurrentImage(window)) });
+            Invoke(window, "SeekTimeline", .72);
+            Pump(CallRender(window, "RenderTimelinePreview", .72, false), dispatcher);
+            var seekImage = CurrentImage(window);
+            var seekScene = CurrentScene(window);
+            var seekPlayhead = playhead.Value;
+            timeline.HandlePointerMove(new Point(900, 12), false);
+            Pump(Task.Delay(50), dispatcher);
+            dispatcher.Invoke(DispatcherPriority.ApplicationIdle, new Action(() => { }));
+            check(Math.Abs(seekPlayhead - .72) < 1e-9 && ReferenceEquals(seekImage, CurrentImage(window)) &&
+                  Math.Abs(CurrentScene(window).OutputTime - .72) < 1e-6 && GetNullable(window, "activePreview") is null &&
+                  GetNullable(window, "pendingPreview") is null,
+                "passive movement after a .72 seek keeps the displayed bitmap and frame", new { Playhead = playhead.Value, Scene = SceneIdentity(CurrentScene(window)) });
+
+            var clickedTime = playhead.Value;
+            ClickTimeline(timeline, referenceTime, project.Timeline.Duration);
+            var clickedFrame = Math.Floor(referenceTime * project.Media.FrameRate) / project.Media.FrameRate;
+            Pump(CallRender(window, "RenderTimelinePreview", clickedFrame, false), dispatcher);
+            var clickedImage = CurrentImage(window);
+            timeline.HandlePointerMove(new Point(900, 12), false);
+            Pump(Task.Delay(50), dispatcher);
+            dispatcher.Invoke(DispatcherPriority.ApplicationIdle, new Action(() => { }));
+            check(Math.Abs(playhead.Value - clickedFrame) < 1e-9 && Math.Abs(CurrentScene(window).OutputTime - clickedFrame) < 1e-6 &&
+                  !ReferenceEquals(seekImage, clickedImage) && ReferenceEquals(clickedImage, CurrentImage(window)) &&
+                  Math.Abs(CurrentScene(window).OutputTime - clickedFrame) < 1e-6,
+                "real click at another frame updates preview and later passive movement keeps that frame", new
+                { PreviousPlayhead = clickedTime, Playhead = playhead.Value, Frame = SceneIdentity(CurrentScene(window)), BitmapChangedOnClick = !ReferenceEquals(seekImage, clickedImage) });
 
             Stage("playback, project replacement, and cancellation races");
             VerifySupersededRequests(window, dispatcher, project, projectPath, check);
-            check(!window.IsVisible && new System.Windows.Interop.WindowInteropHelper(window).Handle == IntPtr.Zero,
-                "preview probe leaves the MainWindow unshown without an HWND", null);
+            check(Application.Current.Windows.Count == 1 && !window.IsVisible &&
+                  new System.Windows.Interop.WindowInteropHelper(window).Handle == IntPtr.Zero,
+                "preview probe leaves only its unshown MainWindow with no HWND or desktop startup", null);
         }
         finally
         {
@@ -161,7 +206,7 @@ internal static class MainWindowPreviewProbe
         try
         {
             var beforePlayback = CurrentImage(window);
-            var playbackTask = CallRender(window, "RenderTimelinePreview", 3.15, true);
+            var playbackTask = CallRender(window, "RenderTimelinePreview", 3.15, false);
             Set(window, "playing", true);
             gate.Release();
             Pump(playbackTask, dispatcher);
@@ -171,7 +216,7 @@ internal static class MainWindowPreviewProbe
                 new { Retained = ReferenceEquals(beforePlayback, CurrentImage(window)), Scene = SceneIdentity(CurrentScene(window)) });
 
             gate.Wait();
-            var oldProjectTask = CallRender(window, "RenderTimelinePreview", 2.9, true);
+            var oldProjectTask = CallRender(window, "RenderTimelinePreview", 2.9, false);
             var nextProject = MakeProject(project.MediaPath, 1, 2, 2);
             Set(window, "project", nextProject);
             Set(window, "projectFile", projectPath);
@@ -188,7 +233,7 @@ internal static class MainWindowPreviewProbe
 
             gate.Wait();
             var beforeCancel = CurrentImage(window);
-            var cancelTask = CallRender(window, "RenderTimelinePreview", .7, true);
+            var cancelTask = CallRender(window, "RenderTimelinePreview", .7, false);
             var seek = Get<CancellationTokenSource>(window, "seekCancellation");
             seek.Cancel();
             gate.Release();
@@ -213,12 +258,21 @@ internal static class MainWindowPreviewProbe
         ZoomClips = [new() { Start = sourceStart, End = sourceStart + Math.Min(sourceDuration, 2), Scale = 2.1, Focus = new(.24, .66) }]
     };
 
-    private static Task CallRender(MainWindow window, string method, double time, bool hover = false)
+    private static Task CallRender(MainWindow window, string method, double time, bool coalesce = false)
     {
         var info = typeof(MainWindow).GetMethod(method, PrivateInstance)
             ?? throw new MissingMethodException(typeof(MainWindow).FullName, method);
-        var arguments = method == "RenderPreview" ? new object?[] { time } : new object?[] { time, hover };
+        var arguments = method == "RenderPreview" ? new object?[] { time } : new object?[] { time, coalesce };
         return (Task)(info.Invoke(window, arguments) ?? throw new InvalidOperationException($"{method} returned null."));
+    }
+
+    private static void ClickTimeline(EditorTimelineControl timeline, double time, double duration)
+    {
+        var x = 152 + time / duration * 1000;
+        var point = new Point(x, 12);
+        timeline.HandlePointerDown(point, System.Windows.Input.MouseButton.Left,
+            System.Windows.Input.ModifierKeys.None, false);
+        timeline.HandlePointerUp(System.Windows.Input.MouseButton.Left, point, false);
     }
 
     private static void Invoke(MainWindow window, string method, params object?[] arguments)
@@ -253,6 +307,8 @@ internal static class MainWindowPreviewProbe
 
     private static void DisposePreviewResources(MainWindow window, Dispatcher dispatcher)
     {
+        Set(window, "closeReady", true);
+        Get<DispatcherTimer>(window, "previewResizeTimer").Stop();
         var seekCancellation = GetNullable(window, "seekCancellation") as CancellationTokenSource;
         seekCancellation?.Cancel();
         List<Exception>? errors = null;

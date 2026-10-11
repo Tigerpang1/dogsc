@@ -416,7 +416,7 @@ public partial class MainWindow : Window
         }
         auxiliaryDurations.Clear();
         foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
-        project = opened; projectFile = path; selectedEffect=null;ClearTimelineHover();TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
+        project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
     }
     private static bool MainMediaCoversTimeline(MediaInfo info, FrameTrailProject candidate)
     {
@@ -537,7 +537,7 @@ public partial class MainWindow : Window
             var nearest=edges.MinBy(x=>Math.Abs(x-e.NewValue)); var tolerance=Math.Min(.15,project.Timeline.Duration*8/Math.Max(Playhead.ActualWidth,1));
             if(Math.Abs(nearest-e.NewValue)<tolerance) { refreshing=true;Playhead.Value=nearest;refreshing=false; }
         }
-        StopPlayback(); ClearTimelineHover(); UpdateTime(); _ = Guard(() => RenderTimelinePreview(Playhead.Value));
+        StopPlayback();  UpdateTime(); _ = Guard(() => RenderTimelinePreview(Playhead.Value));
     }
     private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);

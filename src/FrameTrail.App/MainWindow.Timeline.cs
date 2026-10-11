@@ -86,7 +86,7 @@ public partial class MainWindow
  private void PasteEffect(bool attributes)
  {
   if(effectClipboardJson==null||effectClipboardKind==null||project==null)return;
-  var t=project.Timeline.MapOutputToSource(Math.Clamp(timelineHoverPosition??Playhead.Value,0,project.Timeline.Duration));t=Math.Min(t,Math.Max(0,project.Media.Duration-.05));
+  var t=project.Timeline.MapOutputToSource(Math.Clamp(Playhead.Value,0,project.Timeline.Duration));t=Math.Min(t,Math.Max(0,project.Media.Duration-.05));
   ApplyEdit(p=>{
    if(attributes&&selectedEffect?.Kind!=effectClipboardKind)throw new InvalidOperationException("请先选择同类效果片段。");
    if(effectClipboardKind=="zoom"){var value=JsonSerializer.Deserialize<ZoomClip>(effectClipboardJson)!;if(value.Automatic)value.Focus=ToCropLocalFocus(p,value.Focus);var target=attributes?p.ZoomClips.First(x=>x.Id==selectedEffect!.Id):null;var duration=value.End-value.Start;value=value with{Id=target?.Id??Guid.NewGuid(),Start=target?.Start??t,End=target?.End??Math.Min(p.Media.Duration,t+duration),EnterProgressOffset=attributes?0:value.EnterProgressOffset,ExitProgressOffset=attributes?0:value.ExitProgressOffset,Automatic=false};if(target!=null)p.ZoomClips.Remove(target);p.ZoomClips.Add(value);selectedEffect=new("zoom",value.Id);}

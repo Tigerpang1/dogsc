@@ -23,23 +23,16 @@ public sealed class EditorTimelineControl : FrameworkElement
  public bool Filmstrip {get;set;}=true;
  public bool Waveform {get;set;}=true;
  public bool Snap {get;set;}=true;
- bool hoverEnabled=true;
- public bool HoverEnabled
- {
-  get=>hoverEnabled;
-  set{if(hoverEnabled==value)return;hoverEnabled=value;if(!value)ClearHoverPreview();}
- }
- public double? HoverTime {get;private set;}
  public event Action<double>? SeekRequested;
+ public event Action<double>? ScrubRequested;
  public event Action<TimelineSelection>? SelectionRequested;
  public event Action<TimelineChange>? ChangeRequested;
- public event Action<double?>? HoverRequested;
  public event Action<double>? ZoomRequested;
  public event Action<double>? ScrollRequested;
  public event Action? ContextRequested;
  record Hit(Rect Rect,TimelineSelection Selection,double SourceStart,double SourceDuration,double Rate,int Index);
  readonly List<Hit> hits=[];
- Hit? drag; Point down; double dragDelta; string dragMode=""; bool seeking;
+ Hit? drag; Point down; double dragDelta; string dragMode=""; bool seeking,scrubbed;
  const double LabelWidth=152, RulerHeight=40, PrimaryHeight=90, LaneHeight=52;
  static readonly Brush EffectLabelBrush=CreateEffectLabelBrush();
  bool isHighContrast;
@@ -67,10 +60,6 @@ public sealed class EditorTimelineControl : FrameworkElement
    elapsed=outputEnd;
   }
   return 0;
- }
- internal void ClearHoverPreview(bool notify=true)
- {
-  HoverTime=null;InvalidateVisual();if(notify)HoverRequested?.Invoke(null);
  }
  bool IsHighContrast=>isHighContrast;
  Brush B(string name)
@@ -139,7 +128,6 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind switch{BlurKind.Blur=>"柔化",BlurKind.Spotlight=>"聚光",_=>"马赛克"})),Color.FromRgb(208,192,220));
   if(Project.AudioTracks.Count>0)Lane("audio",Project.AudioTracks.Select((z,i)=>(AudioId(i),z.OffsetSeconds,z.Duration,z.Muted?"音频 · 静音":"音频 · "+(i+1))),Color.FromRgb(198,200,228));
   foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(IsHighContrast?B("Accent"):new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14,B("Ink"));}
-  if(HoverTime.HasValue){var x=X(HoverTime.Value);dc.DrawLine(new Pen(B("Secondary"),.75),new(x,0),new(x,ActualHeight));}
   var playX=X(Position);dc.DrawLine(new Pen(B("Ink"),1.25),new(playX,5),new(playX,ActualHeight));dc.DrawEllipse(B("Ink"),null,new(playX,7),4,4);
   if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);var rangeColor=IsHighContrast?SystemColors.HighlightColor:Color.FromRgb(70,169,134);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)(IsHighContrast?70:50),rangeColor.R,rangeColor.G,rangeColor.B)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}
@@ -174,7 +162,7 @@ public sealed class EditorTimelineControl : FrameworkElement
   var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));
   if(button==MouseButton.Right){if(hit!=null){Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);}ContextRequested?.Invoke();return;}
   if(button!=MouseButton.Left)return;
-  down=p;drag=hit;dragDelta=0;ClearHoverPreview(false);
+  down=p;drag=hit;dragDelta=0;seeking=false;scrubbed=false;
   if(hit!=null)
   {
    if(modifiers.HasFlag(ModifierKeys.Control)){if(!MultiSelection.Add(hit.Selection))MultiSelection.Remove(hit.Selection);}
@@ -186,21 +174,21 @@ public sealed class EditorTimelineControl : FrameworkElement
   SeekRequested?.Invoke(FrameTime(Time(p.X)));
   if(capturePointer)CaptureMouse();InvalidateVisual();
  }
- protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);HandlePointerMove(e.GetPosition(this),IsMouseCaptured);}
+ protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);HandlePointerMove(e.GetPosition(this),IsMouseCaptured&&e.LeftButton==MouseButtonState.Pressed);}
  internal void HandlePointerMove(Point p,bool captured)
  {
   if(Project==null)return;
-  if(captured){if(seeking)SeekRequested?.Invoke(FrameTime(Snapped(Time(p.X))));else if(drag!=null){dragDelta=p.X-down.X;InvalidateVisual();}return;}
+  if(captured){if(seeking){scrubbed=true;ScrubRequested?.Invoke(FrameTime(Snapped(Time(p.X))));}else if(drag!=null){dragDelta=p.X-down.X;InvalidateVisual();}return;}
   if(p.X<LabelWidth){if(p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);Cursor=(uint)index<(uint)lanes.Length?Cursors.Hand:Cursors.Arrow;}else Cursor=Cursors.Arrow;return;}
   var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));Cursor=hit!=null&&(p.X-hit.Rect.Left<8||hit.Rect.Right-p.X<8)?Cursors.SizeWE:hit!=null?Cursors.Hand:Cursors.Arrow;
-  if(!HoverEnabled)return;
-  var time=FrameTime(Time(p.X));if(HoverTime==time)return;HoverTime=time;HoverRequested?.Invoke(time);InvalidateVisual();
  }
  double Snapped(double t){if(!Snap||Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)||Project==null)return t;var boundaries=new List<double>{0};var end=0d;foreach(var s in Project.Timeline.Segments)boundaries.Add(end+=s.OutputDuration);var nearest=boundaries.OrderBy(x=>Math.Abs(x-t)).First();return Math.Abs(nearest-t)*Scale<9?nearest:t;}
  protected override void OnMouseUp(MouseButtonEventArgs e){base.OnMouseUp(e);if(e.ChangedButton!=MouseButton.Left)return;HandlePointerUp(e.ChangedButton,e.GetPosition(this),true);e.Handled=true;}
  internal void HandlePointerUp(MouseButton button,Point p,bool releasePointer)
  {
-  if(button!=MouseButton.Left)return;seeking=false;
+  if(button!=MouseButton.Left)return;
+  if(seeking&&Project!=null&&(scrubbed||p.X!=down.X))ScrubRequested?.Invoke(FrameTime(Snapped(Time(p.X))));
+  seeking=false;
   if(drag!=null&&Project!=null){if(Math.Abs(dragDelta)>3){var delta=dragDelta/Scale*drag.Rate;
     if(drag.Selection.Kind=="screen"&&dragMode=="move"){var time=Time(p.X);var cumulative=0d;var index=0;foreach(var seg in Project.Timeline.Segments){if(time<cumulative+seg.OutputDuration/2)break;cumulative+=seg.OutputDuration;index++;}ChangeRequested?.Invoke(new(drag.Selection,"reorder",drag.SourceStart,drag.SourceDuration,Math.Clamp(index,0,Project.Timeline.Segments.Count-1)));}
    else{var start=drag.SourceStart;var duration=drag.SourceDuration;if(dragMode=="trim-start"){var end=start+duration;start=Math.Clamp(start+delta,0,end-.04);duration=end-start;}else if(dragMode=="trim-end")duration=Math.Clamp(duration+delta,.04,Project.Media.Duration-start);else start=Math.Clamp(start+delta,0,Math.Max(0,Project.Media.Duration-duration));if(Snap&&!Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)&&drag.Selection.Kind!="screen"){var anchors=Project.ZoomClips.Where(x=>x.Id!=drag.Selection.Id).SelectMany(x=>new[]{x.Start,x.End}).Concat(Project.ScreenMotions.Where(x=>x.Id!=drag.Selection.Id).SelectMany(x=>new[]{x.Start,x.End})).ToArray();if(anchors.Length>0){var near=anchors.OrderBy(x=>Math.Abs(x-start)).First();if(Math.Abs(near-start)*Scale/drag.Rate<9)start=near;}}ChangeRequested?.Invoke(new(drag.Selection,dragMode,start,duration));}}
@@ -208,6 +196,5 @@ public sealed class EditorTimelineControl : FrameworkElement
   drag=null;dragDelta=0;InvalidateVisual();if(releasePointer&&IsMouseCaptured)ReleaseMouseCapture();
  }
  protected override void OnLostMouseCapture(MouseEventArgs e){base.OnLostMouseCapture(e);seeking=false;drag=null;dragDelta=0;InvalidateVisual();}
- protected override void OnMouseLeave(MouseEventArgs e){base.OnMouseLeave(e);}
  protected override void OnMouseWheel(MouseWheelEventArgs e){if(Keyboard.Modifiers.HasFlag(ModifierKeys.Control)){ZoomRequested?.Invoke(Math.Clamp(Zoom*(e.Delta>0?1.25:.8),1,12));e.Handled=true;}else if(Zoom>1){ScrollRequested?.Invoke(Math.Clamp(Offset-e.Delta,0,DocumentWidth-Math.Max(1,ActualWidth-LabelWidth)));e.Handled=true;}base.OnMouseWheel(e);}
 }

@@ -31,31 +31,51 @@ internal static class TimelineInputProbe
 
         var events = new List<string>();
         var seeks = new List<double>();
-        var hovers = new List<double?>();
+        var scrubs = new List<double>();
         control.SeekRequested += time => { seeks.Add(time); events.Add("seek"); };
+        control.ScrubRequested += time => { scrubs.Add(time); events.Add("scrub"); };
         control.SelectionRequested += selection => events.Add("selection:" + selection.Kind);
-        control.HoverRequested += time => hovers.Add(time);
 
         control.HandlePointerMove(new Point(276, 12), false);
-        var expectedFrame = 29d / 24;
-        check(Math.Abs((control.HoverTime ?? -1) - expectedFrame) < 1e-9 && hovers.Count == 1,
-            "hover position is floored to the source media frame", new { Hover = control.HoverTime, Expected = expectedFrame });
-
         control.HandlePointerMove(new Point(80, 155), false);
-        check(control.HoverTime == expectedFrame && hovers.Count == 1,
-            "moving into track labels keeps the hover preview active", new { Hover = control.HoverTime, HoverNotifications = hovers.Count });
+        var expectedFrame = 29d / 24;
+        check(seeks.Count == 0 && scrubs.Count == 0,
+            "passive pointer movement does not seek or request a preview", new { Seeks = seeks, Scrubs = scrubs, ExpectedFrame = expectedFrame });
 
-        control.HandlePointerMove(new Point(1152, 12), false);
-        var terminalFrame = 239d / 24;
-        check(Math.Abs((control.HoverTime ?? -1) - terminalFrame) < 1e-9,
-            "hover at the duration endpoint clamps to the last decodable source frame", new { Hover = control.HoverTime, Expected = terminalFrame });
-        control.HandlePointerMove(new Point(276, 12), false);
-
-        var hoverNotificationsBeforeClick = hovers.Count;
         control.HandlePointerDown(new Point(276, 12), MouseButton.Left, ModifierKeys.None, false);
         control.HandlePointerUp(MouseButton.Left, new Point(276, 12), false);
-        check(control.HoverTime is null && hovers.Count == hoverNotificationsBeforeClick && seeks.Count == 1 && Math.Abs(seeks[0] - expectedFrame) < 1e-9,
-            "left click clears hover without duplicate notification and seeks once to the displayed frame", new { Hover = control.HoverTime, HoverNotifications = hovers.Count, Seeks = seeks });
+        check(seeks.Count == 1 && scrubs.Count == 0 && Math.Abs(seeks[0] - expectedFrame) < 1e-9,
+            "left click seeks immediately once without a redundant release seek", new { Seeks = seeks, Scrubs = scrubs });
+
+        seeks.Clear(); scrubs.Clear();
+        control.HandlePointerDown(new Point(1152, 12), MouseButton.Left, ModifierKeys.None, false);
+        control.HandlePointerUp(MouseButton.Left, new Point(1152, 12), false);
+        check(seeks.Count == 1 && Math.Abs(seeks[0] - 239d / 24) < 1e-9,
+            "click at the duration endpoint seeks to the last decodable source frame", new { Seeks = seeks, Expected = 239d / 24 });
+
+        seeks.Clear(); scrubs.Clear(); events.Clear();
+        var scrubStart = new Point(300, 12);
+        var scrubMove = new Point(500, 12);
+        var scrubRelease = new Point(700, 12);
+        control.HandlePointerDown(scrubStart, MouseButton.Left, ModifierKeys.None, false);
+        control.HandlePointerMove(scrubMove, true);
+        control.HandlePointerUp(MouseButton.Left, scrubRelease, false);
+        var expectedScrubMove = Math.Floor((scrubMove.X - 152) / 1000 * 10 * 24) / 24;
+        var expectedScrubRelease = Math.Floor((scrubRelease.X - 152) / 1000 * 10 * 24) / 24;
+        check(seeks.Count == 1 && scrubs.Count == 2 && Math.Abs(scrubs[0] - expectedScrubMove) < 1e-9 &&
+              Math.Abs(scrubs[^1] - expectedScrubRelease) < 1e-9,
+            "held left drag scrubs and release commits its final position", new { Seeks = seeks, Scrubs = scrubs, Expected = new[] { expectedScrubMove, expectedScrubRelease } });
+
+        seeks.Clear(); scrubs.Clear();
+        control.HandlePointerDown(scrubStart, MouseButton.Left, ModifierKeys.None, false);
+        control.HandlePointerMove(scrubMove, true);
+        control.HandlePointerUp(MouseButton.Left, scrubStart, false);
+        check(scrubs.Count == 2 && Math.Abs(scrubs[^1] - FrameAt(scrubStart.X)) < 1e-9,
+            "release at the drag origin still commits the final scrub position", new { Scrubs = scrubs, Expected = FrameAt(scrubStart.X) });
+        var seeksAfterRelease = seeks.Count; var scrubsAfterRelease = scrubs.Count;
+        control.HandlePointerMove(new Point(900, 12), false);
+        check(seeks.Count == seeksAfterRelease && scrubs.Count == scrubsAfterRelease,
+            "pointer movement after release leaves the scrubbed frame unchanged", new { Seeks = seeks, Scrubs = scrubs });
 
         events.Clear();
         seeks.Clear();
@@ -107,13 +127,6 @@ internal static class TimelineInputProbe
         check(events.SequenceEqual(["seek"]) && seeks.Count == 1 && Math.Abs(seeks[0] - 203d / 24) < 1e-9,
             "empty track click immediately seeks to the displayed source frame", new { Events = events, Seeks = seeks });
 
-        var hoverClears = 0;
-        control.HoverRequested += time => { if (time is null) hoverClears++; };
-        control.HandlePointerMove(new Point(300, 10), false);
-        control.HoverEnabled = false;
-        check(control.HoverTime is null && hoverClears == 1,
-            "disabling hover preview immediately clears and notifies", new { Hover = control.HoverTime, ClearNotifications = hoverClears });
-
         var rateProject = new FrameTrailProject
         {
             Media = new() { Duration = 10, FrameRate = 24 },
@@ -126,14 +139,21 @@ internal static class TimelineInputProbe
         var rateTimelineTime = (ratePoint.X - 152d) / (1152 - 152) * rateProject.Timeline.Duration;
         var rateSourceFrame = Math.Floor(rateTimelineTime * rateProject.Timeline.Segments[0].PlaybackRate * rateProject.Media.FrameRate);
         var expectedRateFrame = rateSourceFrame / rateProject.Media.FrameRate / rateProject.Timeline.Segments[0].PlaybackRate;
+        var passiveSeeks = new List<double>();
+        var passiveScrubs = new List<double>();
+        rateControl.SeekRequested += passiveSeeks.Add;
+        rateControl.ScrubRequested += passiveScrubs.Add;
         rateControl.HandlePointerMove(ratePoint, false);
-        check(Math.Abs((rateControl.HoverTime ?? -1) - expectedRateFrame) < 1e-9,
-            "hover frame quantization maps source frames through playback speed", new { Hover = rateControl.HoverTime, Expected = expectedRateFrame, TimelineTime = rateTimelineTime, SourceFrame = rateSourceFrame });
+        check(passiveSeeks.Count == 0 && passiveScrubs.Count == 0,
+            "passive movement does not preview a speed-mapped source frame", new { Seeks = passiveSeeks, Scrubs = passiveScrubs, TimelineTime = rateTimelineTime, SourceFrame = rateSourceFrame });
         var rateSeeks = new List<double>();
+        rateControl.SeekRequested -= passiveSeeks.Add;
         rateControl.SeekRequested += rateSeeks.Add;
         rateControl.HandlePointerDown(ratePoint, MouseButton.Left, ModifierKeys.None, false);
         rateControl.HandlePointerUp(MouseButton.Left, ratePoint, false);
-        check(rateSeeks.Count == 1 && Math.Abs(rateSeeks[0] - expectedRateFrame) < 1e-9 && rateControl.HoverTime is null,
-            "click seeks to the same speed-mapped source frame displayed by hover", new { Seeks = rateSeeks, Expected = expectedRateFrame, Hover = rateControl.HoverTime });
+        check(rateSeeks.Count == 1 && Math.Abs(rateSeeks[0] - expectedRateFrame) < 1e-9,
+            "click maps playback speed to the matching source frame", new { Seeks = rateSeeks, Expected = expectedRateFrame });
+
+        static double FrameAt(double x) => Math.Floor((x - 152) / 1000 * 10 * 24) / 24;
     }
 }

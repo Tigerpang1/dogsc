@@ -6,9 +6,16 @@ public partial class App : Application
 {
     private readonly UnhandledErrorPresenter unhandledErrors = new(Log, UnhandledErrorPresenter.Show);
     private DesktopInstance? desktopInstance;
+    private readonly bool startDesktop = true;
+
+    public App() { }
+    internal App(bool startDesktop) => this.startDesktop = startDesktop;
 
     protected override async void OnStartup(StartupEventArgs e)
     {
+        // Offscreen probes pump the dispatcher, which also drains WPF's queued
+        // startup callback. They need resources without launching the desktop/IPC.
+        if (!startDesktop) return;
         DispatcherUnhandledException += (_, args) =>
         {
             args.Handled = true;

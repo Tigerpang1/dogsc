@@ -23,7 +23,6 @@ public partial class MainWindow
  private bool excludeEditorDuringRecording=true;
  private TimelineSelection? selectedEffect;
  private string? effectClipboardKind,effectClipboardJson;
- private double? timelineHoverPosition;
  private string? preferredRecordingRoot;
  private Brush Brush(string name)=>(Brush)FindResource(name);
  private double SourceNow=>project==null?0:project.Timeline.MapOutputToSource(Math.Clamp(Playhead.Value,0,project.Timeline.Duration));
@@ -37,16 +36,15 @@ public partial class MainWindow
   RenderOptions.SetBitmapScalingMode(PreviewImage,BitmapScalingMode.HighQuality);
   PreviewSurface.SizeChanged+=(_,_)=>SchedulePreviewResize();
   DpiChanged+=(_,_)=>SchedulePreviewResize();
-  previewResizeTimer.Tick+=(_,_)=>{previewResizeTimer.Stop();if(project!=null&&previewResolution==0&&!playing&&operationCancellation==null)_=Guard(()=>RenderTimelinePreview(timelineHoverPosition??Playhead.Value,hover:timelineHoverPosition.HasValue));};
+  previewResizeTimer.Tick+=(_,_)=>{previewResizeTimer.Stop();if(project!=null&&previewResolution==0&&!playing&&operationCancellation==null)_=Guard(()=>RenderTimelinePreview(Playhead.Value));};
   TimelineView.SeekRequested+=SeekTimeline;
+  TimelineView.ScrubRequested+=ScrubTimeline;
   TimelineView.SelectionRequested+=s=>{selectedEffect=s.Kind=="screen"?null:s;selectedScreenSegmentId=s.Kind=="screen"?s.Id:null;if(s.Kind=="screen"){inspectorTab="audio";refreshing=true;Clips.SelectedItem=Clips.Items.Cast<ClipItem>().FirstOrDefault(x=>x.Id==s.Id);refreshing=false;}else {inspectorTab=s.Kind switch{"camera" or "cameraMotion"=>"camera","audio"=>"audio","overlay"=>"overlay","blur"=>"blur",_=>"zoom"};motionTab=s.Kind=="motion"?"motion":"zoom";}BuildInspector();};
   TimelineView.ChangeRequested+=ApplyTimelineChange;
-  TimelineView.HoverRequested+=TimelineHover;
   TimelineView.ZoomRequested+=v=>TimelineZoom.Value=v;
   TimelineView.ScrollRequested+=v=>TimelineScroll.Value=v;
   TimelineView.ContextRequested+=TimelineContextMenu;TimelineView.TrackMenuRequested+=TimelineTracksMenu;
   SnapBoundaries.Checked+=(_,_)=>{TimelineView.Snap=true;};SnapBoundaries.Unchecked+=(_,_)=>{TimelineView.Snap=false;};
-  HoverPreview.Checked+=(_,_)=>{TimelineView.HoverEnabled=true;};HoverPreview.Unchecked+=(_,_)=>{TimelineView.HoverEnabled=false;};
   BuildInspector();
  }
  private void RefreshEditorShell()
@@ -76,12 +74,6 @@ public partial class MainWindow
  private void FilmstripClick(object sender,RoutedEventArgs e){TimelineView.Filmstrip=!TimelineView.Filmstrip;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
  private void WaveClick(object sender,RoutedEventArgs e){TimelineView.Waveform=!TimelineView.Waveform;UpdateTimelineDisplayButtons();TimelineView.InvalidateVisual();}
  private void UpdateTimelineDisplayButtons(){FilmstripButton.SetResourceReference(BackgroundProperty,TimelineView.Filmstrip?"ControlSurface":"Surface");WaveButton.SetResourceReference(BackgroundProperty,TimelineView.Waveform?"ControlSurface":"Surface");}
- private async void TimelineHover(double? time)
- {
-  if(playing||operationCancellation!=null){ClearTimelineHover();return;}
-  if(timelineHoverPosition==time)return;timelineHoverPosition=time;if(project==null)return;
-  try{await RenderTimelinePreview(time??Playhead.Value,hover:time.HasValue);}catch(Exception ex){App.Log(ex);Status.Text="悬浮预览未完成："+ex.Message;}
- }
  private void FitTimelineClick(object sender,RoutedEventArgs e){TimelineZoom.Value=1;TimelineScroll.Value=0;}
  private void ZoomInTimelineClick(object sender,RoutedEventArgs e)=>TimelineZoom.Value=Math.Min(12,TimelineZoom.Value*1.25);
  private void ZoomOutTimelineClick(object sender,RoutedEventArgs e)=>TimelineZoom.Value=Math.Max(1,TimelineZoom.Value/1.25);
