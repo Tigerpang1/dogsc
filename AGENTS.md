@@ -12,3 +12,4 @@
 - `FrameTrail.*` 内部命名、`.frametrail` 格式、历史用户数据目录及单实例身份保留兼容性，不作无必要的破坏性重命名。
 - 公开发布目标、签名凭据与付费上线由用户确认；本地源码、测试、便携包和安装器可自主推进。
 - 用户已授权使用 `lantiansb` 账户维护 GitHub 源码仓库 `lantiansb/dogsc`；该仓库是 `laogou717/dogsc` 的 Fork，Windows 默认开发分支为 `codex/windows`，`main` 保留上游代码。`origin` 指向个人 Fork，`upstream` 指向原项目。含 FFmpeg 的本地候选二进制在分发材料和验收未齐备时不上传。
+- 用户已明确要求发布可直接下载的 Windows Beta、Release 与 tag；按经过验收的公开产物清单上传，不包含私有验证材料。当前 tag 为 `v0.2.17-windows-beta.1`。提交身份必须使用本仓库配置的 `lantiansb` noreply 邮箱，同时核对 GitHub 登录账户。

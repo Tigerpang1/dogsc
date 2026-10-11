@@ -1,8 +1,10 @@
 # DogSC Windows 社区移植版发行记录
 
-## 0.2.17 Beta 品牌恢复准备
+## 0.2.17 Windows 社区 Beta
 
-0.2.17 恢复 DogSC 产品名称和上游图标，定位为 DogSC Windows 社区移植版。原项目作者为神烦老狗，采用 MIT 许可证；此 Windows 版本由社区维护，不代表原作者官方发行或背书。Windows 源码仓库为 [lantiansb/dogsc](https://github.com/lantiansb/dogsc)，保留原项目的 Fork 关系；Beta 安装包尚未公开发布。功能范围、已知问题和发布前动作见 [`release-preparation.md`](release-preparation.md)。
+0.2.17 恢复 DogSC 产品名称和上游图标，定位为 DogSC Windows 社区移植版。原项目作者为神烦老狗，采用 MIT 许可证；此 Windows 版本由社区维护，不代表原作者官方发行或背书。Windows 源码仓库为 [lantiansb/dogsc](https://github.com/lantiansb/dogsc)，保留原项目的 Fork 关系；下载见 [Windows Beta Release](https://github.com/lantiansb/dogsc/releases/tag/v0.2.17-windows-beta.1)，具体变更和限制见 [`release-0.2.17.md`](release-0.2.17.md)。本次公开包使用固定源码重建的 FFmpeg，含完整对应材料；早期 Gyan 本地候选没有公开上传。
+
+## 0.2.5 本地验收历史
 
 0.2.5源码ZIP独立构建与本机包运行验收通过。最终包验收8/8，包括播放、录制编辑导出、安装/卸载、用户偏好恢复及477个发布目录文件运行后与原ZIP逐字节一致。早期7项流程曾改写Demo工程字段，ZIP和安装器未变，样例已恢复；该历史失败不代表当前最终8项检查。源码提交为 `e4bfd5ed44deb93272df4d3f52217e3cb8e43420`，上游基线为 `e207d11b111c5e58152238fb64115b2009850547`；manifest见 [`FrameTrail-0.2.5-manifest.json`](../artifacts/release/FrameTrail-0.2.5-manifest.json)。本地候选未公开发布。
 

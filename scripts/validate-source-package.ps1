@@ -9,7 +9,8 @@ param(
     [ValidateRange(60, 7200)]
     [int]$BuildTimeoutSeconds = 1800,
     [ValidateRange(60, 7200)]
-    [int]$PackageTimeoutSeconds = 3600
+    [int]$PackageTimeoutSeconds = 3600,
+    [string]$NativeArchivePath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -39,6 +40,7 @@ $run = [ordered]@{
     sourceArchiveLayout = $null
     noGitMetadataVerified = $false
     screenRecorderLib = $null
+    nativeMedia = $null
     steps = @()
     buildInfo = $null
     error = $null
@@ -90,6 +92,7 @@ function Invoke-LoggedProcess(
         $startInfo.RedirectStandardError = $true
         $startInfo.StandardOutputEncoding = [System.Text.Encoding]::UTF8
         $startInfo.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+        $startInfo.Environment['FRAMETRAIL_FFMPEG_DIR'] = Join-Path $repoRoot 'artifacts/toolchains/dogsc-native-8.1.2/cli'
         foreach ($argument in $Arguments) { $null = $startInfo.ArgumentList.Add($argument) }
 
         $process = [System.Diagnostics.Process]::new()
@@ -268,34 +271,18 @@ try {
     $pwshPath = Join-Path $PSHOME 'pwsh.exe'
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
     $utf8Bootstrap = Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'
-    $sharedArchive = Join-Path $workspaceRoot 'artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip'
-    $sharedArchiveSha256 = 'c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c'
-    $libavParameters = @{}
-    if (Test-Path -LiteralPath $sharedArchive -PathType Leaf) {
-        Assert-FileHash $sharedArchive $sharedArchiveSha256 'Pinned FFmpeg shared runtime archive'
-        $runtimeCacheArchive = Join-Path $repoRoot 'artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip'
-        $runtimeCacheParent = Split-Path -Parent $runtimeCacheArchive
-        $repoBoundary = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
-        $runtimeCacheArchiveFull = [System.IO.Path]::GetFullPath($runtimeCacheArchive)
-        if (-not $runtimeCacheArchiveFull.StartsWith($repoBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Refusing to copy the runtime archive outside extracted source: $runtimeCacheArchiveFull"
-        }
-        Assert-TempPath $runtimeCacheArchiveFull
-        Assert-NoReparsePathWithin -Path $runtimeCacheParent -Boundary $repoRoot
-        Assert-NoReparsePathWithin -Path $runtimeCacheArchiveFull -Boundary $repoRoot
-        if (Test-Path -LiteralPath $runtimeCacheArchive) {
-            if (-not (Test-Path -LiteralPath $runtimeCacheArchive -PathType Leaf)) { throw "Runtime archive cache path exists but is not a file: $runtimeCacheArchive" }
-            Assert-FileHash $runtimeCacheArchive $sharedArchiveSha256 'Cached FFmpeg shared runtime archive'
-        } else {
-            $null = New-Item -ItemType Directory -Path $runtimeCacheParent -Force
-            Assert-NoReparsePathWithin -Path $runtimeCacheParent -Boundary $repoRoot
-            Copy-Item -LiteralPath $sharedArchive -Destination $runtimeCacheArchive
-            Assert-NoReparsePathWithin -Path $runtimeCacheArchiveFull -Boundary $repoRoot
-            Assert-FileHash $runtimeCacheArchive $sharedArchiveSha256 'Copied FFmpeg shared runtime archive'
-        }
+    $nativeManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'third_party/ffmpeg/manifest.json') -Raw | ConvertFrom-Json
+    if ([string]$nativeManifest.archive.sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'Extracted source has no finalized native archive SHA-256.' }
+    if (-not $NativeArchivePath) { $NativeArchivePath = Join-Path $workspaceRoot "artifacts/toolchains/dogsc-native-8.1.2/$($nativeManifest.archive.file)" }
+    $nativeParameters = @{}
+    $nativeArguments = @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', (Join-Path $repoRoot 'scripts/ensure-native-media.ps1'))
+    if (Test-Path -LiteralPath $NativeArchivePath -PathType Leaf) {
+        Assert-FileHash $NativeArchivePath ([string]$nativeManifest.archive.sha256) 'Manifest-pinned native media archive'
+        $nativeParameters.ArchivePath = $NativeArchivePath
     }
-    $libavPrepareResult = Invoke-LoggedProcess -Name 'libav-prepare' -FileName $pwshPath `
-        -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', (Join-Path $repoRoot 'scripts/ensure-libav.ps1'), '-ParametersJson', ($libavParameters | ConvertTo-Json -Compress)) `
+    if ($nativeParameters.Count -gt 0) { $nativeArguments += @('-ParametersJson', ($nativeParameters | ConvertTo-Json -Compress)) }
+    $nativePrepareResult = Invoke-LoggedProcess -Name 'native-media-prepare' -FileName $pwshPath `
+        -Arguments $nativeArguments `
         -WorkingDirectory $repoRoot -TimeoutSeconds $BuildTimeoutSeconds
     $testScript = Join-Path $repoRoot 'scripts/test.ps1'
     $testParameters = @{ Configuration='Release'; IncludeCaptureProbe=$true; IncludeVisualProbe=$true; IncludeReleaseProbe=$true } | ConvertTo-Json -Compress
@@ -315,10 +302,44 @@ try {
     $nativePlaybackResult = Invoke-LoggedProcess -Name 'native-playback' -FileName 'dotnet' `
         -Arguments @('run', '--no-build', '--project', (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj'), '--configuration', 'Release', '--', '--native-playback', (Join-Path $repoRoot 'artifacts/validation/native-playback')) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
-    $packageParameters = @{ Configuration='Release'; Version=$Version; WithoutFfmpeg=$true; SkipInstaller=$true } | ConvertTo-Json -Compress
+    $packageParametersObject = @{ Configuration='Release'; Version=$Version; WithoutFfmpeg=$true; SkipInstaller=$true }
+    $innerNativeArchive = Join-Path $repoRoot "artifacts/toolchains/dogsc-native-8.1.2/$($nativeManifest.archive.file)"
+    if (Test-Path -LiteralPath $innerNativeArchive -PathType Leaf) { $packageParametersObject.NativeArchivePath=$innerNativeArchive; $packageParametersObject.OfflineNativeMedia=$true }
+    $packageParameters = $packageParametersObject | ConvertTo-Json -Compress
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $PackageTimeoutSeconds
+
+    $nativePackageRoot = Join-Path $repoRoot "artifacts/release/DogSC-$Version-win-x64"
+    $nativeArchiveAsset = Join-Path $repoRoot "artifacts/release/$($nativeManifest.archive.file)"
+    $sourceArchiveAsset = Join-Path $repoRoot "artifacts/release/$($nativeManifest.sourceArchive.file)"
+    $nativeMediaChecks = [ordered]@{
+        version = [string]$nativeManifest.version
+        archiveSha256 = ([string]$nativeManifest.archive.sha256).ToLowerInvariant()
+        sourceArchiveSha256 = ([string]$nativeManifest.sourceArchive.sha256).ToLowerInvariant()
+        nativeArchiveAssetMatches = (Test-Path -LiteralPath $nativeArchiveAsset -PathType Leaf) -and (Get-FileHash -LiteralPath $nativeArchiveAsset -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash.ToLowerInvariant() -eq ([string]$nativeManifest.archive.sha256).ToLowerInvariant()
+        sourceArchiveAssetMatches = (Test-Path -LiteralPath $sourceArchiveAsset -PathType Leaf) -and (Get-FileHash -LiteralPath $sourceArchiveAsset -Algorithm SHA256 -ErrorAction SilentlyContinue).Hash.ToLowerInvariant() -eq ([string]$nativeManifest.sourceArchive.sha256).ToLowerInvariant()
+        packageRuntimeFilesMatch = $true
+        packageSupportFilesMatch = $true
+        packageSourceFilesMatch = $true
+    }
+    foreach ($entry in $nativeManifest.runtimeFiles | Where-Object { ([string]$_.path).Replace('\','/').StartsWith('libav/',[StringComparison]::Ordinal) }) {
+        $target = Join-Path $nativePackageRoot "app/tools/libav/$([IO.Path]::GetFileName([string]$entry.path))"
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { $nativeMediaChecks.packageRuntimeFilesMatch=$false }
+    }
+    foreach ($entry in $nativeManifest.supportFiles) {
+        $target = Join-Path $nativePackageRoot "app/tools/libav/$([IO.Path]::GetFileName([string]$entry.path))"
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { $nativeMediaChecks.packageSupportFilesMatch=$false }
+    }
+    $nativeSourceRoot = Join-Path $nativePackageRoot 'licenses/libav-corresponding-source'
+    foreach ($entry in $nativeManifest.sourceFiles) {
+        $relative = ([string]$entry.path).Replace('\','/') -replace '^source-materials/',''
+        $target = Join-Path $nativeSourceRoot $relative
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { $nativeMediaChecks.packageSourceFilesMatch=$false }
+    }
+    $nativeMediaChecks.passed = @($nativeMediaChecks.GetEnumerator() | Where-Object { $_.Key -match 'Matches$' -and -not $_.Value }).Count -eq 0
+    $nativeMediaChecks.passed = $nativeMediaChecks.passed -and $nativeMediaChecks.packageRuntimeFilesMatch -and $nativeMediaChecks.packageSupportFilesMatch -and $nativeMediaChecks.packageSourceFilesMatch
+    $run.nativeMedia = $nativeMediaChecks
 
     $publishedScreenRecorderLib = Join-Path $repoRoot "artifacts/release/DogSC-$Version-win-x64/app/ScreenRecorderLib.dll"
     if (Test-Path -LiteralPath $publishedScreenRecorderLib -PathType Leaf) {
@@ -361,12 +382,12 @@ try {
         $run.buildInfo = [ordered]@{ path = $buildInfoPath; error = 'BUILD-INFO.txt was not produced.' }
     }
 
-    $stepResults = @($libavPrepareResult, $testResult, $buildResult, $nativeSeekResult, $nativePlaybackResult, $packageResult)
+    $stepResults = @($nativePrepareResult, $testResult, $buildResult, $nativeSeekResult, $nativePlaybackResult, $packageResult)
     $stepsPassed = $stepResults.Count -eq 6 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
     $buildInfoPassed = $run.buildInfo.sourceKindCorrect -and $run.buildInfo.frameTrailCommitCorrect -and $run.buildInfo.upstreamCommitCorrect
     $screenRecorderLibPassed = $screenRecorderLibPatchApplyVerified -and $run.screenRecorderLib.publishedDllMatches -and $run.screenRecorderLib.publishedMaterialsVerified
     $run.screenRecorderLib.passed = $screenRecorderLibPassed
-    $run.status = if ($stepsPassed -and $buildInfoPassed -and $screenRecorderLibPassed) { 'passed' } else { 'failed' }
+    $run.status = if ($stepsPassed -and $buildInfoPassed -and $screenRecorderLibPassed -and $nativeMediaChecks.passed) { 'passed' } else { 'failed' }
 }
 catch {
     $run.status = 'failed'

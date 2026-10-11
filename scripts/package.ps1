@@ -7,12 +7,18 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
     [string]$ApplicationExeName = 'DogSC.exe',
     [switch]$WithoutFfmpeg,
-    [switch]$SkipInstaller
+    [switch]$SkipInstaller,
+    [string]$NativeArchivePath,
+    [switch]$OfflineNativeMedia
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-& (Join-Path $PSScriptRoot 'ensure-libav.ps1')
+$nativeArguments = @{}
+if ($NativeArchivePath) { $nativeArguments.ArchivePath = $NativeArchivePath }
+if ($OfflineNativeMedia) { $nativeArguments.Offline = $true }
+& (Join-Path $PSScriptRoot 'ensure-native-media.ps1') @nativeArguments
+$nativeManifest = Get-Content -LiteralPath (Join-Path $repoRoot 'third_party/ffmpeg/manifest.json') -Raw | ConvertFrom-Json
 $project = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
 $licenseRoot = Join-Path $repoRoot 'licenses'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
@@ -50,6 +56,7 @@ if ((Get-FileHash -LiteralPath $screenRecorderLibVendorLicense -Algorithm SHA256
 
 $null = New-Item -ItemType Directory -Path $releaseRoot -Force
 $releaseBoundary = [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd('\') + '\'
+if ((Get-Item -LiteralPath $releaseRoot -Force).Attributes -band [System.IO.FileAttributes]::ReparsePoint) { throw "Refusing to build inside a release directory reparse point: $releaseRoot" }
 function Remove-GeneratedReleaseOutput([string]$Path) {
     $absolutePath = [System.IO.Path]::GetFullPath($Path)
     if (-not $absolutePath.StartsWith($releaseBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -66,7 +73,6 @@ function Remove-GeneratedReleaseOutput([string]$Path) {
 Remove-GeneratedReleaseOutput $publishRoot
 Remove-GeneratedReleaseOutput $zipPath
 Remove-GeneratedReleaseOutput $installerPath
-Remove-GeneratedReleaseOutput (Join-Path $releaseRoot 'ffmpeg-corresponding-source')
 $null = New-Item -ItemType Directory -Path $portableRoot -Force
 if ($publishStaging.Contains("'")) { throw "系统临时目录含有撇号，无法规避 .NET SDK 发布路径限制：$publishStaging" }
 
@@ -92,6 +98,7 @@ finally {
         if (-not $stagingAbsolute.StartsWith($tempAbsolute, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "拒绝清理系统临时目录之外的发布暂存：$stagingAbsolute"
         }
+        if ((Get-ChildItem -LiteralPath $stagingAbsolute -Force -Recurse | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -gt 0) { throw "拒绝清理含有重解析点的发布暂存：$stagingAbsolute" }
         Remove-Item -LiteralPath $stagingAbsolute -Recurse -Force
     }
 }
@@ -110,8 +117,9 @@ if (-not (Test-Path -LiteralPath $applicationExe -PathType Leaf)) {
     throw "发布目录中未找到应用主程序 $ApplicationExeName。检查 App 项目的 AssemblyName 后再运行 package.ps1。"
 }
 Copy-Item -LiteralPath $licenseRoot -Destination $licenseOutput -Recurse -Force
-& (Join-Path $PSScriptRoot 'fetch-libav-corresponding-source.ps1')
-Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/research/libav-source-materials') -Destination (Join-Path $licenseOutput 'libav-corresponding-source') -Recurse -Force
+$fetchArguments = @{ PackageDirectory=$publishRoot; Offline=[bool]$OfflineNativeMedia }
+if ($NativeArchivePath) { $fetchArguments.ArchivePath = $NativeArchivePath }
+& (Join-Path $PSScriptRoot 'fetch-libav-corresponding-source.ps1') @fetchArguments
 foreach ($name in @('README.md', 'LICENSE')) {
     $sourceFile = Join-Path $repoRoot $name
     if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "发行材料缺失：$sourceFile" }
@@ -120,6 +128,16 @@ foreach ($name in @('README.md', 'LICENSE')) {
 $docsSource = Join-Path $repoRoot 'docs'
 if (-not (Test-Path -LiteralPath $docsSource -PathType Container)) { throw "文档目录缺失：$docsSource" }
 Copy-Item -LiteralPath $docsSource -Destination $publishRoot -Recurse -Force
+
+# Ship only the public native-media description and pinned manifest. The other
+# third_party/ffmpeg files may contain local research or build inputs.
+$publishedFfmpegInfo = Join-Path $publishRoot 'third_party/ffmpeg'
+$null = New-Item -ItemType Directory -Path $publishedFfmpegInfo -Force
+foreach ($name in @('README.md','manifest.json')) {
+    $sourcePath = Join-Path $repoRoot "third_party/ffmpeg/$name"
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) { throw "FFmpeg public release information is missing: $sourcePath" }
+    Copy-Item -LiteralPath $sourcePath -Destination $publishedFfmpegInfo -Force
+}
 
 $screenRecorderLibLicenseOutput = Join-Path $licenseOutput 'ScreenRecorderLib-source'
 $null = New-Item -ItemType Directory -Path $screenRecorderLibLicenseOutput -Force
@@ -133,8 +151,12 @@ $sampleStaging = Join-Path $env:TEMP ("FrameTrail-sample-$Version-$PID-" + [guid
 $sampleNames = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md')
 try {
     if (Test-Path -LiteralPath $sampleStaging) { throw "样例暂存目录已存在：$sampleStaging" }
-    & (Join-Path $PSScriptRoot 'create-sample.ps1') -OutputDirectory $sampleStaging
-    if ($LASTEXITCODE -ne 0) { throw '原创样例生成失败。' }
+    $previousFfmpegDirectory = $env:FRAMETRAIL_FFMPEG_DIR
+    try {
+        $env:FRAMETRAIL_FFMPEG_DIR = Join-Path $repoRoot 'artifacts/toolchains/dogsc-native-8.1.2/cli'
+        & (Join-Path $PSScriptRoot 'create-sample.ps1') -OutputDirectory $sampleStaging
+        if ($LASTEXITCODE -ne 0) { throw '原创样例生成失败。' }
+    } finally { $env:FRAMETRAIL_FFMPEG_DIR = $previousFfmpegDirectory }
     $sampleDestination = Join-Path $publishRoot 'samples/FrameTrail-Demo'
     $null = New-Item -ItemType Directory -Path $sampleDestination -Force
     foreach ($name in $sampleNames) {
@@ -158,33 +180,38 @@ $gitHead = $sourceProvenance.Head
 $sourceKind = $sourceProvenance.Kind
 $workingTreeState = $sourceProvenance.WorktreeState
 
-$ffmpegSourceMaterial = Join-Path $releaseRoot 'ffmpeg-corresponding-source'
+$nativeCache = Join-Path $repoRoot 'artifacts/toolchains/dogsc-native-8.1.2'
+$nativeArchiveSource = if ($NativeArchivePath) { [IO.Path]::GetFullPath($NativeArchivePath) } else { Join-Path $nativeCache ([string]$nativeManifest.archive.file) }
+$nativeArchiveDestination = Join-Path $releaseRoot ([string]$nativeManifest.archive.file)
+$nativeArchiveHash = ([string]$nativeManifest.archive.sha256).ToLowerInvariant()
+if ((Get-FileHash -LiteralPath $nativeArchiveSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $nativeArchiveHash) { throw 'Native media archive no longer matches its manifest.' }
+if (Test-Path -LiteralPath $nativeArchiveDestination) {
+    if ((Get-FileHash -LiteralPath $nativeArchiveDestination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $nativeArchiveHash) { throw "Existing native archive asset differs; refusing to overwrite: $nativeArchiveDestination" }
+} else { Copy-Item -LiteralPath $nativeArchiveSource -Destination $nativeArchiveDestination }
+$sourceArchiveName = [string]$nativeManifest.sourceArchive.file
+$sourceArchiveHash = ([string]$nativeManifest.sourceArchive.sha256).ToLowerInvariant()
+$sourceArchiveMatches = @($nativeManifest.sourceFiles | Where-Object { [IO.Path]::GetFileName([string]$_.path) -ceq $sourceArchiveName -and ([string]$_.sha256).ToLowerInvariant() -eq $sourceArchiveHash })
+if ($sourceArchiveMatches.Count -ne 1) { throw 'Native manifest sourceFiles must contain the separate source archive with its declared hash.' }
+$sourceArchiveSource = Join-Path $nativeCache ([string]$sourceArchiveMatches[0].path)
+$sourceArchiveDestination = Join-Path $releaseRoot $sourceArchiveName
+if ((Get-FileHash -LiteralPath $sourceArchiveSource -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceArchiveHash) { throw 'Corresponding source archive no longer matches its manifest.' }
+if (Test-Path -LiteralPath $sourceArchiveDestination) {
+    if ((Get-FileHash -LiteralPath $sourceArchiveDestination -Algorithm SHA256).Hash.ToLowerInvariant() -ne $sourceArchiveHash) { throw "Existing corresponding source archive differs; refusing to overwrite: $sourceArchiveDestination" }
+} else { Copy-Item -LiteralPath $sourceArchiveSource -Destination $sourceArchiveDestination }
 if (-not $WithoutFfmpeg) {
-    $ffmpegCandidates = Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'Microsoft/WinGet/Packages') `
-        -Directory -Filter 'Gyan.FFmpeg_*' -ErrorAction SilentlyContinue |
-        ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -Filter 'ffmpeg-8.1.1-full_build' -ErrorAction SilentlyContinue } |
-        Select-Object -First 1
-    if (-not $ffmpegCandidates) { throw '本机找不到 Gyan FFmpeg 8.1.1 full build；安装或使用 -WithoutFfmpeg。' }
-    $ffmpegDirectory = $ffmpegCandidates.FullName
     $null = New-Item -ItemType Directory -Path $ffmpegOutput -Force
-    Copy-Item -LiteralPath (Join-Path $ffmpegDirectory 'bin/ffmpeg.exe') -Destination $ffmpegOutput -Force
-    Copy-Item -LiteralPath (Join-Path $ffmpegDirectory 'bin/ffprobe.exe') -Destination $ffmpegOutput -Force
-    if (Test-Path -LiteralPath (Join-Path $ffmpegDirectory 'presets') -PathType Container) {
-        Copy-Item -LiteralPath (Join-Path $ffmpegDirectory 'presets') -Destination $ffmpegOutput -Recurse -Force
+    foreach ($name in @('ffmpeg.exe','ffprobe.exe')) {
+        $source = Join-Path $nativeCache "cli/$name"
+        $expected = @($nativeManifest.runtimeFiles | Where-Object { ([string]$_.path).Replace('\','/') -ceq "cli/$name" })
+        if ($expected.Count -ne 1 -or (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$expected[0].sha256).ToLowerInvariant()) { throw "Native CLI file failed manifest hash verification: $name" }
+        Copy-Item -LiteralPath $source -Destination (Join-Path $ffmpegOutput $name) -Force
     }
-    & (Join-Path $PSScriptRoot 'fetch-ffmpeg-corresponding-source.ps1') `
-        -FfmpegDirectory $ffmpegDirectory -Destination $ffmpegSourceMaterial | Out-Null
-    $ffmpegSourceArchive = Get-ChildItem -LiteralPath $ffmpegSourceMaterial -Filter '*-source.zip' -File | Select-Object -First 1
-    if (-not $ffmpegSourceArchive) { throw '未生成 FFmpeg 对应源代码压缩包。' }
-    $ffmpegAuditDestination = Join-Path $licenseOutput 'ffmpeg-corresponding-source'
-    Copy-Item -LiteralPath $ffmpegSourceMaterial -Destination $ffmpegAuditDestination -Recurse -Force
-    $ffmpegVersionPath = Join-Path $ffmpegSourceMaterial 'ffmpeg-version.txt'
-    Get-Content -LiteralPath $ffmpegVersionPath -Raw |
-        Set-Content -LiteralPath (Join-Path $portableRoot 'ffmpeg-version.txt') -Encoding utf8
+    foreach ($name in @('ffmpeg.exe','ffprobe.exe')) {
+        $target = Join-Path $ffmpegOutput $name
+        if ((Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string](@($nativeManifest.runtimeFiles | Where-Object { ([string]$_.path).Replace('\','/') -ceq "cli/$name" })[0].sha256)).ToLowerInvariant()) { throw "Packaged CLI file failed manifest hash verification: $name" }
+    }
 }
-else {
-    if (Test-Path -LiteralPath $ffmpegOutput) { Remove-Item -LiteralPath $ffmpegOutput -Recurse -Force }
-}
+else { Remove-GeneratedReleaseOutput $ffmpegOutput }
 
 $vcRuntimeNotice = @'
 DogSC 录制功能通过 ScreenRecorderLib 依赖 Microsoft Visual C++ 2015-2022 Redistributable (x64)。
@@ -199,7 +226,7 @@ $buildInfo = @"
 版本：$Version
 目标：win-x64 自包含便携发布目录
 配置：$Configuration
-打包用途：本地验证
+打包用途：Windows 社区发行候选
 源码类型：$sourceKind
 包含 FFmpeg：$(-not $WithoutFfmpeg)
 FrameTrail 源码提交：$gitHead
@@ -209,6 +236,10 @@ ScreenRecorderLib：7.0.1，本地 WGC 首帧补丁构建
 ScreenRecorderLib DLL SHA-256：$publishedScreenRecorderLibSha256
 ScreenRecorderLib 上游源码 ZIP SHA-256：$screenRecorderLibSourceArchiveSha256
 ScreenRecorderLib 补丁 SHA-256：$screenRecorderLibPatchSha256
+FFmpeg：$($nativeManifest.version)
+FFmpeg 原生归档 SHA-256：$($nativeManifest.archive.sha256)
+FFmpeg 对应源码归档：$($nativeManifest.sourceArchive.file)
+FFmpeg 对应源码归档 SHA-256：$($nativeManifest.sourceArchive.sha256)
 "@
 $buildInfo | Set-Content -LiteralPath (Join-Path $publishRoot 'BUILD-INFO.txt') -Encoding utf8
 
@@ -229,4 +260,3 @@ if (-not $SkipInstaller) {
 Write-Host "便携目录：$publishRoot"
 Write-Host "ZIP：$zipPath"
 if (Test-Path -LiteralPath $installerPath) { Write-Host "安装包：$installerPath" }
-Write-Warning '此包包含用于本地验证的 Gyan FFmpeg GPLv3 构建，不得作为公开发行包；公开发行需完成完整对应源代码与许可证审核。'

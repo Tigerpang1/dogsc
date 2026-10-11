@@ -12,9 +12,10 @@
 AppId={{9EB9A39E-9EF9-4E70-9D2B-E081ECBC1A68}
 AppName=DogSC
 AppVersion={#AppVersion}
-AppPublisher=DogSC Windows 社区贡献者
-AppPublisherURL=https://github.com/laogou717/dogsc
-AppSupportURL=file:///{app}\docs\user-guide.md
+AppPublisher=lantiansb · DogSC Windows 社区移植
+AppPublisherURL=https://github.com/lantiansb/dogsc
+AppSupportURL=https://github.com/lantiansb/dogsc/issues
+AppUpdatesURL=https://github.com/lantiansb/dogsc/releases
 SetupIconFile=..\src\FrameTrail.App\Assets\DogSC.ico
 DefaultDirName={localappdata}\Programs\DogSC
 UsePreviousAppDir=yes
@@ -60,6 +61,8 @@ Source: "{#ReleaseDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#ReleaseDir}\app\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\licenses\*"; DestDir: "{app}\licenses"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ReleaseDir}\third_party\ffmpeg\README.md"; DestDir: "{app}\third_party\ffmpeg"; Flags: ignoreversion
+Source: "{#ReleaseDir}\third_party\ffmpeg\manifest.json"; DestDir: "{app}\third_party\ffmpeg"; Flags: ignoreversion
 Source: "{#ReleaseDir}\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "{#ReleaseDir}\samples\*"; DestDir: "{app}\samples"; Flags: ignoreversion recursesubdirs createallsubdirs
 

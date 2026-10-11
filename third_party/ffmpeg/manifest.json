@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "version": "8.1.2",
+  "ffmpegCommit": "9b6c8969e05b4f0b29f0f85cd501be6b3e582e6b",
+  "archive": {
+    "file": "DogSC-FFmpeg-8.1.2-win-x64.zip",
+    "url": "https://github.com/lantiansb/dogsc/releases/download/v0.2.17-windows-beta.1/DogSC-FFmpeg-8.1.2-win-x64.zip",
+    "sha256": "716f2485c8beed3b5eebba5ffcda62fa40f280bfacd443936256529d9338a8af"
+  },
+  "sourceArchive": {
+    "file": "DogSC-FFmpeg-8.1.2-sources.zip",
+    "url": "https://github.com/lantiansb/dogsc/releases/download/v0.2.17-windows-beta.1/DogSC-FFmpeg-8.1.2-sources.zip",
+    "sha256": "363e53721df5709f82d6e4775b0b1311a9e7a96703a6447b20fa09e048da61b6"
+  },
+  "runtimeFiles": [
+    {
+      "path": "cli/ffmpeg.exe",
+      "sha256": "e253804745cb95210242d29411983b99776dee2734090f4650c63d62a4196d6b"
+    },
+    {
+      "path": "cli/ffprobe.exe",
+      "sha256": "6800ab788e827dd31c45c374775ab0103c2fea1efa2af839aee8134151f372dc"
+    },
+    {
+      "path": "libav/avcodec-62.dll",
+      "sha256": "c900d5d4002f9b0a00f942b06057fdc6e8c27c86654c4ecf909a310741ffd718"
+    },
+    {
+      "path": "libav/avformat-62.dll",
+      "sha256": "de0db59d78bb0d1a77f9d0776eef28beacc4248432fa9d371595bb074a1e7967"
+    },
+    {
+      "path": "libav/avutil-60.dll",
+      "sha256": "e9149e843a3c1b8a87763c4e8c021041c16c8b16ca77e4b72878c3efbee2413f"
+    },
+    {
+      "path": "libav/swscale-9.dll",
+      "sha256": "17df16cb78d3bac5a3124af3f879d60b4be683e8664cac96310a73386e8a0cd4"
+    },
+    {
+      "path": "libav/swresample-6.dll",
+      "sha256": "b9db5c917e7f406beca2f644f550dfdc5e5ec8d154479f2370b65bf9a79f3a58"
+    }
+  ],
+  "supportFiles": [
+    {
+      "path": "libav/LICENSE.txt",
+      "sha256": "b735acc0643214bbee4d1b782bfed0f5acc76b251ad4a0730d6dd555783911b8"
+    },
+    {
+      "path": "libav/provenance.json",
+      "sha256": "991a79fa77884b46cdc13531bb7ad0b0f2ce53dd7b4c5111513d66cf3ba30eb7"
+    },
+    {
+      "path": "libav/version.txt",
+      "sha256": "59014d70a8f2c82b44b37690041d9a9c031fb4aae24ea5bc0635250852ca6380"
+    },
+    {
+      "path": "libav/buildconf.txt",
+      "sha256": "494d66aa1b83fb71535034cd8f9efc6b438987095b21c8d4ce8c625c377df744"
+    }
+  ],
+  "sourceFiles": [
+    {
+      "path": "source-materials/README.md",
+      "sha256": "7e7afb6e271230aa65ac8aec4e2bebc0b3e36b3e67806a746fdc8573a80deae8"
+    },
+    {
+      "path": "source-materials/DogSC-FFmpeg-8.1.2-sources.zip",
+      "sha256": "363e53721df5709f82d6e4775b0b1311a9e7a96703a6447b20fa09e048da61b6"
+    }
+  ]
+}

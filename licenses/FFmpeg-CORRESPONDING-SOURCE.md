@@ -1,14 +1,9 @@
-# FFmpeg 8.1.1 Gyan full build 对应源材料
+# 独立 FFmpeg 编码程序对应源码
 
-本机验证使用 `ffmpeg-8.1.1-full_build-www.gyan.dev`。随该构建附带的 `README.txt` 标出 FFmpeg 源提交 `239f2c733d`、GPL v3 和 full build configuration；该文件及 `ffmpeg -buildconf` 输出由 `scripts/fetch-ffmpeg-corresponding-source.ps1` 一并归档。脚本按 README 中的精确 commit 从 FFmpeg 上游 codeload 下载源代码压缩包，并记录二进制版本与 SHA-256。
+DogSC 0.2.17 Windows Beta 随附从固定源码构建的 `ffmpeg.exe` 与 `ffprobe.exe`，通过独立进程处理媒体。编码程序启用 x264 和 GPL，采用 GPLv3；完整许可见 `FFmpeg-GPLv3.txt`，x264 的原始版权和许可保留于其源码归档。
 
-`FFmpeg-GPLv3.txt` 是构建目录随附的许可证全文副本。Gyan 构建还静态包含 README 所列的第三方库。当前脚本只自动抓取 FFmpeg 本体对应 commit，并保存构建商 README、build configuration 与运行时 `-buildconf`；它尚未自动收集全部第三方库的精确源码、构建脚本及补丁。因而这些材料满足本地工程追溯需要，不能单独证明已经满足发布所需的完整对应源代码义务。
+与本次二进制匹配的 FFmpeg、x264、zlib、硬件接口头文件及构建配方一起提供在 `licenses/libav-corresponding-source`。可在同一 Release [下载对应源码](https://github.com/lantiansb/dogsc/releases/download/v0.2.17-windows-beta.1/DogSC-FFmpeg-8.1.2-sources.zip)，按其中 README 重建。文件哈希和来源锁见源码仓库 `third_party/ffmpeg/manifest.json`。
 
-若将来拟公开分发该 GPLv3 静态构建，发布审核必须先补齐并验证所有实际链接组件的精确源代码、版本、构建脚本/补丁和获取途径，随二进制提供 GPLv3 全文及要求的书面源码要约或等效获取方式，并由负责发行的人确认分发模式下的完整义务。没有完成此项前，公开发行包不得包含此验证用 FFmpeg。
+动态链接进 DogSC 的预览库使用另一套禁用 GPL 的 LGPLv3 配置；独立 CLI 的 GPL 构建没有替换预览 DLL。两者共享固定 FFmpeg 核心源码，分别保留实际 configure 参数和版本输出。
 
-上游来源：
-
-- FFmpeg 源代码：[commit `239f2c733d`](https://github.com/FFmpeg/FFmpeg/commit/239f2c733d)
-- Gyan Windows builds 与授权说明：[gyan.dev FFmpeg builds](https://www.gyan.dev/ffmpeg/builds/)
-- FFmpeg 上游 GPLv3：[COPYING.GPLv3](https://github.com/FFmpeg/FFmpeg/blob/239f2c733d/COPYING.GPLv3)
-- Gyan build support repository：[GyanD/codexffmpeg](https://github.com/GyanD/codexffmpeg)
+此前本地验证包使用 Gyan FFmpeg 8.1.1 full build，其材料没有覆盖全部静态外部组件，因此没有作为公开 Release 上传。本次公开 Beta 使用上述自行构建的媒体依赖。历史 `fetch-ffmpeg-corresponding-source.ps1` 保留供复核旧记录，当前打包流程不再调用它。

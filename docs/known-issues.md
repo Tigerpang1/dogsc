@@ -1,6 +1,8 @@
-# 已知问题与兼容边界
+# 历史兼容调查（0.2.3）
 
-此页保留 0.2.3 开发候选的历史问题，不能直接作为当前待办：其中长录同步、窗口遮挡捕获、麦克风采集和安装流程后来已有实测。当前收尾顺序与完成门槛见 [95% 收尾计划](95-percent-plan.md)，0.2.5 证据见 [迁移差距登记](migration-gap-register.md)，0.2.6 界面增量见 [UI 验收记录](ui-craft-validation.md)。Windows 分支吸收结果见 `windows-port-integration.md`。
+当前 Windows Beta 的已知限制、下载和媒体分发材料见 [0.2.17 版本说明](release-0.2.17.md)，逐项状态见 [验收台账](acceptance-ledger.md)。
+
+以下保留 0.2.3 开发候选的历史调查，不能直接作为当前待办或发布状态：其中长录同步、窗口遮挡捕获、麦克风采集、预览与安装流程后来已有修改和实测。0.2.5 证据见 [迁移差距登记](migration-gap-register.md)，0.2.6 界面增量见 [UI 验收记录](ui-craft-validation.md)。Windows 分支吸收结果见 `windows-port-integration.md`。
 
 ## 采集验收
 

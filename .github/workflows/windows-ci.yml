@@ -29,6 +29,10 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Prepare verified native media
+        shell: pwsh
+        run: ./scripts/ensure-native-media.ps1
+
       - name: Build the Windows app
         run: dotnet build src/FrameTrail.App/FrameTrail.App.csproj --configuration Release -p:RestoreLockedMode=true
 

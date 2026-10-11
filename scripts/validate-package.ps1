@@ -244,20 +244,41 @@ try {
     if ($bundledLicense -cne $upstreamLicense) { throw '随包 MIT 声明与原仓库文本不一致。' }
     $report.Checks += [ordered]@{ Id='dogsc-branding'; Name='DogSC 产品名、版本、原作者版权、原版 Logo 哈希与上游 MIT 声明一致'; Passed=$true }
     $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/DogSC-$Version-win-x64.zip") $release
-    if ([version]$Version -ge [version]'0.2.14') {
-        $libavRoot = Join-Path $release 'app/tools/libav'
-        $libavProvenance = Get-Content -LiteralPath (Join-Path $libavRoot 'provenance.json') -Raw | ConvertFrom-Json
-        if ($libavProvenance.archiveSha256 -ne 'c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c') { throw 'libav运行时来源不匹配。' }
-        $libavNames = @('avcodec-62.dll','avformat-62.dll','avutil-60.dll','swscale-9.dll','swresample-6.dll')
-        if (@(Compare-Object $libavNames @($libavProvenance.runtimeFiles.file)).Count -ne 0) { throw 'libav运行时清单不完整。' }
-        foreach ($entry in $libavProvenance.runtimeFiles) {
-            if ((Get-FileHash -LiteralPath (Join-Path $libavRoot $entry.file) -Algorithm SHA256).Hash -ne $entry.sha256) { throw "libav DLL哈希不匹配：$($entry.file)" }
-        }
-        foreach ($notice in @('FFmpeg-libav-LGPLv3.txt','FFmpeg-libav-NOTICE.md','FFmpeg.AutoGen-MIT.txt','libav-corresponding-source/README.md')) {
-            if (!(Test-Path -LiteralPath (Join-Path $release "licenses/$notice"))) { throw "libav许可或源码材料缺失：$notice" }
-        }
-        $report.Checks += [ordered]@{ Id='libav-runtime'; Name='常驻解码运行时五个DLL、固定来源哈希、许可证及对应源码材料齐备'; Passed=$true }
+    $nativeManifest = Get-Content -LiteralPath (Join-Path $repo 'third_party/ffmpeg/manifest.json') -Raw | ConvertFrom-Json
+    if ($nativeManifest.schemaVersion -ne 1 -or $nativeManifest.version -ne '8.1.2' -or [string]$nativeManifest.archive.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or [string]$nativeManifest.sourceArchive.sha256 -notmatch '^[0-9a-fA-F]{64}$') { throw 'FFmpeg native manifest is incomplete or unsupported.' }
+    $nativeAssetPath = Join-Path $repo "artifacts/release/$($nativeManifest.archive.file)"
+    $sourceAssetPath = Join-Path $repo "artifacts/release/$($nativeManifest.sourceArchive.file)"
+    foreach ($asset in @(@{Path=$nativeAssetPath; Hash=([string]$nativeManifest.archive.sha256).ToLowerInvariant()},@{Path=$sourceAssetPath; Hash=([string]$nativeManifest.sourceArchive.sha256).ToLowerInvariant()})) {
+        if (-not (Test-Path -LiteralPath $asset.Path -PathType Leaf) -or (Get-FileHash -LiteralPath $asset.Path -Algorithm SHA256).Hash.ToLowerInvariant() -ne $asset.Hash) { throw "FFmpeg distribution asset is missing or mismatched: $($asset.Path)" }
     }
+    $nativeRuntimeRoot = Join-Path $release 'app/tools/libav'
+    $nativeCliRoot = Join-Path $release 'app/tools/ffmpeg'
+    foreach ($entry in $nativeManifest.runtimeFiles) {
+        $relative = ([string]$entry.path).Replace('\','/')
+        $target = if ($relative.StartsWith('cli/',[StringComparison]::Ordinal)) { Join-Path $nativeCliRoot ([IO.Path]::GetFileName($relative)) } else { Join-Path $nativeRuntimeRoot ([IO.Path]::GetFileName($relative)) }
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "Packaged native runtime hash mismatch: $relative" }
+    }
+    foreach ($entry in $nativeManifest.supportFiles) {
+        $relative = ([string]$entry.path).Replace('\','/')
+        $target = Join-Path $nativeRuntimeRoot ([IO.Path]::GetFileName($relative))
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "Packaged native support file hash mismatch: $relative" }
+    }
+    $sourceMaterialsRoot = Join-Path $release 'licenses/libav-corresponding-source'
+    foreach ($entry in $nativeManifest.sourceFiles) {
+        $relative = ([string]$entry.path).Replace('\','/') -replace '^source-materials/',''
+        $target = Join-Path $sourceMaterialsRoot $relative
+        if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { throw "Packaged native corresponding source hash mismatch: $relative" }
+    }
+    $expectedSourceNames = @($nativeManifest.sourceFiles | ForEach-Object { ([string]$_.path).Replace('\','/') -replace '^source-materials/','' } | Sort-Object)
+    $actualSourceNames = @(Get-ChildItem -LiteralPath $sourceMaterialsRoot -Recurse -File | ForEach-Object { $_.FullName.Substring(([IO.Path]::GetFullPath($sourceMaterialsRoot).TrimEnd('\') + '\').Length).Replace('\','/') } | Sort-Object)
+    if (@(Compare-Object $expectedSourceNames $actualSourceNames).Count -ne 0) { throw 'Packaged native corresponding source tree contains unmanifested or missing files.' }
+    $cliNames = @('ffmpeg.exe','ffprobe.exe')
+    $actualCliNames = @(Get-ChildItem -LiteralPath $nativeCliRoot -File -Filter '*.exe' | Select-Object -ExpandProperty Name | Sort-Object)
+    if (@(Compare-Object $cliNames $actualCliNames).Count -ne 0) { throw 'Packaged FFmpeg CLI contains extra or missing executables.' }
+    $expectedLibavNames = @('avcodec-62.dll','avformat-62.dll','avutil-60.dll','swscale-9.dll','swresample-6.dll')
+    $actualLibavNames = @(Get-ChildItem -LiteralPath $nativeRuntimeRoot -File -Filter '*.dll' | Select-Object -ExpandProperty Name | Sort-Object)
+    if (@(Compare-Object $expectedLibavNames $actualLibavNames).Count -ne 0) { throw 'Packaged native decoder contains extra or missing DLLs.' }
+    $report.Checks += [ordered]@{ Id='native-media-distribution'; Name='原生解码 DLL、静态 CLI、许可证与完整对应源码均匹配固定 manifest'; Passed=$true; ArchiveSha256=$nativeManifest.archive.sha256; SourceArchiveSha256=$nativeManifest.sourceArchive.sha256 }
     $portableArchiveBaselineVerified = $true
     $expectedSamples = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md') | Sort-Object
     $sampleDirectory = Split-Path -Parent $sample
@@ -297,7 +318,7 @@ try {
         $report.Checks += [ordered]@{ Id='installed-uninstall'; Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
     }
-    $report.Artifacts = @(foreach ($artifactName in @("DogSC-$Version-win-x64.zip", "DogSC-Setup-$Version-win-x64.exe")) {
+    $report.Artifacts = @(foreach ($artifactName in @("DogSC-$Version-win-x64.zip", "DogSC-Setup-$Version-win-x64.exe",[string]$nativeManifest.archive.file,[string]$nativeManifest.sourceArchive.file)) {
         $artifact = Get-Item -LiteralPath (Join-Path $repo "artifacts/release/$artifactName")
         [ordered]@{ Name=$artifact.Name; Bytes=$artifact.Length; SHA256=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash }
     })

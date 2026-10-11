@@ -550,7 +550,13 @@ public partial class MainWindow
         link.RequestNavigate += (_, args) => Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true });
         source.Inlines.Add(link);
         content.Children.Add(source);
-        content.Children.Add(new TextBlock { Text = "原仓库采用 MIT 许可证；Windows 移植由社区贡献者维护。", TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 10, 0, 0), MaxWidth = 360 });
+        content.Children.Add(new TextBlock { Text = "原仓库采用 MIT 许可证；Windows 移植由 lantiansb 与社区贡献者维护。", TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 10, 0, 0), MaxWidth = 360 });
+        var windowsSource = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) };
+        var windowsLink = new Hyperlink(new Run("Windows 社区仓库 · 下载与反馈")) { NavigateUri = new Uri("https://github.com/lantiansb/dogsc"), Style = linkStyle };
+        windowsLink.RequestNavigate += (_, args) => Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true });
+        windowsSource.Inlines.Add(windowsLink);
+        content.Children.Add(windowsSource);
+        content.Children.Add(new TextBlock { Text = "使用 FFmpeg LGPLv3 动态库与独立 GPL 编码程序。对应源码和许可证随发行包提供。", TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 12, 0, 0), MaxWidth = 360, FontSize = 12 });
         var dialog = new Window { Title = "关于 DogSC", Width = 440, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         SurfaceWindow.Configure(dialog, attachOwner ? this : null);
         dialog.Content = SurfaceWindow.WrapContent(dialog, content, "关于 DogSC");
@@ -559,15 +565,7 @@ public partial class MainWindow
 
     private void OpenReleaseNotes()
     {
-        var documentation = BundledResourceLocator.FindFile(AppContext.BaseDirectory, "docs", "build-and-release.md");
-        if (documentation is not null)
-        {
-            Process.Start(new ProcessStartInfo(documentation) { UseShellExecute = true });
-            return;
-        }
-        SurfaceDialog.Show(this,
-            "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 DogSC 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
-            "手动更新", MessageBoxButton.OK, MessageBoxImage.Information);
+        Process.Start(new ProcessStartInfo("https://github.com/lantiansb/dogsc/releases") { UseShellExecute = true });
     }
 
     private void OpenBundledLicenses()

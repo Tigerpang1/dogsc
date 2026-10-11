@@ -5,6 +5,8 @@
     <PackageReference Include="FFmpeg.AutoGen.Bindings.DynamicallyLoaded" Version="8.1.0" />
     <Content Include="../../artifacts/toolchains/libav-8.1-win-x64/*.dll;../../artifacts/toolchains/libav-8.1-win-x64/*.json;../../artifacts/toolchains/libav-8.1-win-x64/*.txt"
              Link="tools/libav/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="../../artifacts/toolchains/dogsc-native-8.1.2/cli/ffmpeg.exe;../../artifacts/toolchains/dogsc-native-8.1.2/cli/ffprobe.exe"
+             Link="tools/ffmpeg/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup><EmbeddedResource Include="Scene.hlsl" /></ItemGroup>
 </Project>

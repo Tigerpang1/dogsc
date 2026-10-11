@@ -1,15 +1,15 @@
-# FFmpeg 原生解码运行时
+# FFmpeg 原生媒体运行时
 
-`scripts/ensure-libav.ps1` 校验固定 BtbN archive 的 SHA-256、构建版本、shared 配置和 LGPL v3 报告，再将原生解码需要的五个 DLL 及 `LICENSE.txt`、`provenance.json`、`buildconf.txt`、`version.txt` 放入 `artifacts/toolchains/libav-8.1-win-x64`。脚本不执行下载包内的构建脚本；它只运行经哈希校验的 `ffmpeg.exe` 查询版本、配置和许可证。
-
-默认复用 `artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip`。首次准备可运行：
+`scripts/ensure-libav.ps1` 调用 `ensure-native-media.ps1`，依据 `third_party/ffmpeg/manifest.json` 下载并核验固定媒体归档。归档覆盖独立 FFmpeg CLI、预览所需的五个 libav DLL、对应源码及构建记录；没有采用系统 PATH 中的 FFmpeg 作为发行来源。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/ensure-libav.ps1
+pwsh -File scripts/ensure-libav.ps1
+# 离线使用从同一 Release 下载的媒体归档
+pwsh -File scripts/ensure-libav.ps1 -ArchivePath C:\Downloads\DogSC-FFmpeg-8.1.2-win-x64.zip -Offline
 ```
 
-离线构建可传入本地 archive 并加 `-Offline`。脚本按固定清单复制运行时 DLL；应用构建/安装包应从该输出目录复制这五个 DLL，并将 `LICENSE.txt`、本 NOTICE 和完整 `licenses/FFmpeg-libav-LGPLv3.txt` 随包放入许可目录。`provenance.json`、`buildconf.txt`、`version.txt` 可一并保留用于诊断和供应链追溯。
+归档 SHA-256、内部每个文件的 SHA-256、路径与完整文件清单均须匹配后才部署。预览 DLL 输出到 `artifacts/toolchains/libav-8.1-win-x64`，供 `FrameTrail.Media.csproj` 随程序发布；可替换的 DLL 位于应用 `tools/libav`。CLI 输出在固定媒体缓存的 `cli` 子目录，打包到 `tools/ffmpeg`。
 
-`FFmpeg.AutoGen.Bindings.DynamicallyLoaded` 与传递依赖 `FFmpeg.AutoGen.Abstractions` 固定为 NuGet 8.1.0；其 MIT 文本和版本来源见 `licenses/FFmpeg.AutoGen-MIT.txt` 与 `licenses/FFmpeg.AutoGen-NOTICE.md`。该许可说明只针对 8.1.0。
+预览库禁用 GPL 与 nonfree，采用 LGPLv3。CLI 以独立进程调用，包含 x264，采用 GPL；两种构建配置和对应源码分开记录在 `source-materials`。来源、重建方法和许可证见 [third_party/ffmpeg/README.md](../third_party/ffmpeg/README.md)。
 
-运行 `scripts/fetch-libav-corresponding-source.ps1` 可按固定 URL 和 SHA-256 获取 FFmpeg 源码 ZIP 与 BtbN 构建仓库快照，README 模板和依赖源码 URL 清单由受版本控制的 `licenses/FFmpeg-libav-CORRESPONDING-SOURCE.md` 提供。传入 `-PackageDirectory <artifacts下的包暂存目录>` 会把完整 `source-materials` 目录复制到该暂存目录；已有目录只有在逐文件一致时才可重复运行。源码发布包应包含这些对应源材料或提供明确可用的获取路径。材料记录不等于完整法律审计。现有 Gyan GPL FFmpeg 打包材料仍服务于原有用途，本方案不替换或删除它们。
+FFmpeg.AutoGen 的动态绑定固定为 NuGet 8.1.0，许可见 `licenses/FFmpeg.AutoGen-MIT.txt`。本仓库固定的源代码快照、下载锁、构建脚本、第三方通知和发行产物哈希应共同更新；更换媒体构建后必须重跑 Core、Integration 与 Render.Probe。

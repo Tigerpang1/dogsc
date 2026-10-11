@@ -62,14 +62,18 @@ internal static class DogSCBrandingProbe
         var requiredText = new[]
         {
             "关于 DogSC", "DogSC 0.2.17", "Windows 社区移植版 · 非官方 Windows 发行版",
-            "原作者：神烦老狗", "DogSC 原仓库", "原仓库采用 MIT 许可证；Windows 移植由社区贡献者维护。"
+            "原作者：神烦老狗", "DogSC 原仓库", "原仓库采用 MIT 许可证；Windows 移植由 lantiansb 与社区贡献者维护。",
+            "Windows 社区仓库 · 下载与反馈", "使用 FFmpeg LGPLv3 动态库与独立 GPL 编码程序。对应源码和许可证随发行包提供。"
         };
         var text = Descendants(aboutContent).OfType<TextBlock>().ToArray();
         foreach (var value in requiredText.Skip(1))
             check(text.Any(item => item.Text == value || item.Inlines.Any(run => run is Hyperlink hyperlink && hyperlink.Inlines.OfType<Run>().Any(r => r.Text == value))),
                 "About 完整呈现品牌、作者、上游仓库与许可证说明", value);
-        var link = text.SelectMany(item => item.Inlines.OfType<Hyperlink>()).Single();
+        var links = text.SelectMany(item => item.Inlines.OfType<Hyperlink>()).ToArray();
+        var link = links.Single(item => item.NavigateUri?.AbsoluteUri == "https://github.com/laogou717/dogsc");
         check(link.NavigateUri?.AbsoluteUri == "https://github.com/laogou717/dogsc", "About 仓库链接指向原作者公开仓库", link.NavigateUri?.AbsoluteUri);
+        check(links.Any(item => item.NavigateUri?.AbsoluteUri == "https://github.com/lantiansb/dogsc"),
+            "About 提供 Windows 社区仓库的下载与反馈入口", null);
         var linkStyle = link.Style;
         check(link.Focusable && link.TextDecorations?.Any(decoration => decoration.Location == TextDecorationLocation.Underline) == true &&
               linkStyle?.Triggers.OfType<Trigger>().Any(trigger => trigger.Property == ContentElement.IsFocusedProperty) == true,
