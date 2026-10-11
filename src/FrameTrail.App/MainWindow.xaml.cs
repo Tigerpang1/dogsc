@@ -542,11 +542,11 @@ public partial class MainWindow : Window
     private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
-    private void InvalidateProxy() { StopPlayback(); if (proxyPath != null && File.Exists(proxyPath)) { Player.Close(); try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; }
-    private void StopPlayback() { playbackCancellation?.Cancel(); playing=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; }
+    private void InvalidateProxy() { _ = DisposePlaybackResourcesAsync(); ClosePlaybackAudio(); if (proxyPath != null && File.Exists(proxyPath)) { try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; playbackProxyProject=null; }
+    private void StopPlayback() { var old=playbackCancellation; playbackCancellation=null; playing=false; playbackStarting=false; playbackTimer.Stop(); Player.Pause(); Player.Visibility=Visibility.Collapsed; PreviewImage.Visibility=Visibility.Visible; PlayButton.Content=new EditorIcon{Kind="play",Width=18,Height=18}; if(old is not null) _=old.CancelAsync(); }
     private async void PlayClick(object sender, RoutedEventArgs e) => await Guard(async () =>
     {
-        if (playing) { StopPlayback(); await RenderPreview(Playhead.Value); return; } if (project == null || projectFile == null || operationCancellation != null) return;
+        if (playing || playbackStarting) { StopPlayback(); return; } if (project == null || projectFile == null || operationCancellation != null) return;
         await StartRealtimePlayback();
     });
     private void PlaybackEnded(object sender,RoutedEventArgs e) { StopPlayback(); Playhead.Value=Playhead.Maximum; }

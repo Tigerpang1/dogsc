@@ -7,6 +7,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail.App;
+using FrameTrail.App.VisualProbe;
 
 internal static class RecordingBarPresentationProbe
 {
@@ -189,9 +190,9 @@ internal static class RecordingBarPresentationProbe
         }
         finally
         {
-            // The main window was never shown and has no HWND; dispose its managed resources.
             if (new System.Windows.Interop.WindowInteropHelper(main).Handle != IntPtr.Zero)
                 throw new InvalidOperationException("The presentation probe unexpectedly created a native window.");
+            MainWindowProbeLifetime.Close(main);
         }
     }
 

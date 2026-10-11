@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail.App;
+using FrameTrail.App.VisualProbe;
 
 internal static class AppErrorPresentationProbe
 {
@@ -71,7 +72,7 @@ internal static class AppErrorPresentationProbe
                 finally { dialog.Close(); }
             }
         }
-        finally { owner.Close(); }
+        finally { MainWindowProbeLifetime.Close(owner); }
     }
 
     private static IEnumerable<DependencyObject> Descendants(DependencyObject root)

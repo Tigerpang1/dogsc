@@ -22,6 +22,11 @@ if (args.Length > 0 && args[0] == "--timeline-assets")
     await TimelineAssetsProbe.Run(args.Length > 1 ? args[1] : null);
     return;
 }
+if (args.Length > 0 && args[0] == "--native-playback")
+{
+    await FrameTrail.Render.Probe.NativePlaybackProbe.RunAsync(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length > 0 && args[0] == "--color-slow-motion")
 {
     await ColorAndSlowMotionProbe.Run(args.Length > 1 ? args[1] : null);

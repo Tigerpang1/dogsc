@@ -34,6 +34,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "时间线持续解码与帧缓存检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --native-seek-decoder (Join-Path $repoRoot ('artifacts/validation/native-seek-' + [guid]::NewGuid().ToString('N')))
         if ($LASTEXITCODE -ne 0) { throw "常驻原生解码与时间戳检查失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --native-playback (Join-Path $repoRoot ('artifacts/validation/native-playback-' + [guid]::NewGuid().ToString('N')))
+        if ($LASTEXITCODE -ne 0) { throw "常驻播放的变速重排与像素一致性检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --dogsc-camera-import
         if ($LASTEXITCODE -ne 0) { throw "DogSC 摄像头素材比例与保存失败回归失败，退出码 $LASTEXITCODE" }
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
@@ -63,6 +65,11 @@ try {
         $previewSizingOutput = Join-Path $repoRoot ('artifacts/validation/preview-sizing-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --preview-sizing $previewSizingOutput
         if ($LASTEXITCODE -ne 0) { throw "预览物理尺寸与源清晰度检查失败，退出码 $LASTEXITCODE" }
+        foreach ($playbackMode in @('--playback-latency', '--playback-audio-latency')) {
+            $playbackOutput = Join-Path $repoRoot ('artifacts/validation/' + $playbackMode.TrimStart('-') + '-' + [guid]::NewGuid().ToString('N'))
+            & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- $playbackMode $playbackOutput
+            if ($LASTEXITCODE -ne 0) { throw "后台播放暂停恢复检查 $playbackMode 失败，退出码 $LASTEXITCODE" }
+        }
         $microphoneRecoveryOutput = Join-Path $repoRoot ('artifacts/validation/microphone-recovery-offscreen-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --microphone-access-recovery $microphoneRecoveryOutput
         if ($LASTEXITCODE -ne 0) { throw "离屏麦克风访问恢复提示检查失败，退出码 $LASTEXITCODE" }

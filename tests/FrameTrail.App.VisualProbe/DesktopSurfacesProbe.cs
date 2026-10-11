@@ -98,8 +98,7 @@ internal static class DesktopSurfacesProbe
         finally
         {
             recorder.Close();
-            // The editor is intentionally left unshown and unclosed: closing a MainWindow
-            // follows the application's normal shutdown path, which this probe does not test.
+            MainWindowProbeLifetime.Close(editor);
         }
     }
 

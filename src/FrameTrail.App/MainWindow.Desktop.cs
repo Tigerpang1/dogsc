@@ -247,8 +247,8 @@ public partial class MainWindow
         previewResizeTimer.Stop();
         seekCancellation?.Cancel();
         assetsCancellation?.Cancel();
-        StopPlayback();
-        Player.Close();
+        ClosePlaybackAudio();
+        await DisposePlaybackResourcesAsync();
         markerHotKey.Dispose();
         await capture.DisposeAsync();
         await trackCapture.DisposeAsync();

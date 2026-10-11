@@ -312,6 +312,9 @@ try {
     $nativeSeekResult = Invoke-LoggedProcess -Name 'native-seek' -FileName 'dotnet' `
         -Arguments @('run', '--project', (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj'), '--configuration', 'Release', '--', '--native-seek-decoder', (Join-Path $repoRoot 'artifacts/validation/native-seek')) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
+    $nativePlaybackResult = Invoke-LoggedProcess -Name 'native-playback' -FileName 'dotnet' `
+        -Arguments @('run', '--no-build', '--project', (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj'), '--configuration', 'Release', '--', '--native-playback', (Join-Path $repoRoot 'artifacts/validation/native-playback')) `
+        -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
     $packageParameters = @{ Configuration='Release'; Version=$Version; WithoutFfmpeg=$true; SkipInstaller=$true } | ConvertTo-Json -Compress
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
@@ -358,8 +361,8 @@ try {
         $run.buildInfo = [ordered]@{ path = $buildInfoPath; error = 'BUILD-INFO.txt was not produced.' }
     }
 
-    $stepResults = @($libavPrepareResult, $testResult, $buildResult, $nativeSeekResult, $packageResult)
-    $stepsPassed = $stepResults.Count -eq 5 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
+    $stepResults = @($libavPrepareResult, $testResult, $buildResult, $nativeSeekResult, $nativePlaybackResult, $packageResult)
+    $stepsPassed = $stepResults.Count -eq 6 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
     $buildInfoPassed = $run.buildInfo.sourceKindCorrect -and $run.buildInfo.frameTrailCommitCorrect -and $run.buildInfo.upstreamCommitCorrect
     $screenRecorderLibPassed = $screenRecorderLibPatchApplyVerified -and $run.screenRecorderLib.publishedDllMatches -and $run.screenRecorderLib.publishedMaterialsVerified
     $run.screenRecorderLib.passed = $screenRecorderLibPassed

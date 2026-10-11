@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using FrameTrail;
 using FrameTrail.App;
 using FrameTrail.App.VisualProbe;
@@ -30,13 +31,16 @@ internal static class Program
         var previewInteractionOnly = args.FirstOrDefault() == "--preview-interaction";
         var previewSizingOnly = args.FirstOrDefault() == "--preview-sizing";
         var previewLatencyOnly = args.FirstOrDefault() == "--preview-latency";
-        var outputArgument = previewLatencyOnly ? args.Skip(1).FirstOrDefault() : textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var playbackAudioLatencyOnly = args.FirstOrDefault() == "--playback-audio-latency";
+        var playbackLatencyOnly = args.FirstOrDefault() == "--playback-latency" || playbackAudioLatencyOnly;
+        var outputArgument = previewLatencyOnly || playbackLatencyOnly ? args.Skip(1).FirstOrDefault() : textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
             ? "artifacts/validation/save-failure-offscreen"
             : errorRecoveryOnly ? "artifacts/validation/error-recovery-offscreen"
             : trayMenuWindowOnly ? "artifacts/validation/tray-menu-window-offscreen"
+            : playbackLatencyOnly ? "artifacts/validation/playback-latency-offscreen"
             : bundledResourcesOnly ? "artifacts/validation/bundled-resource-locator-offscreen"
             : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
@@ -68,6 +72,15 @@ internal static class Program
                 window = new MainWindow();
                 PreviewLatencyProbe.Verify(window, output, Path.GetFullPath(args[2]));
                 Console.WriteLine($"PASS: preview latency probe; {output}");
+                return 0;
+            }
+            if (playbackLatencyOnly)
+            {
+                if (args.Length is < 2 or > 4) throw new ArgumentException("Usage: --playback-latency|--playback-audio-latency <outputDirectory> [projectFile|-] [30|60]");
+                window = new MainWindow();
+                PlaybackLatencyProbe.Verify(window, output, args.Length >= 3 && args[2] != "-" ? Path.GetFullPath(args[2]) : null,
+                    enableAudio: playbackAudioLatencyOnly, frameRate: args.Length == 4 ? int.Parse(args[3]) : 30);
+                Console.WriteLine($"PASS: {(playbackAudioLatencyOnly ? "playback audio latency" : "playback latency")} probe; {output}");
                 return 0;
             }
             if (previewInteractionOnly)
@@ -298,11 +311,12 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { Passed = false, Checks = checks, Error = ex.ToString() }, new JsonSerializerOptions { WriteIndented = true }));
+            if (!playbackLatencyOnly || !File.Exists(Path.Combine(output, "result.json")))
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new { Passed = false, Checks = checks, Error = ex.ToString() }, new JsonSerializerOptions { WriteIndented = true }));
             Console.Error.WriteLine(ex);
             return 1;
         }
-        finally { window?.Close(); app.Shutdown(); }
+        finally { MainWindowProbeLifetime.Close(window); app.Shutdown(); }
 
         void Check(bool passed, string name, object? detail = null)
         {

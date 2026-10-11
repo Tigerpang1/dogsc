@@ -4,7 +4,11 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 当前：0.2.14 预览响应候选
+## 当前：0.2.15 暂停恢复候选
+
+播放暂停保留解码、渲染与音频会话，再播放直接复用，连续点击以最后一次操作为准。实际4K录屏以1440预览测试：恢复输入约0.4–0.9 ms，播放准备约3–4 ms；首个前进画面在30帧模式约47–48 ms，在60帧模式约31–32 ms提交。后台验证覆盖声音复用、持续播放、播完重启和项目切换；计时不包含显示器呈现。交付与限制见 [0.2.15记录](docs/release-0.2.15.md)。
+
+## 0.2.14 预览响应
 
 参考OpenScreen的常驻解码机制，暂停预览现在复用libav会话，输入线程只更新定位和调度；近邻顺向解码、最后请求优先、96 MiB帧缓存共同减少等待。同一段4K60旧录屏以1440预览：跨位置点击处理由45–59 ms降至0.5–3.7 ms，画面提交由223–416 ms降至59–264 ms。该结果来自无窗口后台探针，不代表显示器实际呈现或用户手感验收。显示器/区域新录制采用0.5秒关键帧间隔；旧素材保留原样。具体对比见 [OpenScreen采用记录](docs/openscreen-adoption.md)，交付与验证见 [0.2.14记录](docs/release-0.2.14.md)。
 
@@ -67,7 +71,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.14
+pwsh -File scripts/package.ps1 -Version 0.2.15
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。

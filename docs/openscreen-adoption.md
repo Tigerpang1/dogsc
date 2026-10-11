@@ -1,4 +1,6 @@
-# OpenScreen 对比与 0.2.14 采用结果
+# OpenScreen 对比与采用结果
+
+0.2.15进一步将常驻会话用于播放暂停恢复，保留音频并提前准备下一帧；具体改动、输入/准备/前进帧三个不同计时口径及验收边界见 [暂停恢复记录](release-0.2.15.md)。下文保留0.2.14的点击定位研究和样本，不能将其数字混用于播放恢复。
 
 调研对象为 OpenScreen 当前仓库 `getopenscreen/openscreen` commit `2896c1f7b9ad46cf53419e6edd360da2d2d80ac3`，以及原仓库 v1.5.0 commit `ffc41a3c8c61a81fc1f1bec1a16c6354e8368cb6`。两版 `LICENSE` 均为 MIT。完整快照和 SHA-256 记录在 `artifacts/research/`；本报告只依据源码，不代表实际 UI 或性能体验。
 

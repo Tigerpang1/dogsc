@@ -12,9 +12,13 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
     private readonly string sourcePath;
     private readonly string projectFilePath;
     private readonly int width, height, frameRate, sourceWidth, sourceHeight;
+    private readonly double sourceDuration, sourceFrameRate;
+    private readonly bool sourceHasAudio;
     private readonly PreparedFrameSceneEvaluator evaluator;
     private readonly SceneAssetLoader assets;
     private readonly GpuFrameRenderer renderer;
+    private readonly bool preferNativeDecoder;
+    private ScrubFrameDecoder? nativeDecoder;
     private readonly SemaphoreSlim gate = new(1, 1);
     private Process? decoder;
     private PreviewFramePipe? decoderFrames;
@@ -27,15 +31,22 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
     public int Width => width;
     public int Height => height;
     public int FrameRate => frameRate;
+    public string DecoderBackend => nativeDecoder?.DecoderBackend ?? (preferNativeDecoder ? "libav (not initialized)" : "ffmpeg/process");
+    public int NativeSessionCount => nativeDecoder?.NativeSessionCount ?? 0;
+    public long ProcessStartCount => nativeDecoder?.ProcessStartCount ?? 0;
+    public bool SourceHasAudio => sourceHasAudio;
     /// <summary>Decoder PID for diagnostics only. The session owns and closes this process.</summary>
     public int? ActiveDecoderProcessId => decoder is { HasExited: false } active ? active.Id : null;
 
-    private PreviewPlaybackSession(FrameTrailProject project, string sourcePath, string projectFilePath, int width, int height, int frameRate, int sourceWidth, int sourceHeight, double? cameraAspectRatio, bool preserveSourceResolution)
+    private PreviewPlaybackSession(FrameTrailProject project, string sourcePath, string projectFilePath, int width, int height, int frameRate, int sourceWidth, int sourceHeight, double sourceDuration, double sourceFrameRate, bool sourceHasAudio, double? cameraAspectRatio, bool preserveSourceResolution, bool preferNativeDecoder)
     {
         this.project = project;
         this.sourcePath = Path.GetFullPath(sourcePath);
         this.projectFilePath = Path.GetFullPath(projectFilePath);
         this.width = width; this.height = height; this.frameRate = frameRate;
+        this.sourceDuration = sourceDuration; this.sourceFrameRate = sourceFrameRate > 0 ? sourceFrameRate : frameRate;
+        this.sourceHasAudio = sourceHasAudio;
+        this.preferNativeDecoder = preferNativeDecoder;
         var scale = preserveSourceResolution ? 1 : Math.Min(1, Math.Min(width / (double)sourceWidth, height / (double)sourceHeight));
         this.sourceWidth = Math.Max(2, (int)Math.Round(sourceWidth * scale));
         this.sourceHeight = Math.Max(2, (int)Math.Round(sourceHeight * scale));
@@ -44,7 +55,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         renderer = new GpuFrameRenderer(this.sourceWidth, this.sourceHeight, width, height);
     }
 
-    public static async Task<PreviewPlaybackSession> CreateAsync(FrameTrailProject project, string sourcePath, string projectFilePath, int width = 960, int height = 540, int frameRate = 30, CancellationToken cancellation = default, bool preserveSourceResolution = false)
+    public static async Task<PreviewPlaybackSession> CreateAsync(FrameTrailProject project, string sourcePath, string projectFilePath, int width = 960, int height = 540, int frameRate = 30, CancellationToken cancellation = default, bool preserveSourceResolution = false, bool preferNativeDecoder = false)
     {
         ArgumentNullException.ThrowIfNull(project);
         if (width < 16 || height < 16 || width % 2 != 0 || height % 2 != 0) throw new ArgumentOutOfRangeException(nameof(width), "预览尺寸必须是大于等于 16 的偶数。" );
@@ -56,7 +67,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         var info = await MediaTools.ProbeAsync(fullSourcePath, cancellation);
         if (info.Width < 2 || info.Height < 2 || info.Duration <= 0) throw new InvalidDataException("预览源视频没有有效视频流。" );
         var cameraAspectRatio = await SceneAssetLoader.ProbeCameraAspectRatioAsync(project, projectFilePath, cancellation);
-        return new PreviewPlaybackSession(project, fullSourcePath, projectFilePath, width, height, frameRate, info.Width, info.Height, cameraAspectRatio, preserveSourceResolution);
+        return new PreviewPlaybackSession(project, fullSourcePath, projectFilePath, width, height, frameRate, info.Width, info.Height, info.Duration, info.FrameRate, info.HasAudio, cameraAspectRatio, preserveSourceResolution, preferNativeDecoder);
     }
 
     /// <summary>Reads and composes one output-time frame. Calls on a shared session are serialized.</summary>
@@ -66,7 +77,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(outputBgra);
         if (outputBgra.Length != checked(width * height * 4)) throw new ArgumentException($"输出缓冲区长度应为 {width * height * 4} 字节。", nameof(outputBgra));
         if (!double.IsFinite(outputTime) || outputTime < 0 || outputTime > project.Timeline.Duration) throw new ArgumentOutOfRangeException(nameof(outputTime));
-        await gate.WaitAsync(cancellation);
+        await gate.WaitAsync(cancellation).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(disposed, this);
@@ -74,29 +85,42 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
             var safeOutputTime = Math.Min(outputTime, Math.Max(0, project.Timeline.Duration - 1d / frameRate));
             var scene = evaluator.Evaluate(safeOutputTime);
             var targetFrame = (long)Math.Round(scene.SourceTime * frameRate, MidpointRounding.AwayFromZero);
-            if (decoder is null || targetFrame < currentSourceFrame || targetFrame - currentSourceFrame > frameRate * 2L)
-                await StartDecoder(targetFrame, cancellation);
-            if (targetFrame != currentSourceFrame)
+            byte[] sourceFrame;
+            if (preferNativeDecoder)
             {
-                while (currentSourceFrame < targetFrame)
-                {
-                    lastDecoded = await ReadDecodedFrame(cancellation);
-                    currentSourceFrame++;
-                }
+                nativeDecoder ??= new ScrubFrameDecoder(sourcePath, sourceWidth, sourceHeight, sourceFrameRate, sourceDuration, preferNative: true);
+                // NativeSeekFrameDecoder is synchronous; keep codec work off the caller (often UI) thread.
+                sourceFrame = await Task.Run(() => nativeDecoder.ReadFrameAsync(scene.SourceTime, cancellation), cancellation).ConfigureAwait(false);
+                cancellation.ThrowIfCancellationRequested();
+                lastDecoded = sourceFrame;
+                currentSourceFrame = targetFrame;
             }
-            if (lastDecoded is null) throw new IOException("预览解码器没有返回视频帧。" );
-            var layers = await assets.LoadAsync(scene, cancellation);
-            renderer.Render(lastDecoded, scene, outputBgra, layers);
+            else
+            {
+                if (decoder is null || targetFrame < currentSourceFrame || targetFrame - currentSourceFrame > frameRate * 2L)
+                    await StartDecoder(targetFrame, cancellation).ConfigureAwait(false);
+                if (targetFrame != currentSourceFrame)
+                {
+                    while (currentSourceFrame < targetFrame)
+                    {
+                        lastDecoded = await ReadDecodedFrame(cancellation).ConfigureAwait(false);
+                        currentSourceFrame++;
+                    }
+                }
+                sourceFrame = lastDecoded ?? throw new IOException("预览解码器没有返回视频帧。");
+            }
+            var layers = await assets.LoadAsync(scene, cancellation).ConfigureAwait(false);
+            renderer.Render(sourceFrame, scene, outputBgra, layers);
             return new PreviewFrameInfo(safeOutputTime, scene.SourceTime, width, height, frameRate);
         }
         catch (Exception) when (cancellation.IsCancellationRequested)
         {
-            await StopDecoder();
+            await StopDecoder().ConfigureAwait(false);
             throw new OperationCanceledException("预览帧读取已取消。", cancellation);
         }
         catch
         {
-            if (decoder is { HasExited: true }) await StopDecoder();
+            if (decoder is { HasExited: true }) await StopDecoder().ConfigureAwait(false);
             throw;
         }
         finally { gate.Release(); }
@@ -107,14 +131,14 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(disposed, this);
         if (!double.IsFinite(outputTime) || outputTime < 0 || outputTime > project.Timeline.Duration) throw new ArgumentOutOfRangeException(nameof(outputTime));
-        await gate.WaitAsync(cancellation);
-        try { await StopDecoder(); }
+        await gate.WaitAsync(cancellation).ConfigureAwait(false);
+        try { await StopDecoder().ConfigureAwait(false); }
         finally { gate.Release(); }
     }
 
     private async Task StartDecoder(long targetFrame, CancellationToken cancellation)
     {
-        await StopDecoder();
+        await StopDecoder().ConfigureAwait(false);
         var targetTime = Math.Max(0, targetFrame / (double)frameRate);
         decoderFrames = new PreviewFramePipe();
         try
@@ -122,11 +146,11 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
             decoder = MediaTools.Start(MediaTools.Ffmpeg,
                 ["-v", "error", "-ss", MediaTools.Number(targetTime), "-i", sourcePath, "-an", "-vf", $"fps={frameRate},scale={sourceWidth}:{sourceHeight}:flags=bilinear,format=bgra", "-f", "rawvideo", "-pix_fmt", "bgra", "-y", decoderFrames.OutputPath]);
             decoderErrors = decoder.StandardError.ReadToEndAsync();
-            await decoderFrames.ConnectAsync(decoder, cancellation);
-            lastDecoded = await ReadDecodedFrame(cancellation);
+            await decoderFrames.ConnectAsync(decoder, cancellation).ConfigureAwait(false);
+            lastDecoded = await ReadDecodedFrame(cancellation).ConfigureAwait(false);
             currentSourceFrame = targetFrame;
         }
-        catch { await StopDecoder(); throw; }
+        catch { await StopDecoder().ConfigureAwait(false); throw; }
     }
 
     private async Task<byte[]> ReadDecodedFrame(CancellationToken cancellation)
@@ -135,12 +159,12 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         // The session gate and synchronous compositor own this buffer throughout a
         // frame. Reuse it instead of allocating and zeroing 33 MiB for every 4K frame.
         var frame = lastDecoded ?? GC.AllocateUninitializedArray<byte>(checked(sourceWidth * sourceHeight * 4));
-        using var registration = cancellation.Register(() => MediaTools.Kill(p));
-        try { await decoderFrames!.ReadExactlyAsync(frame, cancellation); return frame; }
+        using var registration = cancellation.Register(() => KillDecoderProcess(p));
+        try { await decoderFrames!.ReadExactlyAsync(frame, cancellation).ConfigureAwait(false); return frame; }
         catch (EndOfStreamException)
         {
-            await p.WaitForExitAsync(cancellation);
-            var errors = decoderErrors is null ? "" : await decoderErrors;
+            await p.WaitForExitAsync(cancellation).ConfigureAwait(false);
+            var errors = decoderErrors is null ? "" : await decoderErrors.ConfigureAwait(false);
             throw new IOException("预览源视频提前结束或无法解码：" + MediaTools.Tail(errors));
         }
     }
@@ -153,33 +177,40 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
         if (old is null) return;
         try
         {
-            await MediaTools.StopAsync(old);
-            if (errors is not null) try { _ = await errors; } catch { }
+            KillDecoderProcess(old);
+            try { await old.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
+            catch (TimeoutException) { }
+            catch (InvalidOperationException) { }
+            if (errors is not null) try { _ = await errors.ConfigureAwait(false); } catch { }
         }
         finally { old.Dispose(); }
+    }
+
+    private static void KillDecoderProcess(Process process)
+    {
+        try { if (!process.HasExited) process.Kill(entireProcessTree: false); }
+        catch (InvalidOperationException) { }
     }
 
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true;
-        var old = decoder; decoder = null;
-        decoderFrames?.Dispose(); decoderFrames = null;
-        if (old is not null) { MediaTools.Kill(old); old.Dispose(); }
-        lastDecoded = null; assets.Dispose(); renderer.Dispose(); gate.Dispose();
+        DisposeAsync().AsTask().GetAwaiter().GetResult();
     }
 
     public async ValueTask DisposeAsync()
     {
         if (disposed) return;
-        await gate.WaitAsync();
+        await gate.WaitAsync().ConfigureAwait(false);
         try
         {
             if (disposed) return;
             disposed = true;
-            await StopDecoder();
+            await StopDecoder().ConfigureAwait(false);
+            if (nativeDecoder is not null) await nativeDecoder.DisposeAsync().ConfigureAwait(false);
+            nativeDecoder = null;
             assets.Dispose(); renderer.Dispose();
         }
-        finally { gate.Release(); gate.Dispose(); }
+        finally { gate.Release(); }
     }
 }

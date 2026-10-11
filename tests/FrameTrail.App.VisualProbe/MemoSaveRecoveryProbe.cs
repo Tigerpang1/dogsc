@@ -7,6 +7,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail.App;
+using FrameTrail.App.VisualProbe;
 
 internal static class MemoSaveRecoveryProbe
 {
@@ -28,7 +29,7 @@ internal static class MemoSaveRecoveryProbe
         }
         finally
         {
-            themeOwner?.Close();
+            MainWindowProbeLifetime.Close(themeOwner);
             foreach (var (key, value) in priorPalette)
             {
                 if (value is null) app.Resources.Remove(key);

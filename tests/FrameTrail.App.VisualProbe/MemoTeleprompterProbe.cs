@@ -6,6 +6,7 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FrameTrail.App;
+using FrameTrail.App.VisualProbe;
 
 internal static class MemoTeleprompterProbe
 {
@@ -132,7 +133,7 @@ internal static class MemoTeleprompterProbe
         }
         finally
         {
-            themeOwner?.Close();
+            MainWindowProbeLifetime.Close(themeOwner);
             foreach (var (key, value) in priorTheme)
             {
                 if (value is null) app.Resources.Remove(key);
