@@ -67,8 +67,7 @@ internal static class CapturedProjectProbe
             Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = videoInfo.Duration }] }
         };
 
-        var attachMethod = Assembly.Load("FrameTrail").GetType("FrameTrail.App.MainWindow")?
-            .GetMethod("AttachMappedAudio", BindingFlags.NonPublic | BindingFlags.Static)
+        var attachMethod = typeof(FrameTrail.App.MainWindow).GetMethod("AttachMappedAudio", BindingFlags.NonPublic | BindingFlags.Static)
             ?? throw new InvalidOperationException("无法定位 App 的 AttachMappedAudio 实际入口。");
         var audioSource = audio.Handle.Kind == CaptureTrackKind.SystemAudio ? AudioTrackSource.System : AudioTrackSource.Microphone;
         attachMethod.Invoke(null, [project, screen, audio, audioRelativePath, audioInfo.Duration, audioSource]);

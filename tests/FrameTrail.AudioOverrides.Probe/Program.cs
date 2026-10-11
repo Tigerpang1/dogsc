@@ -52,7 +52,7 @@ var attachProject = new FrameTrailProject
     Media = new() { Width = 320, Height = 180, Duration = 8, FrameRate = 60 },
     Timeline = new() { Segments = [new() { SourceStart = 0, SourceDuration = 8 }] }
 };
-var appAssembly = Assembly.Load("FrameTrail");
+var appAssembly = typeof(FrameTrail.App.MainWindow).Assembly;
 var attachMethod = appAssembly.GetType("FrameTrail.App.MainWindow")?.GetMethod("AttachMappedAudio", BindingFlags.NonPublic | BindingFlags.Static)
     ?? throw new InvalidOperationException("无法定位 App 的 AttachMappedAudio 实际入口。");
 var screenResult = new RecordingResult("screen.mp4", 0, 10_000, 1_000, EncoderMode.Software, "probe", 320, 180, 60,
