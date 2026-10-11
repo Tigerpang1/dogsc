@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Media;
@@ -7,14 +8,22 @@ using FrameTrail.Media;
 
 namespace FrameTrail.App;
 
+internal sealed record PreviewFrameTiming(double OutputTime, double QueueMs, double SceneMs,
+    double DecodeMs, double AssetsMs, double WorkerQueueMs, double RenderMs, double BitmapMs,
+    double DispatchMs, double ApplyMs, long DecoderStarts, long CacheHits,
+    int InputWidth, int InputHeight, int OutputWidth, int OutputHeight);
+
 public partial class MainWindow
 {
+    // Opt-in, in-process diagnostics. No frame pixels or user project data are logged.
+    internal Action<PreviewFrameTiming>? PreviewFrameMeasured;
     private sealed record PreviewTarget(FrameTrailProject Project, string ProjectFile, double Time,
         int Width, int Height, bool NativeSource, TimelineSelection? InspectorTarget);
 
-    private sealed class PreviewRequest(PreviewTarget target, CancellationToken cancellation)
+    private sealed class PreviewRequest(PreviewTarget target, CancellationToken cancellation, long requestedAt)
     {
         internal readonly PreviewTarget Target = target;
+        internal readonly long RequestedAt = requestedAt;
         internal readonly CancellationTokenSource Cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellation);
         internal readonly TaskCompletionSource Completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -46,6 +55,7 @@ public partial class MainWindow
 
     private Task RequestPreview(double time, bool timeline, bool coalesce)
     {
+        var requestedAt = PreviewFrameMeasured is null ? 0 : Stopwatch.GetTimestamp();
         Dispatcher.VerifyAccess();
         if (closingInProgress || desktopExiting || closeReady || project is null || projectFile is null) return Task.CompletedTask;
         if (seekCancellation is null || seekCancellation.IsCancellationRequested)
@@ -79,7 +89,7 @@ public partial class MainWindow
         if (activePreview is { } active && active.Target == target && !active.Cancellation.IsCancellationRequested)
             return active.Completion.Task;
 
-        var request = new PreviewRequest(target, seekCancellation.Token);
+        var request = new PreviewRequest(target, seekCancellation.Token, requestedAt);
         pendingPreview = request;
         AutomationProperties.SetItemStatus(PreviewImage, "rendering");
         if (!previewPumpRunning)
@@ -100,7 +110,7 @@ public partial class MainWindow
                 activePreview = request;
                 try
                 {
-                    await RenderPreviewFrameAsync(request.Target, request.Cancellation.Token);
+                    await RenderPreviewFrameAsync(request.Target, request.Cancellation.Token, request.RequestedAt);
                     request.Completion.TrySetResult();
                 }
                 catch (Exception) when (request.Cancellation.IsCancellationRequested)
@@ -122,11 +132,15 @@ public partial class MainWindow
         finally { previewPumpRunning = false; }
     }
 
-    private async Task RenderPreviewFrameAsync(PreviewTarget target, CancellationToken token)
+    private async Task RenderPreviewFrameAsync(PreviewTarget target, CancellationToken token, long requestedAt)
     {
+        var measured = PreviewFrameMeasured;
+        long Stamp() => measured is null ? 0 : Stopwatch.GetTimestamp();
+        static double Milliseconds(long start, long end) => Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
         await previewGate.WaitAsync(token);
         try
         {
+            var sceneStarted = Stamp();
             token.ThrowIfCancellationRequested();
             var snapshot = target.Project;
             if (!ReferenceEquals(evaluatedProject, snapshot))
@@ -154,7 +168,13 @@ public partial class MainWindow
                 scrubDecoder = new ScrubFrameDecoder(path, inputWidth, inputHeight, rate, snapshot.Media.Duration);
                 scrubDecoderKey = key;
             }
+            var decodeStarted = Stamp();
+            var startsBefore = scrubDecoder.ProcessStartCount;
+            var hitsBefore = scrubDecoder.CacheHits;
             var buffer = await scrubDecoder.ReadFrameAsync(scene.SourceTime, token);
+            var decoded = Stamp();
+            var decodeStarts = scrubDecoder.ProcessStartCount - startsBefore;
+            var cacheHits = scrubDecoder.CacheHits - hitsBefore;
             var size = (inputWidth, inputHeight, width, height);
             if (previewAssets is null || previewAssetsProject != target.ProjectFile || previewSize != size)
             {
@@ -163,8 +183,11 @@ public partial class MainWindow
                 previewAssetsProject = target.ProjectFile;
             }
             var layers = await previewAssets.LoadAsync(scene, token);
+            var assetsReady = Stamp();
+            long renderStarted = 0, rendered = 0, bitmapReady = 0;
             var image = await Task.Run(() =>
             {
+                renderStarted = Stamp();
                 token.ThrowIfCancellationRequested();
                 if (previewRenderer is null || previewSize != size)
                 {
@@ -174,10 +197,13 @@ public partial class MainWindow
                 }
                 var output = new byte[width * height * 4];
                 previewRenderer.Render(buffer, scene, output, layers);
+                rendered = Stamp();
                 var bmp = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, output, width * 4);
                 bmp.Freeze();
+                bitmapReady = Stamp();
                 return bmp;
             }, token);
+            var applyStarted = Stamp();
             token.ThrowIfCancellationRequested();
             if (!ReferenceEquals(project, snapshot) || playing || closingInProgress || closeReady) return;
             PreviewImage.Source = image;
@@ -187,6 +213,13 @@ public partial class MainWindow
             PreviewImage.Visibility = Visibility.Visible;
             RefreshPreviewSelection();
             AutomationProperties.SetItemStatus(PreviewImage, "ready");
+            if (measured is not null)
+                measured(new(target.Time, Milliseconds(requestedAt, sceneStarted),
+                    Milliseconds(sceneStarted, decodeStarted), Milliseconds(decodeStarted, decoded),
+                    Milliseconds(decoded, assetsReady), Milliseconds(assetsReady, renderStarted),
+                    Milliseconds(renderStarted, rendered), Milliseconds(rendered, bitmapReady),
+                    Milliseconds(bitmapReady, applyStarted), Milliseconds(applyStarted, Stamp()),
+                    decodeStarts, cacheHits, inputWidth, inputHeight, width, height));
         }
         finally { previewGate.Release(); }
     }

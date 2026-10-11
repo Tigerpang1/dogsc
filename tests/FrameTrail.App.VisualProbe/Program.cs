@@ -29,7 +29,8 @@ internal static class Program
         var timelineInputOnly = args.FirstOrDefault() == "--timeline-input";
         var previewInteractionOnly = args.FirstOrDefault() == "--preview-interaction";
         var previewSizingOnly = args.FirstOrDefault() == "--preview-sizing";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var previewLatencyOnly = args.FirstOrDefault() == "--preview-latency";
+        var outputArgument = previewLatencyOnly ? args.Skip(1).FirstOrDefault() : textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -59,6 +60,14 @@ internal static class Program
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} preview sizing checks; {output}");
+                return 0;
+            }
+            if (previewLatencyOnly)
+            {
+                if (args.Length != 3) throw new ArgumentException("Usage: --preview-latency <outputDirectory> <projectFile>");
+                window = new MainWindow();
+                PreviewLatencyProbe.Verify(window, output, Path.GetFullPath(args[2]));
+                Console.WriteLine($"PASS: preview latency probe; {output}");
                 return 0;
             }
             if (previewInteractionOnly)
