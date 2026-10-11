@@ -239,8 +239,9 @@ try {
         $appInfo.LegalCopyright -notlike '*神烦老狗*') { throw '主程序品牌、版本或原作者署名不匹配。' }
     $logoHash = (Get-FileHash -LiteralPath (Join-Path $release 'docs/assets/DogSC.png') -Algorithm SHA256).Hash
     if ($logoHash -ne '1F1A16C58905C0901D408F3D3DF39CCCA5070C34C820A8BD6B0255230E554AF8') { throw '随包 Logo 与固定 DogSC 原图不一致。' }
-    if ((Get-FileHash -LiteralPath (Join-Path $release 'licenses/DogSC-MIT.txt')).Hash -ne
-        (Get-FileHash -LiteralPath (Join-Path $repo 'upstream/dogsc/LICENSE')).Hash) { throw '随包 MIT 声明与原仓库不一致。' }
+    $bundledLicense = [IO.File]::ReadAllText((Join-Path $release 'licenses/DogSC-MIT.txt')).Replace("`r`n", "`n").Trim()
+    $upstreamLicense = [IO.File]::ReadAllText((Join-Path $repo 'upstream/dogsc/LICENSE')).Replace("`r`n", "`n").Trim()
+    if ($bundledLicense -cne $upstreamLicense) { throw '随包 MIT 声明与原仓库文本不一致。' }
     $report.Checks += [ordered]@{ Id='dogsc-branding'; Name='DogSC 产品名、版本、原作者版权、原版 Logo 哈希与上游 MIT 声明一致'; Passed=$true }
     $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/DogSC-$Version-win-x64.zip") $release
     if ([version]$Version -ge [version]'0.2.14') {
