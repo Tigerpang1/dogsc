@@ -1,0 +1,52 @@
+name: 问题报告
+description: 报告 Windows 社区移植版中的可复现问题
+title: "[问题] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        请描述可复现的问题。提交前请删除日志中的账号信息、令牌和本机路径；不要附上真实录屏、录音或项目素材。
+  - type: textarea
+    id: summary
+    attributes:
+      label: 问题描述
+      description: 发生了什么？
+      placeholder: 请用几句话描述问题。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 写出触发问题的操作步骤。
+      placeholder: |
+        1. 打开……
+        2. 点击……
+        3. 观察到……
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+      description: 你原本期望出现什么？
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境信息
+      description: 提供 Windows 版本、应用版本，以及显示器缩放或录制设备等相关信息。
+      placeholder: Windows 11；应用版本；相关设备或缩放设置
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志（可选）
+      description: 贴出必要的错误信息，并先移除令牌、账号、个人路径和其他隐私内容。不要上传录屏、录音或项目文件。
+      render: text
+    validations:
+      required: false

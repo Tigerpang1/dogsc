@@ -8,10 +8,14 @@
 
 <p align="center">
   <a href="https://github.com/laogou717/dogsc"><strong>DogSC 原项目</strong></a>
+  · <a href="https://github.com/lantiansb/dogsc">Windows 社区仓库</a>
+  · <a href="https://github.com/lantiansb/dogsc/issues">Windows 问题反馈</a>
   · <a href="https://github.com/laogou717/dogsc/releases/latest">macOS 版下载</a>
 </p>
 
-这是 DogSC 的 Windows 社区移植版，沿用原项目名称与品牌视觉。原项目由作者神烦老狗发布，采用 MIT 许可证；本仓库遵循该许可证并保留来源。Windows 版本由社区维护，不代表原作者发布或背书。请通过上方原项目链接获取 macOS 版本；本仓库目前没有可供下载的 Windows Beta 地址。
+这是 DogSC 的 Windows 社区移植版，沿用原项目名称与品牌视觉。原项目由作者神烦老狗发布，采用 MIT 许可证；本仓库遵循该许可证并保留来源。Windows 版本由 `lantiansb` 维护，不代表原作者发布或背书。请通过上方原项目链接获取 macOS 版本；本仓库目前没有可供下载的 Windows Beta 安装包。
+
+本仓库保留 GitHub Fork 关系：默认分支 `codex/windows` 维护 Windows 实现，`main` 保留 Fork 时的原项目代码。贡献流程与自动检查范围见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## Windows Beta 准备
 
@@ -24,6 +28,8 @@
 需要 Windows 11 x64、.NET 10 SDK、Windows Media Foundation 和可用的 FFmpeg。克隆后初始化上游子模块，再按仓库构建说明操作：
 
 ```powershell
+git clone --branch codex/windows --recurse-submodules https://github.com/lantiansb/dogsc.git
+cd dogsc
 git submodule update --init --recursive
 pwsh -File scripts/build.ps1
 ```

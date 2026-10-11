@@ -21,7 +21,7 @@ Windows 11 x64。主要功能包括显示器、窗口和区域录制，系统声
 
 文件 SHA-256 与源码提交在生成后的 `DogSC-0.2.17-candidate-manifest.json` 和 `DogSC-0.2.17-candidate-SHA256SUMS.txt` 中记录。
 
-**此页为本地发布草稿，目前没有 Windows 下载链接。** 含现有 FFmpeg 构建的二进制候选需补齐对应源码与许可材料，最终安装/卸载和交互验收也尚未完成。当前候选未签名；Windows 社区仓库及公开发布渠道尚待确定。
+**此页为二进制发布草稿，目前没有 Windows 安装包下载链接。** 含现有 FFmpeg 构建的二进制候选需补齐对应源码与许可材料，最终安装/卸载和交互验收也尚未完成。当前候选未签名；Windows 源码维护于 [lantiansb/dogsc](https://github.com/lantiansb/dogsc)，后续二进制发布使用该 Fork 的 Releases。
 
 ## 来源与许可
 

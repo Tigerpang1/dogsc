@@ -11,3 +11,4 @@
 - 用户已明确采用原项目 DogSC 名称、图标与 Logo；README、应用内和发行材料须保留神烦老狗、原仓库及 MIT 署名，并注明 Windows 社区移植版，不暗示原作者官方发布 Windows 版本。
 - `FrameTrail.*` 内部命名、`.frametrail` 格式、历史用户数据目录及单实例身份保留兼容性，不作无必要的破坏性重命名。
 - 公开发布目标、签名凭据与付费上线由用户确认；本地源码、测试、便携包和安装器可自主推进。
+- 用户已授权使用 `lantiansb` 账户维护 GitHub 源码仓库 `lantiansb/dogsc`；该仓库是 `laogou717/dogsc` 的 Fork，Windows 默认开发分支为 `codex/windows`，`main` 保留上游代码。`origin` 指向个人 Fork，`upstream` 指向原项目。含 FFmpeg 的本地候选二进制在分发材料和验收未齐备时不上传。
