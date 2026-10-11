@@ -235,7 +235,7 @@ try {
         throw '便携 README 未引用随包复制的 DogSC 品牌图标。'
     }
     $appInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
-    if ($appInfo.ProductName -ne 'DogSC' -or $appInfo.FileVersion -ne "$Version.0" -or
+    if ($appInfo.ProductName -ne 'DogSC' -or $appInfo.FileVersion -notmatch "^$([regex]::Escape($Version))(\.0)?$" -or
         $appInfo.LegalCopyright -notlike '*神烦老狗*') { throw '主程序品牌、版本或原作者署名不匹配。' }
     $logoHash = (Get-FileHash -LiteralPath (Join-Path $release 'docs/assets/DogSC.png') -Algorithm SHA256).Hash
     if ($logoHash -ne '1F1A16C58905C0901D408F3D3DF39CCCA5070C34C820A8BD6B0255230E554AF8') { throw '随包 Logo 与固定 DogSC 原图不一致。' }

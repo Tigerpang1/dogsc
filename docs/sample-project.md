@@ -1,6 +1,6 @@
-# FrameTrail 演示工程
+# DogSC Windows 演示工程
 
-这是一个8秒、1280×720、30fps的可重建演示。`FrameTrail-Demo.frametrail` 使用同目录相对路径；`FrameTrail-Demo.mp4` 是保存并重新打开工程后，由实际导出引擎生成的样片，含合成的440Hz低音量音轨。
+这是 DogSC Windows 社区移植版的8秒、1280×720、30fps可重建演示。兼容历史验证脚本的 `FrameTrail-Demo.frametrail` 使用同目录相对路径；`FrameTrail-Demo.mp4` 是保存并重新打开工程后，由实际导出引擎生成的样片，含合成的440Hz低音量音轨。原 DogSC 项目由[神烦老狗](https://github.com/laogou717/dogsc)创作，采用 MIT 许可。
 
 屏幕和摄像头画面由FFmpeg `testsrc2` 合成，声音由 `sine` 合成，角标由本项目绘制。工程展示动态海洋背景、圆角、阴影、指针与点击、缩放、屏幕3D和聚焦、独立摄像头及其运动、图像角标、依次开场和独立音轨。角标标记为“SYNTHETIC SAMPLE”。
 
