@@ -13,7 +13,9 @@ $expectedSha256 = 'c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa
 $toolchainRoot = Join-Path $repoRoot 'artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared'
 $output = Join-Path $repoRoot 'artifacts/toolchains/libav-8.1-win-x64'
 $defaultArchive = Join-Path $toolchainRoot $asset
-$unpackedRoot = Join-Path $toolchainRoot 'unpacked/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1'
+# Do not repeat the long archive name: CreateProcess cannot launch that nested
+# path from a source-validation checkout once it exceeds MAX_PATH.
+$unpackedRoot = Join-Path $toolchainRoot 'bin-runtime'
 $licenseSource = Join-Path $unpackedRoot 'LICENSE.txt'
 $required = @('avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll')
 $archivePackageRoot = 'ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1/'
