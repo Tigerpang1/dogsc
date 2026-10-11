@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.5', [switch]$Candidate)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.17', [switch]$Candidate)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $release = Join-Path $repo 'artifacts/release'
@@ -28,7 +28,7 @@ if (@($package.Checks | Where-Object { $_.Passed -isnot [bool] -or -not $_.Passe
     throw '包验收仍包含失败或无效的检查。'
 }
 $entries = @()
-foreach ($name in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe", "FrameTrail-$Version-source.zip")) {
+foreach ($name in @("DogSC-$Version-win-x64.zip", "DogSC-Setup-$Version-win-x64.exe", "DogSC-$Version-source.zip")) {
     $path = Join-Path $release $name
     $file = Get-Item -LiteralPath $path
     $hash = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -48,6 +48,7 @@ if ($package.BuildInfo -notmatch "(?m)^版本：$([regex]::Escape($Version))\r?$
     $package.BuildInfo -notmatch "(?m)^DogSC 上游审计基线：$upstream\r?$" -or
     $package.BuildInfo -notmatch '(?m)^打包时工作区：clean\r?$') { throw '程序包版本、提交、上游基线或干净工作区标记不匹配。' }
 $manifest = [ordered]@{
+    productName='DogSC Windows 社区移植'; upstreamRepository='https://github.com/laogou717/dogsc'
     version=$Version; generatedUtc=[DateTime]::UtcNow.ToString('O'); purpose='本地交付与验收，未公开发布'
     status=$(if ($Candidate) { 'candidate-awaiting-interactive-validation' } else { 'validated-local-delivery' })
     frameTrailCommit=$head; upstreamDogScCommit=$source.sourceMetadata.upstreamDogScCommit
@@ -59,7 +60,7 @@ $manifest = [ordered]@{
 if ($Candidate) { $manifest.limitations += '当前候选仅完成后台包内容检查；最终全量UIA、发行包实际播放录制和安装卸载待主机交互时段验证。' }
 $manifestJson = $manifest | ConvertTo-Json -Depth 6
 $checksumLines = $entries | ForEach-Object { "$($_.sha256)  $($_.file)" }
-$versionPrefix = if ($Candidate) { "FrameTrail-$Version-candidate" } else { "FrameTrail-$Version" }
+$versionPrefix = if ($Candidate) { "DogSC-$Version-candidate" } else { "DogSC-$Version" }
 $manifestJson | Set-Content -LiteralPath (Join-Path $release "$versionPrefix-manifest.json") -Encoding utf8
 $checksumLines | Set-Content -LiteralPath (Join-Path $release "$versionPrefix-SHA256SUMS.txt") -Encoding ascii
 if ($Candidate) { Write-Host (Join-Path $release "$versionPrefix-manifest.json"); exit 0 }

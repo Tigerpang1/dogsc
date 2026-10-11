@@ -44,7 +44,7 @@ internal static class MemoTeleprompterProbe
 
     private static void VerifyHiddenHandle(string output, Action<bool, string, object?> check)
     {
-        var fixture = Path.Combine(Path.GetTempPath(), "FrameTrail-Teleprompter-Hwnd-" + Guid.NewGuid().ToString("N"));
+        var fixture = Path.Combine(Path.GetTempPath(), "DogSC-Teleprompter-Hwnd-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixture);
         var scriptPath = Path.Combine(fixture, "memo.txt");
         File.WriteAllText(scriptPath, "仅用于隐藏 HWND 分层透明诊断的临时文稿。");
@@ -144,7 +144,7 @@ internal static class MemoTeleprompterProbe
 
     private static void VerifyThemeLayout(string output, Action<bool, string, object?> check, bool dark)
     {
-        var fixture = Path.Combine(Path.GetTempPath(), "FrameTrail-Teleprompter-Layout-" + Guid.NewGuid().ToString("N"));
+        var fixture = Path.Combine(Path.GetTempPath(), "DogSC-Teleprompter-Layout-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixture);
         var scriptPath = Path.Combine(fixture, "memo.txt");
         File.WriteAllText(scriptPath, string.Join(Environment.NewLine,
@@ -168,7 +168,7 @@ internal static class MemoTeleprompterProbe
             var controls = new FrameworkElement[] { memo.ScrollButtonForProbe, memo.RewindButtonForProbe, memo.SpeedSliderForProbe, memo.SpeedLabelForProbe };
             var controlBounds = controls.Select(control => control.TransformToAncestor(footer).TransformBounds(new Rect(control.RenderSize))).ToArray();
             var fitsFooter = FooterFits(memo, root);
-            check(memo.MinWidth >= 390 && memo.MinHeight >= 330 && memo.Title == "FrameTrail · 口播提词器",
+            check(memo.MinWidth >= 390 && memo.MinHeight >= 330 && memo.Title == "DogSC · 口播提词器",
                 $"{ThemeName(dark)}: teleprompter has an explicit minimum size and product title", new { memo.MinWidth, memo.MinHeight, memo.Title });
             check(fitsFooter && footerBounds.Left >= 0 && footerBounds.Right <= root.ActualWidth + .5 && footerBounds.Bottom <= root.ActualHeight + .5,
                 $"{ThemeName(dark)}: two-row playback footer fits at default size without clipping", new { footer.ActualWidth, footer.ActualHeight, footer.DesiredSize, footerBounds, controlBounds });

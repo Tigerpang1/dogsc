@@ -45,7 +45,7 @@ public sealed class RecordingBar : Window
     public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null,string? markerShortcut="Ctrl+Alt+M",bool markerShortcutIsFallback=false,Action<Button>? showMenu=null)
     {
         this.stop=stop??throw new ArgumentNullException(nameof(stop));this.stopFailed=stopFailed;
-        Title="FrameTrail · 录制条"; Width=(markerShortcutIsFallback?458:428)+(showMenu is null?0:46); Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
+        Title="DogSC · 录制条"; Width=(markerShortcutIsFallback?458:428)+(showMenu is null?0:46); Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
         SurfaceWindow.Configure(this,closeOnEscape:false,captionHeight:0);
         var panel=new StackPanel { Orientation=Orientation.Horizontal,Margin=new(12,6,12,6) }; Content=SurfaceWindow.WrapContent(this,panel,Title,showCloseButton:false,showTitleBar:false); panel.Children.Add(label);
         var markerContent=new StackPanel { Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center };
@@ -61,8 +61,8 @@ public sealed class RecordingBar : Window
         {
             var icon=new EditorIcon { Kind="settings",Width=18,Height=18 };
             icon.SetResourceReference(EditorIcon.StrokeProperty,"Ink");
-            var menuButton=new Button { Content=icon,Width=38,Height=38,Padding=new(0),Margin=new(8,0,0,0),ToolTip="FrameTrail 菜单" };
-            System.Windows.Automation.AutomationProperties.SetName(menuButton,"FrameTrail 菜单");
+            var menuButton=new Button { Content=icon,Width=38,Height=38,Padding=new(0),Margin=new(8,0,0,0),ToolTip="DogSC 菜单" };
+            System.Windows.Automation.AutomationProperties.SetName(menuButton,"DogSC 菜单");
             System.Windows.Automation.AutomationProperties.SetAutomationId(menuButton,"RecordingBarMenu");
             menuButton.Click+=(_,_)=>showMenu(menuButton);
             menu=menuButton;
@@ -153,7 +153,7 @@ public sealed class MemoWindow : Window
             SurfaceDialog.Show(owner, message, title, MessageBoxButton.OK, MessageBoxImage.Warning));
         this.errorLog = errorLog ?? App.Log;
 
-        Title = "FrameTrail · 口播提词器";
+        Title = "DogSC · 口播提词器";
         Width = 410;
         Height = 400;
         MinWidth = 390;
@@ -306,7 +306,7 @@ public sealed class MemoWindow : Window
         WindowStyle = WindowStyle.None;
         AllowsTransparency = true;
         Background = Brushes.Transparent;
-        shell = (Border)SurfaceWindow.WrapContent(this, root, "FrameTrail · 口播提词器");
+        shell = (Border)SurfaceWindow.WrapContent(this, root, "DogSC · 口播提词器");
         Content = shell;
         shell.Background = Brushes.Transparent;
         var shellGrid = (Grid)shell.Child;

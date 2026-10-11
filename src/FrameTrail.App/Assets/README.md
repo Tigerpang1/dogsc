@@ -1,3 +1,5 @@
-# 内部代号图标
+# DogSC 应用图标
 
-`FrameTrail.svg` 是本次迁移新建的几何 F 字母图标，使用矩形和圆角构成。`FrameTrail.ico` 为同一构图的 256×256 PNG 编码 ICO，随应用编译嵌入。未复用 DogSC 的品牌、图标或字体文件。图标沿用本项目 MIT 许可；正式名称与品牌仍待确认。
+`DogSC.ico` 来自 [神烦老狗的 DogSC](https://github.com/laogou717/dogsc) 原版 `Resources/AppIconMaster.png`，仅转换为含 16、24、32、48、64、128、256 像素的 Windows ICO。应用内 Logo 直接嵌入上游 PNG。没有重新设计或替换图案。
+
+固定来源、许可和重建方法见 [`licenses/DogSC-ASSETS.md`](../../../licenses/DogSC-ASSETS.md)。本程序是 Windows 社区移植版，原作者与官方 macOS 项目的身份不变。

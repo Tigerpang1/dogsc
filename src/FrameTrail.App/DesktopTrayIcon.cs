@@ -50,7 +50,7 @@ internal sealed class DesktopTrayIcon : IDisposable
     private bool hasActivated;
     private bool hasShownMenu;
     private int menuRequest;
-    private string tooltip = "FrameTrail";
+    private string tooltip = "DogSC";
 
     /// <summary>The latest runtime tray registration failure, if Explorer recovery failed.</summary>
     public Exception? LastFailure { get; private set; }
@@ -68,7 +68,7 @@ internal sealed class DesktopTrayIcon : IDisposable
         this.showMenu = showMenu ?? throw new ArgumentNullException(nameof(showMenu));
         this.reportFailure = reportFailure;
 
-        var parameters = new HwndSourceParameters("FrameTrail notification icon")
+        var parameters = new HwndSourceParameters("DogSC notification icon")
         {
             Width = 0,
             Height = 0,
@@ -104,7 +104,7 @@ internal sealed class DesktopTrayIcon : IDisposable
     {
         VerifyDispatcher();
         ThrowIfDisposed();
-        tooltip = recording ? "FrameTrail — 正在录制" : "FrameTrail";
+        tooltip = recording ? "DogSC — 正在录制" : "DogSC";
         if (iconRegistered && !Shell_NotifyIcon(NimModify, CreateData(NifIcon | NifTip | NifMessage | NifShowTip)))
             throw TrayOperationFailed("更新托盘图标状态");
     }
@@ -266,11 +266,9 @@ internal sealed class DesktopTrayIcon : IDisposable
 
     private static IntPtr LoadApplicationIcon()
     {
-        var executable = Path.Combine(AppContext.BaseDirectory, "FrameTrail.exe");
-        if (!File.Exists(executable))
-            executable = Environment.ProcessPath ?? string.Empty;
+        var executable = ResolveApplicationExecutable(AppContext.BaseDirectory, Environment.ProcessPath);
         if (string.IsNullOrWhiteSpace(executable) || !File.Exists(executable))
-            throw new InvalidOperationException("无法定位 FrameTrail.exe，托盘图标无法读取应用图标资源。");
+            throw new InvalidOperationException("无法定位 DogSC.exe，托盘图标无法读取应用图标资源。");
 
         IntPtr largeIcon = IntPtr.Zero;
         IntPtr smallIcon = IntPtr.Zero;
@@ -278,11 +276,23 @@ internal sealed class DesktopTrayIcon : IDisposable
         if (count == 0 || smallIcon == IntPtr.Zero)
         {
             if (largeIcon != IntPtr.Zero) DestroyIcon(largeIcon);
-            throw TrayOperationFailed("从 FrameTrail.exe 读取应用图标");
+            throw TrayOperationFailed("从 DogSC.exe 读取应用图标");
         }
 
         if (largeIcon != IntPtr.Zero) DestroyIcon(largeIcon);
         return smallIcon;
+    }
+
+    internal static string ResolveApplicationExecutable(string baseDirectory, string? processPath)
+    {
+        if (!string.IsNullOrWhiteSpace(processPath) && File.Exists(processPath) &&
+            Path.GetFileName(processPath) is var processName &&
+            (processName.Equals("DogSC.exe", StringComparison.OrdinalIgnoreCase) || processName.Equals("FrameTrail.exe", StringComparison.OrdinalIgnoreCase))) return processPath;
+        var dogSc = Path.Combine(baseDirectory, "DogSC.exe");
+        if (File.Exists(dogSc)) return dogSc;
+        var legacy = Path.Combine(baseDirectory, "FrameTrail.exe");
+        if (File.Exists(legacy)) return legacy;
+        return processPath ?? string.Empty;
     }
 
     private static Point DecodePoint(IntPtr packedPoint)

@@ -23,7 +23,7 @@ internal sealed class TrayMenuWindow : Window
         entries.Dispatcher.VerifyAccess();
 
         WindowStyle = WindowStyle.None;
-        Title = "FrameTrail · 菜单";
+        Title = "DogSC · 菜单";
         ResizeMode = ResizeMode.NoResize;
         WindowStartupLocation = WindowStartupLocation.Manual;
         AllowsTransparency = true;

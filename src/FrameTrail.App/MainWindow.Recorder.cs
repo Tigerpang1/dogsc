@@ -33,7 +33,7 @@ public partial class MainWindow
  }
  internal Window CreateFloatingRecorderWindow()
  {
-  var window=new Window{Title="FrameTrail · 录制",Width=818,Height=80,MinHeight=80,SizeToContent=SizeToContent.Height,Topmost=true,ShowInTaskbar=false};SurfaceWindow.Configure(window,captionHeight:0);
+  var window=new Window{Title="DogSC · 录制",Width=818,Height=80,MinHeight=80,SizeToContent=SizeToContent.Height,Topmost=true,ShowInTaskbar=false};SurfaceWindow.Configure(window,captionHeight:0);
   var panel=new WrapPanel{Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center,Margin=new(14,8,6,8)};
   window.Content=SurfaceWindow.WrapContent(window,panel,"录制",showCloseButton:false,showTitleBar:false);
   void Divider(double margin=10){var divider=new Border{Width=1,Height=34,Margin=new(margin,0,margin,0)};divider.SetResourceReference(Border.BackgroundProperty,"Hairline");panel.Children.Add(divider);}
@@ -75,7 +75,7 @@ public partial class MainWindow
   var save=new Button{Content=savePanel,Width=154,Height=46,Padding=new(11,5,11,5),Margin=new(5,0,7,0),BorderThickness=new(.75),ToolTip="保存位置与录制设置"};save.SetResourceReference(Control.BackgroundProperty,"Chrome");save.SetResourceReference(Control.BorderBrushProperty,"Hairline");save.Click+=(_,_)=>{var menu=new ContextMenu();var folder=new MenuItem{Header="保存位置…"};folder.Click+=(_,_)=>RecordingFolderClick(this,new());menu.Items.Add(folder);menu.Items.Add(new Separator());foreach(var fps in new[]{30,60}){var entry=new MenuItem{Header=$"{fps} FPS",IsCheckable=true,IsChecked=CaptureFps.SelectedIndex==(fps==30?0:1)};entry.Click+=(_,_)=>CaptureFps.SelectedIndex=fps==30?0:1;menu.Items.Add(entry);}foreach(var index in new[]{0,1}){var entry=new MenuItem{Header=index==0?"最高 1080p":"原始分辨率",IsCheckable=true,IsChecked=CaptureResolution.SelectedIndex==index};entry.Click+=(_,_)=>CaptureResolution.SelectedIndex=index;menu.Items.Add(entry);}var recover=new MenuItem{Header="恢复未完成录制…"};recover.Click+=(_,_)=>RecoverRecordingClick(this,new());menu.Items.Add(recover);menu.PlacementTarget=save;menu.IsOpen=true;};panel.Children.Add(save);
   var memoIcon=new EditorIcon{Kind="memo",Width=21,Height=21};memoIcon.SetResourceReference(EditorIcon.StrokeProperty,"Ink");var memo=new Button{Content=memoIcon,Width=36,Height=36,Margin=new(3,0,7,0),Padding=new(0),ToolTip="口播提词器"};System.Windows.Automation.AutomationProperties.SetName(memo,"口播提词器");memo.Click+=(_,_)=>MemoClick(this,new());panel.Children.Add(memo);
   Round("window","打开编辑器",null,_=>ShowEditorForDesktop());
-  Round("settings","FrameTrail 菜单",null,ShowDesktopMenu);
+  Round("settings","DogSC 菜单",null,ShowDesktopMenu);
   Round("close","收起录制工具",null,_=>window.Close());
   window.MouseLeftButtonDown+=(_,e)=>{if(e.OriginalSource is Border or StackPanel)window.DragMove();};window.KeyDown+=(_,e)=>{if(e.Key==Key.Escape)window.Close();};
   return window;

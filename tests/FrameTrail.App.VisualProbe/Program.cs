@@ -27,13 +27,14 @@ internal static class Program
         var desktopInstanceOnly = args.FirstOrDefault() == "--desktop-instance";
         var desktopSurfacesOnly = args.FirstOrDefault() == "--desktop-surfaces";
         var trayMenuWindowOnly = args.FirstOrDefault() == "--tray-menu-window";
+        var brandingOnly = args.FirstOrDefault() == "--branding";
         var timelineInputOnly = args.FirstOrDefault() == "--timeline-input";
         var previewInteractionOnly = args.FirstOrDefault() == "--preview-interaction";
         var previewSizingOnly = args.FirstOrDefault() == "--preview-sizing";
         var previewLatencyOnly = args.FirstOrDefault() == "--preview-latency";
         var playbackAudioLatencyOnly = args.FirstOrDefault() == "--playback-audio-latency";
         var playbackLatencyOnly = args.FirstOrDefault() == "--playback-latency" || playbackAudioLatencyOnly;
-        var outputArgument = previewLatencyOnly || playbackLatencyOnly ? args.Skip(1).FirstOrDefault() : textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var outputArgument = previewLatencyOnly || playbackLatencyOnly ? args.Skip(1).FirstOrDefault() : textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || brandingOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -41,6 +42,7 @@ internal static class Program
             : errorRecoveryOnly ? "artifacts/validation/error-recovery-offscreen"
             : trayMenuWindowOnly ? "artifacts/validation/tray-menu-window-offscreen"
             : playbackLatencyOnly ? "artifacts/validation/playback-latency-offscreen"
+            : brandingOnly ? "artifacts/validation/dogsc-branding-offscreen"
             : bundledResourcesOnly ? "artifacts/validation/bundled-resource-locator-offscreen"
             : windowSourceFilterOnly ? "artifacts/validation/window-source-filter-offscreen"
             : textBoxEditMenuOnly ? "artifacts/validation/textbox-edit-menu-offscreen" : "artifacts/validation/theme-offscreen"));
@@ -49,6 +51,18 @@ internal static class Program
         var checks = new List<object>();
         var app = new App(startDesktop: false) { ShutdownMode = ShutdownMode.OnExplicitShutdown };
         app.InitializeComponent();
+        if (brandingOnly)
+        {
+            DogSCBrandingProbe.Verify(app, output, Check);
+            File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+            {
+                Passed = true,
+                Scope = "DogSC 产品元数据、About 完整内容的浅深主题离屏截图与布局边界、原仓库链接和旧 FrameTrail/DogSC 图标路径兼容；不显示窗口、不访问桌面或用户数据",
+                Checks = checks
+            }, new JsonSerializerOptions { WriteIndented = true }));
+            Console.WriteLine($"PASS: {checks.Count} DogSC branding checks; {output}");
+            return 0;
+        }
         // Suppress desktop startup even when a probe pumps the dispatcher.
         MainWindow? window = null;
         try
@@ -190,7 +204,7 @@ internal static class Program
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     Passed = true,
-                    Scope = "窗口来源过滤纯函数：按当前进程 ID 和主窗口句柄排除 FrameTrail 自身浮窗，支持主编辑器开关并保留外部同名窗口",
+                    Scope = "窗口来源过滤纯函数：按当前进程 ID 和主窗口句柄排除 DogSC 自身浮窗，支持主编辑器开关并保留外部同名窗口",
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} window capture source filter checks; {output}");

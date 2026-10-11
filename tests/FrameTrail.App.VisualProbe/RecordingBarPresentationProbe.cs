@@ -79,8 +79,8 @@ internal static class RecordingBarPresentationProbe
                         if (mark is null || menu is null || pause is null || end is null)
                             continue;
 
-                        check(menu.Width == 38 && menu.Height == 38 && menu.ToolTip?.ToString() == "FrameTrail 菜单" &&
-                              AutomationProperties.GetName(menu) == "FrameTrail 菜单",
+                        check(menu.Width == 38 && menu.Height == 38 && menu.ToolTip?.ToString() == "DogSC 菜单" &&
+                              AutomationProperties.GetName(menu) == "DogSC 菜单",
                             $"{theme}/{shortcut.Name}: menu button has the expected size and accessible label",
                             new { menu.Width, menu.Height, ToolTip = menu.ToolTip?.ToString(), Name = AutomationProperties.GetName(menu) });
 

@@ -93,6 +93,9 @@ try {
         $trayMenuOutput = Join-Path $repoRoot ('artifacts/validation/tray-menu-window-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --tray-menu-window $trayMenuOutput
         if ($LASTEXITCODE -ne 0) { throw "托盘菜单布局、命令与工作区定位检查失败，退出码 $LASTEXITCODE" }
+        $brandingOutput = Join-Path $repoRoot ('artifacts/validation/dogsc-branding-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --branding $brandingOutput
+        if ($LASTEXITCODE -ne 0) { throw 'DogSC 品牌元数据、上游图标与主题检查失败。' }
         Write-Host 'WPF离屏与隐藏 HWND 检查完成，未显示桌面窗口或访问采集设备；真实交互仍须单独验收。'
     }
 

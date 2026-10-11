@@ -450,7 +450,7 @@ internal static class AuxiliaryRelinkSmoke
         while (watch.Elapsed < timeout)
         {
             var window = AutomationElement.RootElement.FindAll(TreeScope.Children, Condition.TrueCondition).Cast<AutomationElement>()
-                .FirstOrDefault(x => Safe(() => x.Current.ProcessId) == processId && Safe(() => x.Current.ControlType) == ControlType.Window && Safe(() => x.Current.Name).Contains("FrameTrail", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(x => Safe(() => x.Current.ProcessId) == processId && Safe(() => x.Current.ControlType) == ControlType.Window && Safe(() => x.Current.Name).Contains("DogSC", StringComparison.OrdinalIgnoreCase));
             if (window is not null) return window;
             await Task.Delay(100);
         }
@@ -540,7 +540,7 @@ internal static class AuxiliaryRelinkSmoke
     {
         var start = new ProcessStartInfo(appPath) { UseShellExecute = false };
         foreach (var arg in args) start.ArgumentList.Add(arg);
-        return Process.Start(start) ?? throw new InvalidOperationException("无法启动FrameTrail重链接测试进程。");
+        return Process.Start(start) ?? throw new InvalidOperationException("无法启动DogSC重链接测试进程。");
     }
 
     private static void Close(Process process)

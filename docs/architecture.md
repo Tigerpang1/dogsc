@@ -1,6 +1,6 @@
-# FrameTrail Windows 工程架构
+# DogSC Windows 工程架构
 
-FrameTrail 0.2.3 是 DogSC 原生 macOS 工具的 Windows 开发候选，发行包运行验收尚未完成。上游源码用于核对行为与导入字段，固定审计基线为 `upstream/dogsc` 提交 `e207d11b111c5e58152238fb64115b2009850547`，采用 MIT 许可。Windows 工程使用独立产品标识、项目格式和应用资源。
+本工程是 [神烦老狗的 DogSC](https://github.com/laogou717/dogsc) 的 Windows 社区移植版，0.2.17 沿用原名称、图标与 Logo。固定上游基线为 `upstream/dogsc` 提交 `e207d11b111c5e58152238fb64115b2009850547`，采用 MIT 许可。`FrameTrail.*` 技术项目标识、既有工程格式与数据目录保留兼容性；当前发布状态见 [`release-preparation.md`](release-preparation.md)。以下架构以原迁移记录为基础，历史验收仅适用于所述版本。
 
 ## 技术边界
 

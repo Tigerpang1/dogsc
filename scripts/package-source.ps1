@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.5',
+    [string]$Version = '0.2.17',
     [string]$UpstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 )
 
@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $upstreamRoot = Join-Path $repoRoot 'upstream/dogsc'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
-$output = Join-Path $releaseRoot "FrameTrail-$Version-source.zip"
+$output = Join-Path $releaseRoot "DogSC-$Version-source.zip"
 . (Join-Path $PSScriptRoot 'source-provenance.ps1')
 $provenance = Get-FrameTrailSourceProvenance -RepositoryRoot $repoRoot -UpstreamBaseSha $UpstreamBaseSha -RequireGitCheckout
 $head = $provenance.Head

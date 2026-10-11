@@ -79,7 +79,7 @@ internal static class PngOverlayUndoSmoke
             Check(openedAddMenu, "打开添加元素菜单", openedAddMenu ? "通过主窗口中的真实工具栏按钮打开菜单。" : "未找到或无法调用“添加元素”按钮。");
             var addSticker = WaitForOwnedElement(app.Id, "添加贴图…", ControlType.MenuItem, TimeSpan.FromSeconds(5));
             var openedDialog = addSticker is not null && invoke(addSticker);
-            Check(openedDialog, "调用真实贴图导入命令", openedDialog ? "菜单项为当前 FrameTrail 进程拥有。" : "未找到“添加贴图…”菜单项。");
+            Check(openedDialog, "调用真实贴图导入命令", openedDialog ? "菜单项为当前 DogSC 进程拥有。" : "未找到“添加贴图…”菜单项。");
             if (!openedDialog) throw new InvalidOperationException("贴图菜单命令未执行。");
 
             var dialog = await WaitForNativeDialogAsync(app.Id, (IntPtr)window.Current.NativeWindowHandle, TimeSpan.FromSeconds(30));
@@ -167,7 +167,7 @@ internal static class PngOverlayUndoSmoke
 
             var closed = CloseOwnedProcess(reopened);
             reopened = null;
-            Check(closed, "重开实例正常关闭", "只关闭本测试启动的 FrameTrail 进程。");
+            Check(closed, "重开实例正常关闭", "只关闭本测试启动的 DogSC 进程。");
             if (!closed) throw new TimeoutException("重开实例没有正常关闭。");
             var closedStateUnchanged = ReadOverlayCollectionText(projectPath) == baselineJson
                 && File.Exists(copiedAssetPath) && Hash(copiedAssetPath) == sourceHash;
@@ -200,7 +200,7 @@ internal static class PngOverlayUndoSmoke
     {
         var start = new ProcessStartInfo(appPath) { UseShellExecute = false };
         foreach (var arg in args) start.ArgumentList.Add(arg);
-        return Process.Start(start) ?? throw new InvalidOperationException("无法启动 FrameTrail 测试实例。");
+        return Process.Start(start) ?? throw new InvalidOperationException("无法启动 DogSC 测试实例。");
     }
 
     private static bool CloseOwnedProcess(Process process)
@@ -462,7 +462,7 @@ internal static class PngOverlayUndoSmoke
             Application = Path.GetFullPath(appPath),
             ProductVersion = info.ProductVersion,
             ApplicationSha256 = File.Exists(appPath) ? Hash(appPath) : "",
-            FrameTrailDllSha256 = File.Exists(Path.Combine(Path.GetDirectoryName(appPath)!, "FrameTrail.dll")) ? Hash(Path.Combine(Path.GetDirectoryName(appPath)!, "FrameTrail.dll")) : "",
+            FrameTrailDllSha256 = File.Exists(Path.Combine(Path.GetDirectoryName(appPath)!, "DogSC.dll")) ? Hash(Path.Combine(Path.GetDirectoryName(appPath)!, "DogSC.dll")) : "",
             BuildInfo = File.Exists(buildInfoPath) ? File.ReadAllText(buildInfoPath) : "missing",
             Project = Path.GetFullPath(projectPath),
             SourcePng = Path.GetFullPath(pngPath),

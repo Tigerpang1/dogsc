@@ -54,7 +54,7 @@ internal sealed class DesktopInstance : IDisposable
         using var identity = WindowsIdentity.GetCurrent();
         var sid = identity.User?.Value;
         if (string.IsNullOrWhiteSpace(sid))
-            throw new InvalidOperationException("无法读取当前 Windows 用户 SID，不能安全确定 FrameTrail 单实例标识。");
+            throw new InvalidOperationException("无法读取当前 Windows 用户 SID，不能安全确定 DogSC 单实例标识。");
 
         var identityHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(sid))).ToLowerInvariant();
         using var process = Process.GetCurrentProcess();
@@ -81,7 +81,7 @@ internal sealed class DesktopInstance : IDisposable
         catch (Exception ex)
         {
             instanceMutex?.Dispose();
-            throw new InvalidOperationException("无法创建或取得 FrameTrail 单实例互斥锁。", ex);
+            throw new InvalidOperationException("无法创建或取得 DogSC 单实例互斥锁。", ex);
         }
     }
 
@@ -92,9 +92,9 @@ internal sealed class DesktopInstance : IDisposable
         VerifyDispatcher();
         ThrowIfDisposed();
         if (!IsPrimary)
-            throw new InvalidOperationException("只有 FrameTrail 主实例可以启动唤回管道。");
+            throw new InvalidOperationException("只有 DogSC 主实例可以启动唤回管道。");
         if (listenerCancellation is not null)
-            throw new InvalidOperationException("FrameTrail 唤回管道已经启动。");
+            throw new InvalidOperationException("DogSC 唤回管道已经启动。");
 
         var cancellation = new CancellationTokenSource();
         listenerCancellation = cancellation;

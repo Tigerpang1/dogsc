@@ -31,7 +31,7 @@ if (!InteractiveDesktopGuard.HasExplicitConsent(args))
 }
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <FrameTrail.exe> <project.frametrail> [report.json] --interactive-desktop [--fit-work-area|--verify-startup-placement] [--reopen-only|--transient-surfaces-only]");
+    Console.Error.WriteLine("用法：FrameTrail.App.Smoke.exe <DogSC.exe> <project.frametrail> [report.json] --interactive-desktop [--fit-work-area|--verify-startup-placement] [--reopen-only|--transient-surfaces-only]");
     return 2;
 }
 
@@ -69,7 +69,7 @@ void AddResult(StepResult result)
 }
 try
 {
-    if (!File.Exists(appPath)) throw new FileNotFoundException("找不到 FrameTrail 应用程序。", appPath);
+    if (!File.Exists(appPath)) throw new FileNotFoundException("找不到 DogSC 应用程序。", appPath);
     if (!File.Exists(sourceProject)) throw new FileNotFoundException("找不到测试项目。", sourceProject);
     Directory.CreateDirectory(testRoot);
     WriteUserDataSnapshot(userDataSnapshotPath, userDataSnapshots);
@@ -116,10 +116,10 @@ try
     }
 
     app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", projectCopyFile } })
-        ?? throw new InvalidOperationException("无法启动 FrameTrail。");
+        ?? throw new InvalidOperationException("无法启动 DogSC。");
     var window = WaitForWindow(app, TimeSpan.FromSeconds(35));
     AddResult(new("应用启动并加载项目", window is not null, window is null ? "未找到该进程的主窗口。" : "已通过进程窗口句柄读取 UI Automation 树。"));
-    if (window is null) throw new TimeoutException("FrameTrail 主窗口未出现。");
+    if (window is null) throw new TimeoutException("DogSC 主窗口未出现。");
     var startupReady = args.Contains("--wait-for-foreground", StringComparer.Ordinal)
         ? InteractiveDesktopGuard.WaitForTargetForegroundAtStartup((IntPtr)window.Current.NativeWindowHandle, TimeSpan.FromSeconds(180))
         : InteractiveDesktopGuard.ActivateTargetOnceAtStartup((IntPtr)window.Current.NativeWindowHandle);
@@ -705,7 +705,7 @@ try
 catch (SmokeEarlyExitException) { }
 catch (ApplicationErrorDialogException ex)
 {
-    AddResult(new("FrameTrail 错误对话框已中止测试", false, ex.Message));
+    AddResult(new("DogSC 错误对话框已中止测试", false, ex.Message));
 }
 catch (Exception ex)
 {
@@ -1258,7 +1258,7 @@ static void RunRelinkOnly(string appPath, string sourceProject, string isolatedP
     var originalHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(originalMedia)));
     File.Delete(missingCopy);
     var app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", isolatedProject } })
-        ?? throw new InvalidOperationException("无法启动 FrameTrail。");
+        ?? throw new InvalidOperationException("无法启动 DogSC。");
     try
     {
         var dialog = WaitForWindowName(app.Id, "素材缺失：请选择原视频", TimeSpan.FromSeconds(20));
@@ -1288,7 +1288,7 @@ static void RunRelinkOnly(string appPath, string sourceProject, string isolatedP
             if (!app.WaitForExit(5000)) { app.Kill(entireProcessTree: true); app.WaitForExit(); }
             app.Dispose();
             app = Process.Start(new ProcessStartInfo(appPath) { UseShellExecute = false, ArgumentList = { "--open", isolatedProject } })
-                ?? throw new InvalidOperationException("无法重新启动 FrameTrail 验证重开。");
+                ?? throw new InvalidOperationException("无法重新启动 DogSC 验证重开。");
             var reopenedDialog = WaitForWindowName(app.Id, "素材缺失：请选择原视频", TimeSpan.FromSeconds(3));
             var reopened = reopenedDialog is null ? WaitForMainWindow(app.Id, TimeSpan.FromSeconds(20)) : null;
             var reopenedTitle = reopened is null ? null : WaitForProjectTitle(reopened, TimeSpan.FromSeconds(15));
@@ -2080,7 +2080,7 @@ static bool SpinWaitUntil(Func<bool> condition, TimeSpan timeout)
 static AutomationElement? WaitForMainWindow(int processId, TimeSpan timeout)
 {
     InteractiveDesktopGuard.BindTargetProcess(processId);
-    return WaitForWindowName(processId, "FrameTrail", timeout);
+    return WaitForWindowName(processId, "DogSC", timeout);
 }
 static AutomationElement? FindById(AutomationElement root, string id) => root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.AutomationIdProperty, id));
 static AutomationElement? FindNamed(AutomationElement root, string name) => root.FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, name));
@@ -2160,7 +2160,7 @@ static bool RestoreUserDataSnapshot(string snapshotDirectory, out string message
             if (!RestoreUserFile(target, content))
             { message = $"恢复或校验失败：{target}"; return false; }
         }
-        message = $"已从 {path} 恢复并核对四个 FrameTrail 用户数据文件。";
+        message = $"已从 {path} 恢复并核对四个 DogSC 用户数据文件。";
         return true;
     }
     catch (Exception ex) { message = $"恢复失败：{ex.GetType().Name}: {ex.Message}"; return false; }
@@ -2566,7 +2566,7 @@ static void ThrowIfApplicationErrorDialog(int processId)
     if (dialog is null) return;
     var text = string.Join(" | ", dialog.FindAll(TreeScope.Descendants, System.Windows.Automation.Condition.TrueCondition)
         .Cast<AutomationElement>().Select(SafeName).Where(x => !string.IsNullOrWhiteSpace(x)).Take(8));
-    throw new ApplicationErrorDialogException($"FrameTrail 弹出错误对话框：{text}");
+    throw new ApplicationErrorDialogException($"DogSC 弹出错误对话框：{text}");
 }
 static void TestMemoPersistence(AutomationElement mainWindow, int processId, List<StepResult> results)
 {
@@ -2581,7 +2581,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
     Thread.Sleep(250);
     var launcher = FindButtonByHint(mainWindow, "打开录制工具");
     var openedRecorder = launcher is not null && TryClickPhysical(launcher);
-    var recorderWindow = openedRecorder ? WaitForWindowName(processId, "FrameTrail · 录制", TimeSpan.FromSeconds(4)) : null;
+    var recorderWindow = openedRecorder ? WaitForWindowName(processId, "DogSC · 录制", TimeSpan.FromSeconds(4)) : null;
     var memoButton = recorderWindow is null ? null : FindButtonByHint(recorderWindow, "备忘录");
     var openedMemo = memoButton is not null && TryClickPhysical(memoButton);
     var memo = openedMemo ? WaitForWindowName(processId, "本机备忘录", TimeSpan.FromSeconds(4)) : null;
@@ -2594,7 +2594,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
 
     var edits = memo.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Edit)).Cast<AutomationElement>().ToArray();
     var sliders = memo.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Slider)).Cast<AutomationElement>().ToArray();
-    const string marker = "FrameTrail UIA memo persistence fixture";
+    const string marker = "DogSC UIA memo persistence fixture";
     var textSet = false; var sizeSet = false; var opacitySet = false;
     try { textSet = edits.Length > 0 && TrySetValue(edits[0], marker); } catch { }
     try { sizeSet = sliders.Length > 0 && SetRangeValue(sliders[0], 32); } catch { }
@@ -2610,7 +2610,7 @@ static void TestMemoPersistence(AutomationElement mainWindow, int processId, Lis
         AddStep(results, new("备忘录移动、字号与透明度保存重启", false, "备忘录未能通过窗口关闭请求正常关闭，停止重复打开步骤。"));
         return;
     }
-    recorderWindow = WaitForWindowName(processId, "FrameTrail · 录制", TimeSpan.FromSeconds(3));
+    recorderWindow = WaitForWindowName(processId, "DogSC · 录制", TimeSpan.FromSeconds(3));
     var reopenedRecorder = recorderWindow is not null;
     memoButton = recorderWindow is null ? null : FindButtonByHint(recorderWindow, "备忘录");
     var reopened = memoButton is not null && TryClickPhysical(memoButton) ? WaitForWindowName(processId, "本机备忘录", TimeSpan.FromSeconds(4)) : null;

@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.5', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly, [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RestorePreferencesSnapshot)
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '0.2.17', [switch]$SkipInstallation, [switch]$InteractiveDesktop, [switch]$ContentOnly, [ValidatePattern('^[0-9a-fA-F]{32}$')][string]$RestorePreferencesSnapshot)
 
 $ErrorActionPreference = 'Stop'
 if (-not $ContentOnly -and -not $InteractiveDesktop -and -not $RestorePreferencesSnapshot) {
@@ -7,7 +7,7 @@ if (-not $ContentOnly -and -not $InteractiveDesktop -and -not $RestorePreference
 }
 if ($RestorePreferencesSnapshot -and $ContentOnly) { throw '偏好恢复入口不能与 -ContentOnly 同时使用。' }
 $repo = Split-Path -Parent $PSScriptRoot
-$release = Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64"
+$release = Join-Path $repo "artifacts/release/DogSC-$Version-win-x64"
 $validation = Join-Path $repo "artifacts/validation/package-$Version"
 $null = New-Item -ItemType Directory -Path $validation -Force
 $preferenceSnapshotId = [guid]::NewGuid().ToString('N')
@@ -226,12 +226,23 @@ try {
         $report.PreferenceRecoveryCommand = Get-PreferenceRecoveryCommand $preferenceSnapshotId
         $report.Checks += [ordered]@{ Id='preferences-snapshot'; Name='交互验收前保存四个固定用户偏好文件的原始字节与存在状态'; Passed=$true; SnapshotId=$preferenceSnapshotId }
     }
-    $exe = Join-Path $release 'app/FrameTrail.exe'
+    $exe = Join-Path $release 'app/DogSC.exe'
     $sample = Join-Path $release 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
-    foreach ($path in @($exe, $sample, (Join-Path $release 'app/coreclr.dll'), (Join-Path $release 'app/hostfxr.dll'), (Join-Path $release 'app/hostpolicy.dll'), (Join-Path $release 'app/FrameTrail.runtimeconfig.json'), (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
+    foreach ($path in @($exe, (Join-Path $release 'app/DogSC.dll'), (Join-Path $release 'app/DogSC.deps.json'), (Join-Path $release 'app/DogSC.runtimeconfig.json'), $sample, (Join-Path $release 'app/coreclr.dll'), (Join-Path $release 'app/hostfxr.dll'), (Join-Path $release 'app/hostpolicy.dll'), (Join-Path $release 'app/tools/ffmpeg/ffmpeg.exe'), (Join-Path $release 'app/tools/ffmpeg/ffprobe.exe'), (Join-Path $release 'README.md'), (Join-Path $release 'docs/assets/DogSC.png'), (Join-Path $release 'LICENSE'), (Join-Path $release 'licenses/DogSC-MIT.txt'), (Join-Path $release 'licenses/DogSCWindows-MIT.txt'))) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
-    $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+    if (-not (Get-Content -LiteralPath (Join-Path $release 'README.md') -Raw).Contains('docs/assets/DogSC.png')) {
+        throw '便携 README 未引用随包复制的 DogSC 品牌图标。'
+    }
+    $appInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo($exe)
+    if ($appInfo.ProductName -ne 'DogSC' -or $appInfo.FileVersion -ne "$Version.0" -or
+        $appInfo.LegalCopyright -notlike '*神烦老狗*') { throw '主程序品牌、版本或原作者署名不匹配。' }
+    $logoHash = (Get-FileHash -LiteralPath (Join-Path $release 'docs/assets/DogSC.png') -Algorithm SHA256).Hash
+    if ($logoHash -ne '1F1A16C58905C0901D408F3D3DF39CCCA5070C34C820A8BD6B0255230E554AF8') { throw '随包 Logo 与固定 DogSC 原图不一致。' }
+    if ((Get-FileHash -LiteralPath (Join-Path $release 'licenses/DogSC-MIT.txt')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $repo 'upstream/dogsc/LICENSE')).Hash) { throw '随包 MIT 声明与原仓库不一致。' }
+    $report.Checks += [ordered]@{ Id='dogsc-branding'; Name='DogSC 产品名、版本、原作者版权、原版 Logo 哈希与上游 MIT 声明一致'; Passed=$true }
+    $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/DogSC-$Version-win-x64.zip") $release
     if ([version]$Version -ge [version]'0.2.14') {
         $libavRoot = Join-Path $release 'app/tools/libav'
         $libavProvenance = Get-Content -LiteralPath (Join-Path $libavRoot 'provenance.json') -Raw | ConvertFrom-Json
@@ -267,12 +278,13 @@ try {
         if (Test-Path -LiteralPath $registry) { throw '存在已安装的 FrameTrail；为保留用户安装，本次跳过自动覆盖。' }
         $install = Join-Path $validation "installed-$preferenceSnapshotId"
         if (Test-Path -LiteralPath $install) { throw "安装验证目录已存在，请使用新的版本或手动检查：$install" }
-        $installer = Join-Path $repo "artifacts/release/FrameTrail-Setup-$Version-win-x64.exe"
+        $installer = Join-Path $repo "artifacts/release/DogSC-Setup-$Version-win-x64.exe"
         Run-OwnedProcess $installer @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$install", "/LOG=$(Join-Path $validation "install-$preferenceSnapshotId.log")") $false 300
         $registration = Get-ItemProperty -LiteralPath $registry
         $registeredPath = [IO.Path]::GetFullPath($registration.InstallLocation).TrimEnd('\')
         if ($registeredPath -ne [IO.Path]::GetFullPath($install).TrimEnd('\')) { throw "安装注册路径不匹配：$registeredPath" }
-        $installedExe = Join-Path $install 'FrameTrail.exe'
+        if (-not (Test-Path -LiteralPath (Join-Path $install 'docs/assets/DogSC.png') -PathType Leaf)) { throw '安装版缺少 README 引用的 DogSC 图标。' }
+        $installedExe = Join-Path $install 'DogSC.exe'
         $installedSample = Join-Path $install 'samples/FrameTrail-Demo/FrameTrail-Demo.frametrail'
         $installedPlaybackSample = Copy-SampleProjectForPlayback $installedSample (Join-Path $validation "installed-playback-sample-$preferenceSnapshotId")
         $installedReport = Join-Path $validation 'installed-playback.json'
@@ -284,7 +296,7 @@ try {
         $report.Checks += [ordered]@{ Id='installed-uninstall'; Name='卸载清除本次安装程序与 HKCU 注册项'; Passed=$true }
     }
     }
-    $report.Artifacts = @(foreach ($artifactName in @("FrameTrail-$Version-win-x64.zip", "FrameTrail-Setup-$Version-win-x64.exe")) {
+    $report.Artifacts = @(foreach ($artifactName in @("DogSC-$Version-win-x64.zip", "DogSC-Setup-$Version-win-x64.exe")) {
         $artifact = Get-Item -LiteralPath (Join-Path $repo "artifacts/release/$artifactName")
         [ordered]@{ Name=$artifact.Name; Bytes=$artifact.Length; SHA256=(Get-FileHash -LiteralPath $artifact.FullName -Algorithm SHA256).Hash }
     })
@@ -308,7 +320,7 @@ finally {
     }
     $portableArchiveUnchanged = $true
     if ($portableArchiveBaselineVerified) {
-        $portableArchiveUnchanged = Record-PortableArchiveUnchanged (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+        $portableArchiveUnchanged = Record-PortableArchiveUnchanged (Join-Path $repo "artifacts/release/DogSC-$Version-win-x64.zip") $release
         if (-not $portableArchiveUnchanged) { $report.Passed = $false }
     }
     $report.CompletedUtc = [DateTime]::UtcNow.ToString('O')

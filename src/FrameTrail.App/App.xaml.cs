@@ -36,7 +36,7 @@ public partial class App : Application
             {
                 if (!await desktopInstance.SendToPrimaryAsync(e.Args, CancellationToken.None))
                 {
-                    var message = SurfaceDialog.Create(null, "FrameTrail 已在运行，但暂时没有响应。请从任务栏通知区域打开 FrameTrail，稍后再试。", "FrameTrail 正在运行", MessageBoxButton.OK, _ => { });
+                    var message = SurfaceDialog.Create(null, "DogSC 已在运行，但暂时没有响应。请从任务栏通知区域打开 DogSC，稍后再试。", "DogSC 正在运行", MessageBoxButton.OK, _ => { });
                     message.WindowStartupLocation = WindowStartupLocation.CenterScreen;
                     message.ShowInTaskbar = true;
                     message.ShowDialog();
@@ -57,7 +57,7 @@ public partial class App : Application
             Log(error);
             if (desktopInstance is { IsPrimary: false })
             {
-                var message = SurfaceDialog.Create(null, "未能唤回正在运行的 FrameTrail：" + error.Message, "FrameTrail 正在运行", MessageBoxButton.OK, _ => { });
+                var message = SurfaceDialog.Create(null, "未能唤回正在运行的 DogSC：" + error.Message, "DogSC 正在运行", MessageBoxButton.OK, _ => { });
                 message.WindowStartupLocation = WindowStartupLocation.CenterScreen;
                 message.ShowInTaskbar = true;
                 message.ShowDialog();

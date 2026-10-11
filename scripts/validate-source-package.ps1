@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$SourceZip,
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.5',
+    [string]$Version = '0.2.17',
     [ValidateRange(60, 7200)]
     [int]$TestTimeoutSeconds = 3600,
     [ValidateRange(60, 7200)]
@@ -320,13 +320,13 @@ try {
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
         -WorkingDirectory $repoRoot -TimeoutSeconds $PackageTimeoutSeconds
 
-    $publishedScreenRecorderLib = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/app/ScreenRecorderLib.dll"
+    $publishedScreenRecorderLib = Join-Path $repoRoot "artifacts/release/DogSC-$Version-win-x64/app/ScreenRecorderLib.dll"
     if (Test-Path -LiteralPath $publishedScreenRecorderLib -PathType Leaf) {
         $publishedScreenRecorderLibHash = (Get-FileHash -LiteralPath $publishedScreenRecorderLib -Algorithm SHA256).Hash.ToUpperInvariant()
         $run.screenRecorderLib.publishedDllPath = $publishedScreenRecorderLib
         $run.screenRecorderLib.publishedDllSha256 = $publishedScreenRecorderLibHash
         $run.screenRecorderLib.publishedDllMatches = $publishedScreenRecorderLibHash -eq $run.screenRecorderLib.testedDllSha256
-        $publishedMaterials = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/licenses/ScreenRecorderLib-source"
+        $publishedMaterials = Join-Path $repoRoot "artifacts/release/DogSC-$Version-win-x64/licenses/ScreenRecorderLib-source"
         $publishedNames = @('ScreenRecorderLib-v7.0.1-source.zip', 'first-frame-wgc.patch', 'README.md', 'provenance.json', 'LICENSE')
         $publishedMaterialsPassed = $true
         foreach ($name in $publishedNames) {
@@ -341,7 +341,7 @@ try {
         $run.screenRecorderLib.publishedMaterialsVerified = $publishedMaterialsPassed
     }
 
-    $buildInfoPath = Join-Path $repoRoot "artifacts/release/FrameTrail-$Version-win-x64/BUILD-INFO.txt"
+    $buildInfoPath = Join-Path $repoRoot "artifacts/release/DogSC-$Version-win-x64/BUILD-INFO.txt"
     if (Test-Path -LiteralPath $buildInfoPath -PathType Leaf) {
         $buildInfo = Get-Content -LiteralPath $buildInfoPath -Raw
         $sourceKindMatch = [regex]::Match($buildInfo, '(?m)^源码类型：(.+)\r?$')

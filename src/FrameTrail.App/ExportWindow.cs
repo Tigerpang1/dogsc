@@ -364,8 +364,8 @@ public sealed partial class ExportWindow : Window
     private static string SafeStem(string text)
     {
         var invalid = Path.GetInvalidFileNameChars().ToHashSet();
-        var cleaned = new string((string.IsNullOrWhiteSpace(text) ? "FrameTrail" : text).Select(c => invalid.Contains(c) ? '-' : c).ToArray()).Trim().TrimEnd('.');
-        return cleaned.Length == 0 ? "FrameTrail" : cleaned;
+        var cleaned = new string((string.IsNullOrWhiteSpace(text) ? "DogSC" : text).Select(c => invalid.Contains(c) ? '-' : c).ToArray()).Trim().TrimEnd('.');
+        return cleaned.Length == 0 ? "DogSC" : cleaned;
     }
 
     private void ChooseOutputPath()

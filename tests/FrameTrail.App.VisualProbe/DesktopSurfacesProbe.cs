@@ -51,7 +51,7 @@ internal static class DesktopSurfacesProbe
                     item.Rect.Width > 0 && item.Rect.Height > 0);
                 check(contained, $"{theme}: every interactive recorder control fits inside the 818×80 surface", bounds);
 
-                var requiredNames = new[] { "口播提词器", "打开编辑器", "FrameTrail 菜单", "收起录制工具" };
+                var requiredNames = new[] { "口播提词器", "打开编辑器", "DogSC 菜单", "收起录制工具" };
                 var names = buttons.Select(AutomationProperties.GetName).ToArray();
                 check(requiredNames.All(names.Contains), $"{theme}: teleprompter, editor, menu, and collapse actions exist", names);
                 check(recorder.Owner is null, $"{theme}: recorder window has no editor owner", recorder.Owner?.Title);

@@ -1,15 +1,17 @@
-# FrameTrail 构建与发行
+# DogSC Windows 社区移植版构建与发行
 
-## 项目参数
+## 品牌与项目参数
 
-- 产品名：FrameTrail（Windows 迁移工程内部代号）
-- 版本：0.2.5（本机交互包验收8/8、源码归档验证通过；未公开发布）
+本仓库维护 DogSC Windows 社区移植版，沿用原项目名称和品牌素材。此品牌恢复按本轮维护者明确指令执行，优先于本文件中较早的迁移品牌隔离规则；产品对外须注明“Windows 社区移植版”，不表示原作者官方发布或背书。原项目作者为神烦老狗，许可证为 MIT，固定上游提交为 `e207d11b111c5e58152238fb64115b2009850547`。图标来源为 `upstream/dogsc/Resources/AppIconMaster.png`。
+
+- 产品名：DogSC · Windows 社区移植版（兼容性技术标识仍可能使用 FrameTrail）
+- 目标版本：0.2.17 Beta 准备版；当前发布状态见 [`release-preparation.md`](release-preparation.md)
 - 目标：.NET 10 WPF、`win-x64`、自包含发布目录
-- 主项目：`src/FrameTrail.App/FrameTrail.App.csproj`
-- 发布目录：`artifacts/release/FrameTrail-0.2.5-win-x64/app`
+- 主项目：`src/FrameTrail.App/FrameTrail.App.csproj`（技术项目路径保留 FrameTrail）
+- 0.2.17 发行文件名：`DogSC-0.2.17-win-x64.zip`、`DogSC-Setup-0.2.17-win-x64.exe`、`DogSC-0.2.17-source.zip`
 - 输出：便携目录、ZIP、per-user Inno Setup 安装程序
 
-应用主程序名为 `FrameTrail.exe`。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`，与应用的工具查找路径一致。当前0.2.5包对应源码提交 `e4bfd5ed44deb93272df4d3f52217e3cb8e43420`，固定DogSC上游基线为 `e207d11b111c5e58152238fb64115b2009850547`。便携、安装/卸载和源码ZIP独立构建结果见 `artifacts/release/FrameTrail-0.2.5-manifest.json`；该候选用于本机验收，不表示已公开发布。
+历史发行脚本和清单保留旧版 FrameTrail 路径与命名。当前应用可执行文件和程序集为 `DogSC.exe` 与 `DogSC.dll`；源码项目路径、命名空间和用户数据目录继续使用 FrameTrail 标识。打包脚本使用自包含 `win-x64` 发布，默认把本机 FFmpeg 放入 `app/tools/ffmpeg`。0.2.5 包对应源码提交 `e4bfd5ed44deb93272df4d3f52217e3cb8e43420`，固定 DogSC 上游基线为 `e207d11b111c5e58152238fb64115b2009850547`；其验收记录只属于该历史候选。
 
 ## 构建和测试
 
@@ -30,7 +32,7 @@
 PNG贴图生命周期专项可使用已授权的交互桌面运行：
 
 命令：
-dotnet run --project tests/FrameTrail.App.Smoke/FrameTrail.App.Smoke.csproj -c Release -- <FrameTrail.exe> <project.frametrail> <report.json> --interactive-desktop --png-overlay-undo-only
+dotnet run --project tests/FrameTrail.App.Smoke/FrameTrail.App.Smoke.csproj -c Release -- <DogSC.exe> <project.frametrail> <report.json> --interactive-desktop --png-overlay-undo-only
 
 该模式、测试源码和回归入口是在冻结的0.2.5源码ZIP提交 e4bfd5ed44deb93272df4d3f52217e3cb8e43420 之后新增；冻结源码ZIP不含此模式，不能用该ZIP重现本次UI证据。
 
@@ -49,7 +51,7 @@ validate-package.ps1 使用隔离 PATH、DOTNET_ROOT子进程验证便携播放/
 
 ```powershell
 .\scripts\package-source.ps1
-.\scripts\validate-source-package.ps1 -SourceZip .\artifacts\release\FrameTrail-0.2.5-source.zip
+.\scripts\validate-source-package.ps1 -SourceZip .\artifacts\release\DogSC-0.2.17-source.zip
 .\scripts\write-release-manifest.ps1
 ```
 
@@ -58,19 +60,19 @@ validate-package.ps1 使用隔离 PATH、DOTNET_ROOT子进程验证便携播放/
 没有交互桌面时可先生成后台候选：
 
 ```powershell
-.\scripts\validate-package.ps1 -Version 0.2.5 -ContentOnly
-.\scripts\write-release-manifest.ps1 -Version 0.2.5 -Candidate
+.\scripts\validate-package.ps1 -Version 0.2.17 -ContentOnly
+.\scripts\write-release-manifest.ps1 -Version 0.2.17 -Candidate
 ```
 
-`-ContentOnly` 不启动应用或安装程序，只检查自包含运行库、样例和许可，逐文件核对便携ZIP与发布目录的路径、长度及SHA256，并保存 `content-result.json`。仍须先完成源码归档独立构建验证。`-Candidate` 只写 `FrameTrail-0.2.5-candidate-manifest.json` 和 `FrameTrail-0.2.5-candidate-SHA256SUMS.txt`，状态为 `candidate-awaiting-interactive-validation`；保留上一已验版本的通用清单。候选内容验证不能替代播放、录制、安装卸载或全量UIA。完整清单按稳定编号逐项核对包内容、便携版播放与录制流程、安装版播放、卸载，以及交互前后用户偏好的原始字节保存与恢复；要求每项唯一且通过。`-SkipInstallation` 结果不能生成完整清单。
+`-ContentOnly` 不启动应用或安装程序，只检查自包含运行库、样例和许可，逐文件核对便携ZIP与发布目录的路径、长度及SHA256，并保存 `content-result.json`。仍须先完成源码归档独立构建验证。`-Candidate` 只写 `DogSC-0.2.17-candidate-manifest.json` 和 `DogSC-0.2.17-candidate-SHA256SUMS.txt`，状态为 `candidate-awaiting-interactive-validation`；保留上一已验版本的通用清单。候选内容验证不能替代播放、录制、安装卸载或全量UIA。完整清单按稳定编号逐项核对包内容、便携版播放与录制流程、安装版播放、卸载，以及交互前后用户偏好的原始字节保存与恢复；要求每项唯一且通过。`-SkipInstallation` 结果不能生成完整清单。
 
-该命令把 FrameTrail `git archive HEAD` 和 `upstream/dogsc` 的固定基线 `e207d11b111c5e58152238fb64115b2009850547` 放进同一个 `FrameTrail-0.2.5-source.zip`；上游快照位于 `FrameTrail/upstream/dogsc/`。压缩包内 `FrameTrail/SOURCE-METADATA.json` 记录 FrameTrail HEAD、上游基线和打包时工作区状态。Git 归档只收录提交中的文件，不含未提交修改，也不会打包 `artifacts/`、`bin/`、`obj/` 或真实录制素材。
+当前命令生成 `DogSC-0.2.17-source.zip`，其中仍把 FrameTrail `git archive HEAD` 和 `upstream/dogsc` 固定基线 `e207d11b111c5e58152238fb64115b2009850547` 一并归档；上游快照位于 `FrameTrail/upstream/dogsc/`。压缩包内 `FrameTrail/SOURCE-METADATA.json` 记录源码提交、上游基线和打包时工作区状态。历史 `FrameTrail-0.2.5-source.zip` 的证据和文件名保持原样。Git 归档只收录提交中的文件，不含未提交修改，也不会打包 `artifacts/`、`bin/`、`obj/` 或真实录制素材。
 
 从源码 ZIP 构建时，上游快照已经包含在 `FrameTrail/upstream/dogsc/`，不需要运行 `git submodule update`。从 Git 克隆仓库时，才需要按仓库说明初始化上游 submodule。源码 ZIP 中没有 `.git` 元数据；`package-source.ps1` 只在发行者重新生成源码 ZIP 时需要 Git。 `package.ps1` 仅当源码目录拥有自己的 Git 元数据且Git根目录匹配时读取提交与上游基线；源码 ZIP 构建读取 `SOURCE-METADATA.json`，即使解压在其他Git仓库内部，也不继承父仓库的提交。无 Git 源码归档路径的验证状态以 `artifacts/validation/package-0.2.5/source-validation.json` 为准。
 
-0.2.5本机验证包包含 GPLv3 的 Gyan FFmpeg full static build。当前ZIP和安装程序用于本地功能验证，不得直接公开发布。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
+0.2.5本机验证包包含 GPLv3 的 Gyan FFmpeg full static build。现有 ZIP 和安装程序属于旧版本本地验证产物，不可作为 0.2.17 Beta 发布材料。FFmpeg 是独立子进程，通过命令行处理媒体；该技术边界不免除随静态 GPLv3 构建发行时的许可义务。
 
-当前源获取脚本精确下载 FFmpeg 本体 commit `239f2c733d`；它还没有抓取 Gyan full build 静态包含的全部第三方库源码、精确版本、补丁及构建脚本。公开发行前需补齐完整对应源代码材料，核对许可证/NOTICE，并由发行负责人确认 GPLv3 义务。公共发布流程目前没有启用。
+当前源获取脚本精确下载 FFmpeg 本体 commit `239f2c733d`；它还没有抓取 Gyan full build 静态包含的全部第三方库源码、精确版本、补丁及构建脚本。公开发行前需补齐完整对应源代码材料，核对许可证/NOTICE，并由发行负责人确认 GPLv3 义务。该材料是当前含 FFmpeg 候选包的公开分发阻塞项。是否签名是单独的信任提示与发布者身份选择，不作为绝对发布前提。
 
 可用 `-WithoutFfmpeg` 生成不含该本机 FFmpeg 的打包目录，但依赖 FFmpeg 的导出功能将不可用；这只用于检查其他打包部分。`-SkipInstaller` 用于仅生成发布目录和 ZIP。
 
@@ -78,11 +80,11 @@ validate-package.ps1 使用隔离 PATH、DOTNET_ROOT子进程验证便携播放/
 
 安装器限制 Windows 11 build 22000 及以上的原生 x64 系统，采用 [Inno Setup 的 MinVersion](https://jrsoftware.org/ishelp/topic_setup_minversion.htm) 与 [x64os 架构标识](https://jrsoftware.org/ishelp/topic_archidentifiers.htm)。
 
-安装器使用 Inno Setup，以 `PrivilegesRequired=lowest` 安装到当前用户的 `%LOCALAPPDATA%\Programs\FrameTrail`，仅创建当前用户开始菜单快捷方式，可选桌面快捷方式，卸载信息写入当前用户范围。脚本不会在运行中自动安装或升级机器级组件。
+安装器使用 Inno Setup，以 `PrivilegesRequired=lowest` 安装到当前用户的 `%LOCALAPPDATA%\Programs\DogSC`，仅创建当前用户开始菜单快捷方式，可选桌面快捷方式，卸载信息写入当前用户范围。脚本不会在运行中自动安装或升级机器级组件。
 
 ScreenRecorderLib 需要 Microsoft Visual C++ 2015–2022 Redistributable (x64) 和 Windows Media Foundation。安装器会检测 64 位 VC 运行库注册项；若缺失会显示微软官方链接及说明，用户可以取消安装。它不会静默下载或安装 VC 运行库。Windows N/KN 版可能需要 Media Feature Pack，Windows Server 需要相应的 Media Foundation 组件。
 
-自包含发布目录减少对 .NET Desktop Runtime 的依赖，但不会代替系统级媒体组件。主程序图标由迁移工程自行制作；禁止复用 DogSC 上游图标、商标和应用身份。
+自包含发布目录减少对 .NET Desktop Runtime 的依赖，但不会代替系统级媒体组件。当前可执行文件/程序集和安装目录使用 DogSC 名称；源码项目路径与命名空间、`.frametrail` 工程格式、用户数据目录及历史交付路径继续保留 FrameTrail 兼容标识。Windows 版本由社区维护，必须与原项目 macOS 发行区分。
 
 ## 安装器编译器
 
@@ -90,4 +92,4 @@ ScreenRecorderLib 需要 Microsoft Visual C++ 2015–2022 Redistributable (x64) 
 
 ## 发行检查
 
-发布材料和第三方组件见 [`../licenses/THIRD-PARTY-NOTICES.md`](../licenses/THIRD-PARTY-NOTICES.md)。每次升级 NuGet 版本、FFmpeg 构建、编译开关或发行文件，都要重新审阅许可证清单和构建配置。当前脚本可构建本地验证包；在本机功能、包结构和发行义务验证完成前，不要公开发布包含 GPLv3 FFmpeg 的包。
+发布材料和第三方组件见 [`../licenses/THIRD-PARTY-NOTICES.md`](../licenses/THIRD-PARTY-NOTICES.md)。每次升级 NuGet 版本、FFmpeg 构建、编译开关或发行文件，都要重新审阅许可证清单和构建配置。当前脚本可构建本地验证包；含该 FFmpeg 构建的公开包须等对应源代码与许可证材料补齐、审查完成后再发行；不含 FFmpeg 的构建会失去依赖该工具的录制/导出能力，不能作为等价成品宣传。

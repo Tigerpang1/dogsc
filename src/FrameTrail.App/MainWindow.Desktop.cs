@@ -167,7 +167,7 @@ public partial class MainWindow
             AddMenu(menu, "结束录制", () => Guard(StopRecording));
         }
         menu.Items.Add(new Separator());
-        AddMenu(menu, "退出 FrameTrail", RequestDesktopExitAsync);
+        AddMenu(menu, "退出 DogSC", RequestDesktopExitAsync);
         return menu;
     }
 
@@ -206,17 +206,17 @@ public partial class MainWindow
             if (dialog is not null)
             {
                 dialog.Activate();
-                SurfaceDialog.Show(dialog, "请先完成或关闭当前窗口，再退出 FrameTrail。正在导出时，可先等待完成或点击取消。", "完成当前操作");
+                SurfaceDialog.Show(dialog, "请先完成或关闭当前窗口，再退出 DogSC。正在导出时，可先等待完成或点击取消。", "完成当前操作");
                 return;
             }
         }
         if (capture.State == CaptureState.Starting || recordingFinalizing || operationCancellation is not null)
         {
-            SurfaceDialog.Show(DesktopDialogOwner(), "正在完成当前处理，请稍后再退出。", "FrameTrail 正在处理");
+            SurfaceDialog.Show(DesktopDialogOwner(), "正在完成当前处理，请稍后再退出。", "DogSC 正在处理");
             return;
         }
         if (capture.State is CaptureState.Recording or CaptureState.Paused &&
-            SurfaceDialog.Show(DesktopDialogOwner(), "当前正在录制。结束录制并保存项目后退出？", "退出 FrameTrail", MessageBoxButton.OKCancel,
+            SurfaceDialog.Show(DesktopDialogOwner(), "当前正在录制。结束录制并保存项目后退出？", "退出 DogSC", MessageBoxButton.OKCancel,
                 acceptLabel: "结束并退出", cancelLabel: "继续录制", preferCancel: true) != MessageBoxResult.OK) return;
         desktopExiting = true;
         try

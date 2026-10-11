@@ -1,11 +1,11 @@
 # 第三方组件通知
 
-FrameTrail Windows 迁移工程当前锁定以下直接依赖。安装包应随附本目录的对应许可证文本；随 NuGet 包的传递依赖应在实际集成后重新从 `packages.lock.json`、NuGet 包元数据和发行输出核对。
+DogSC Windows 社区移植工程当前锁定以下直接依赖。安装包应随附本目录的对应许可证文本；随 NuGet 包的传递依赖应在实际集成后重新从 `packages.lock.json`、NuGet 包元数据和发行输出核对。
 
 | 组件 | 版本 | 许可证 | 用途及来源 |
 |---|---:|---|---|
-| DogSC 上游源代码 | `e207d11b111c5e58152238fb64115b2009850547` | MIT | 迁移参考来源；完整上游许可见 [`DogSC-MIT.txt`](DogSC-MIT.txt)。Windows 程序不沿用 DogSC 品牌或图标。 |
-| dogscwindows Windows 适配参考 | `3bdcf00d4eb12a107c093e98aac7a894aedd2843` | MIT | 参考并移植自动镜头弹簧跟随、系统光标形态/热点处理，参考颜色往返测量方法；来源 [xiaoying8666/dogscwindows](https://github.com/xiaoying8666/dogscwindows)，完整原仓库许可及署名见 [`DogSCWindows-MIT.txt`](DogSCWindows-MIT.txt)。Windows 适配由该仓库维护者贡献，不表示原作者参与 FrameTrail。 |
+| DogSC 上游源代码与原应用图标 | `e207d11b111c5e58152238fb64115b2009850547` | MIT | 原项目 [laogou717/dogsc](https://github.com/laogou717/dogsc)，原作者神烦老狗。沿用 DogSC 名称和原版图标，明确标注 Windows 社区移植版；完整上游许可见 [`DogSC-MIT.txt`](DogSC-MIT.txt)，图标原文件、哈希和转换方法见 [`DogSC-ASSETS.md`](DogSC-ASSETS.md)。不表示原作者官方发布此 Windows 版本。 |
+| dogscwindows Windows 适配参考 | `3bdcf00d4eb12a107c093e98aac7a894aedd2843` | MIT | 参考并移植自动镜头弹簧跟随、系统光标形态/热点处理，参考颜色往返测量方法；来源 [xiaoying8666/dogscwindows](https://github.com/xiaoying8666/dogscwindows)，完整原仓库许可及署名见 [`DogSCWindows-MIT.txt`](DogSCWindows-MIT.txt)。Windows 适配由该仓库维护者贡献，与原 DogSC 作者的贡献分别署名。 |
 | Alibaba PuHuiTi 3.0 Regular / Medium / SemiBold | 上游锁定 OTF 文件 | 阿里巴巴普惠体使用许可 | 界面字体，未经修改嵌入应用；完整声明见 [`Alibaba-PuHuiTi-3-LICENSE.txt`](Alibaba-PuHuiTi-3-LICENSE.txt)。原文件及校验值保存在 `upstream/dogsc/Resources/Fonts`。 |
 | ScreenRecorderLib | 7.0.1，固定上游提交 `646383234187efd3854e6b1069612b80c3ab9981`，含 WGC 首帧补丁 | MIT | 录制依赖。实际使用本仓库 [`third_party/ScreenRecorderLib/prebuilt/ScreenRecorderLib.dll`](../third_party/ScreenRecorderLib/prebuilt/ScreenRecorderLib.dll)，SHA-256 `3D366DD95EEDDDE20BF66B6C0CC8B10E5F9BF7C9489E8D0B5AAEE0C838118151`；源码 ZIP、统一补丁和重建脚本见 [`third_party/ScreenRecorderLib/README.md`](../third_party/ScreenRecorderLib/README.md)。许可文本见 [`ScreenRecorderLib-MIT.txt`](ScreenRecorderLib-MIT.txt)。依赖 Visual C++ Redistributable 与 Windows Media Foundation。 |
 | NAudio.Wasapi | 2.2.1 | MIT | WASAPI 系统回环与麦克风独立 WAV 采集；[NuGet 包](https://www.nuget.org/packages/NAudio.Wasapi/2.2.1)，许可文本见 [`NAudio-MIT.txt`](NAudio-MIT.txt)。依赖 Windows Core Audio（WASAPI），不附带本机二进制。 |

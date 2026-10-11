@@ -40,7 +40,7 @@ internal static class MemoSaveRecoveryProbe
 
     private static void VerifyTheme(string output, Action<bool, string, object?> check, bool dark)
     {
-        var fixtureDirectory = Path.Combine(Path.GetTempPath(), "FrameTrail-MemoSaveRecovery-" + Guid.NewGuid().ToString("N"));
+        var fixtureDirectory = Path.Combine(Path.GetTempPath(), "DogSC-MemoSaveRecovery-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureDirectory);
         var textPath = Path.Combine(fixtureDirectory, "memo.txt");
         var settingsPath = MemoStorage.SettingsPath(textPath);

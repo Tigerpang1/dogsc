@@ -38,7 +38,7 @@ internal static class DesktopInstanceProbe
         })
         {
             IsBackground = true,
-            Name = "FrameTrail desktop instance probe"
+            Name = "DogSC desktop instance probe"
         };
         primaryThread.SetApartmentState(ApartmentState.STA);
         primaryThread.Start();

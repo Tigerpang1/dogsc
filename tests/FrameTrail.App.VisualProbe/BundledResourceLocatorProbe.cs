@@ -5,7 +5,7 @@ internal static class BundledResourceLocatorProbe
 {
     internal static void Verify(Action<bool, string, object?> check)
     {
-        var fixtureRoot = Path.Combine(Path.GetTempPath(), "FrameTrail-BundledResourceLocator-" + Guid.NewGuid().ToString("N"));
+        var fixtureRoot = Path.Combine(Path.GetTempPath(), "DogSC-BundledResourceLocator-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixtureRoot);
         try
         {

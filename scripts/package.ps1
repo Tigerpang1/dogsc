@@ -3,9 +3,9 @@ param(
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
     [ValidatePattern('^\d+\.\d+\.\d+$')]
-    [string]$Version = '0.2.5',
+    [string]$Version = '0.2.17',
     [ValidatePattern('^[A-Za-z0-9_.-]+\.exe$')]
-    [string]$ApplicationExeName = 'FrameTrail.exe',
+    [string]$ApplicationExeName = 'DogSC.exe',
     [switch]$WithoutFfmpeg,
     [switch]$SkipInstaller
 )
@@ -16,13 +16,13 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
 $licenseRoot = Join-Path $repoRoot 'licenses'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
-$publishRoot = Join-Path $releaseRoot "FrameTrail-$Version-win-x64"
+$publishRoot = Join-Path $releaseRoot "DogSC-$Version-win-x64"
 $portableRoot = Join-Path $publishRoot 'app'
 $publishStaging = Join-Path $env:TEMP "FrameTrail-publish-$Version-$PID-$([guid]::NewGuid().ToString('N'))"
 $licenseOutput = Join-Path $publishRoot 'licenses'
 $ffmpegOutput = Join-Path $portableRoot 'tools/ffmpeg'
-$zipPath = Join-Path $releaseRoot "FrameTrail-$Version-win-x64.zip"
-$installerPath = Join-Path $releaseRoot "FrameTrail-Setup-$Version-win-x64.exe"
+$zipPath = Join-Path $releaseRoot "DogSC-$Version-win-x64.zip"
+$installerPath = Join-Path $releaseRoot "DogSC-Setup-$Version-win-x64.exe"
 $upstreamBaseSha = 'e207d11b111c5e58152238fb64115b2009850547'
 $screenRecorderLibVendor = Join-Path $repoRoot 'third_party/ScreenRecorderLib'
 $screenRecorderLibVendorDll = Join-Path $screenRecorderLibVendor 'prebuilt/ScreenRecorderLib.dll'
@@ -187,14 +187,15 @@ else {
 }
 
 $vcRuntimeNotice = @'
-FrameTrail 录制功能通过 ScreenRecorderLib 依赖 Microsoft Visual C++ 2015-2022 Redistributable (x64)。
+DogSC 录制功能通过 ScreenRecorderLib 依赖 Microsoft Visual C++ 2015-2022 Redistributable (x64)。
 本安装程序不会安装或更新系统运行库。如果录制无法启动，请从微软官方页面手动安装 x64 版本：
 https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist
 '@
 $vcRuntimeNotice | Set-Content -LiteralPath (Join-Path $publishRoot 'VC-RUNTIME-REQUIREMENT.txt') -Encoding utf8
 
 $buildInfo = @"
-产品：FrameTrail
+产品：DogSC Windows 社区移植
+上游：https://github.com/laogou717/dogsc
 版本：$Version
 目标：win-x64 自包含便携发布目录
 配置：$Configuration
@@ -219,7 +220,7 @@ if (-not $SkipInstaller) {
     $iss = Join-Path $repoRoot 'installer/FrameTrail.iss'
     if (-not (Test-Path -LiteralPath $iss -PathType Leaf)) { throw "安装器脚本不存在：$iss" }
     & $compiler $iss "/DAppVersion=$Version" "/DAppExeName=$ApplicationExeName" "/DReleaseDir=$publishRoot" `
-        "/O$releaseRoot" "/FFrameTrail-Setup-$Version-win-x64"
+        "/O$releaseRoot" "/FDogSC-Setup-$Version-win-x64"
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $installerPath -PathType Leaf)) {
         throw 'Inno Setup 安装包编译失败。'
     }

@@ -18,7 +18,7 @@ internal sealed class WorkflowInputStimulus : Window, IDisposable
     public WorkflowInputStimulus()
     {
         NativeWindows.GetCursorPos(out previousPointer);
-        Title = "FrameTrail 输入验收"; Width = 620; Height = 330; Left = 1200; Top = 400;
+        Title = "DogSC 输入验收"; Width = 620; Height = 330; Left = 1200; Top = 400;
         WindowStartupLocation = WindowStartupLocation.Manual; Topmost = true;
         var root = new DockPanel(); DockPanel.SetDock(status, Dock.Top); root.Children.Add(status);
         var row = new System.Windows.Controls.Primitives.UniformGrid { Columns = 2, Margin = new Thickness(20) };

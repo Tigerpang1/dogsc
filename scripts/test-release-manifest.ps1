@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $output = Join-Path $repoRoot ('artifacts/validation/release-manifest-policy-' + [guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $output
-$version = '0.2.4'
+$version = '0.2.17'
 $head = '1111111111111111111111111111111111111111'
 $upstream = 'e207d11b111c5e58152238fb64115b2009850547'
 $checks = [Collections.Generic.List[object]]::new()
@@ -21,7 +21,7 @@ function Test-Case([string]$Name, [bool]$Candidate, [bool]$ExpectPass, [scriptbl
     $script = Join-Path $scripts 'write-release-manifest.ps1'
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'write-release-manifest.ps1') -Destination $script
     $artifacts = @()
-    foreach ($artifactName in @("FrameTrail-$version-win-x64.zip", "FrameTrail-Setup-$version-win-x64.exe", "FrameTrail-$version-source.zip")) {
+    foreach ($artifactName in @("DogSC-$version-win-x64.zip", "DogSC-Setup-$version-win-x64.exe", "DogSC-$version-source.zip")) {
         $path = Join-Path $release $artifactName
         [IO.File]::WriteAllText($path, 'Synthetic release-gate fixture; not an executable or delivery package.')
         $artifacts += @{ Name=$artifactName; SHA256=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
@@ -46,13 +46,18 @@ function Test-Case([string]$Name, [bool]$Candidate, [bool]$ExpectPass, [scriptbl
     if ($Candidate) { $arguments += '-Candidate' }
     & $pwsh @arguments *> (Join-Path $caseRoot 'result.log')
     $exit = $LASTEXITCODE
-    $manifest = Join-Path $release $(if ($Candidate) { "FrameTrail-$version-candidate-manifest.json" } else { 'DELIVERY-MANIFEST.json' })
+    $manifest = Join-Path $release $(if ($Candidate) { "DogSC-$version-candidate-manifest.json" } else { 'DELIVERY-MANIFEST.json' })
     $created = Test-Path -LiteralPath $manifest
     $passed = if ($ExpectPass) { $exit -eq 0 -and $created } else { $exit -ne 0 -and -not $created }
     if ($passed -and $ExpectPass) {
         $actual = Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json
         $expectedStatus = if ($Candidate) { 'candidate-awaiting-interactive-validation' } else { 'validated-local-delivery' }
-        $passed = $actual.status -eq $expectedStatus -and $actual.artifacts.Count -eq 3
+        $passed = $actual.status -eq $expectedStatus -and $actual.artifacts.Count -eq 3 -and
+            $actual.productName -eq 'DogSC Windows 社区移植' -and
+            $actual.upstreamRepository -eq 'https://github.com/laogou717/dogsc' -and
+            $actual.artifacts[0].file -eq "DogSC-$version-win-x64.zip" -and
+            $actual.artifacts[1].file -eq "DogSC-Setup-$version-win-x64.exe" -and
+            $actual.artifacts[2].file -eq "DogSC-$version-source.zip"
     }
     $checks.Add([pscustomobject]@{ Name=$Name; Passed=$passed; ExpectedPass=$ExpectPass; ExitCode=$exit; ManifestCreated=$created })
     if (-not $passed) { throw "Release manifest policy regression: $Name. See $caseRoot" }
@@ -74,8 +79,8 @@ try {
     Test-Case 'source-commit-mismatch' $false $false { param($p,$s) $s.sourceMetadata.frameTrailCommit='2222222222222222222222222222222222222222' }
     Test-Case 'dirty-build' $false $false { param($p) $p.BuildInfo=$p.BuildInfo.Replace('clean','dirty') }
     Test-Case 'wrong-version' $false $false { param($p) $p.Version='0.2.2' }
-    Test-Case 'portable-changed-after-validation' $false $false { param($p,$s,$r) [IO.File]::AppendAllText((Join-Path $r "FrameTrail-$version-win-x64.zip"), 'changed') }
-    Test-Case 'source-changed-after-validation' $true $false { param($p,$s,$r) [IO.File]::AppendAllText((Join-Path $r "FrameTrail-$version-source.zip"), 'changed') }
+    Test-Case 'portable-changed-after-validation' $false $false { param($p,$s,$r) [IO.File]::AppendAllText((Join-Path $r "DogSC-$version-win-x64.zip"), 'changed') }
+    Test-Case 'source-changed-after-validation' $true $false { param($p,$s,$r) [IO.File]::AppendAllText((Join-Path $r "DogSC-$version-source.zip"), 'changed') }
     $result = @{ Passed=$true; Scope='Isolated synthetic release-manifest policy tests; no actual delivery or installer validation'; Checks=@($checks) }
 }
 catch {

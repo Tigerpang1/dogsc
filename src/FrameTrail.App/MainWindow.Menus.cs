@@ -4,6 +4,8 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Documents;
+using System.Windows.Navigation;
 using Microsoft.VisualBasic.FileIO;
 using Microsoft.Win32;
 using FrameTrail.Capture;
@@ -19,9 +21,9 @@ public partial class MainWindow
     private void ProjectMenuClick(object sender, RoutedEventArgs e)
     {
         var menu = NewMenu();
-        AddMenu(menu, "打开 FrameTrail 项目…", async () => await PickProject());
+        AddMenu(menu, "打开 DogSC 项目…", async () => await PickProject());
         AddMenu(menu, "导入视频…", async () => await ImportVideoFromMenu());
-        AddMenu(menu, "导入 DogSC 项目…", async () => await ImportDogScClick());
+        AddMenu(menu, "导入 macOS DogSC 项目…", async () => await ImportDogScClick());
         AddMenu(menu, "保存项目", () => { _ = Guard(() => { SaveProject(); return Task.CompletedTask; }); });
         var recent = new MenuItem { Header = "最近项目" };
         foreach (var path in RecentProjects.Read())
@@ -61,7 +63,7 @@ public partial class MainWindow
 
     private async Task PickProject()
     {
-        var dialog = new OpenFileDialog { Title = "打开 FrameTrail 项目", Filter = "FrameTrail 项目|*.frametrail|所有文件|*.*", CheckFileExists = true };
+        var dialog = new OpenFileDialog { Title = "打开 DogSC 项目", Filter = "DogSC 项目|*.frametrail|所有文件|*.*", CheckFileExists = true };
         if (dialog.ShowDialog(this) != true) return;
         await Guard(async () => { await OpenProject(dialog.FileName); RecentProjects.Add(dialog.FileName); });
     }
@@ -399,7 +401,7 @@ public partial class MainWindow
         var root = Path.GetFullPath(PresetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var full = Path.GetFullPath(presetFile);
         if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !string.Equals(Path.GetFileName(full), "preset.json", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("预设文件不在 FrameTrail 本机预设目录中。");
+            throw new InvalidDataException("预设文件不在 DogSC 本机预设目录中。");
         RejectReparsePath(PresetRoot, full);
         return full;
     }
@@ -476,7 +478,7 @@ public partial class MainWindow
         {
             var root = Path.GetFullPath(PresetRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             var folder = Path.GetFullPath(Path.GetDirectoryName(presetFile)!);
-            if (!folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) || folder == Path.TrimEndingDirectorySeparator(PresetRoot)) throw new InvalidDataException("预设目录不在 FrameTrail 本机预设路径内。");
+            if (!folder.StartsWith(root, StringComparison.OrdinalIgnoreCase) || folder == Path.TrimEndingDirectorySeparator(PresetRoot)) throw new InvalidDataException("预设目录不在 DogSC 本机预设路径内。");
             RejectReparsePath(PresetRoot, presetFile);
             Directory.Delete(folder, true); Status.Text = "已删除本机预设。";
         }
@@ -504,24 +506,55 @@ public partial class MainWindow
         AddMenu(menu, "录制与界面设置…", () => ShowUserPreferences());
         AddMenu(menu, "录制与权限帮助", () => ShowPermissionHelp(false));
         menu.Items.Add(new Separator());
-        AddMenu(menu, "关于 FrameTrail", () =>
-        {
-            var version = typeof(MainWindow).Assembly.GetName().Version;
-            var versionText = version is null ? "未知" : $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
-            SurfaceDialog.Show(this, $"FrameTrail {versionText}\nWindows 屏幕录制与视频编辑工具\n\n本项目以 DogSC 上游 MIT 版本为迁移基线，并使用 FrameTrail 自有名称与图标。", "关于", MessageBoxButton.OK, MessageBoxImage.Information);
-        });
+        AddMenu(menu, "关于 DogSC", ShowAbout);
         AddMenu(menu, "版本与手动更新说明", () => OpenReleaseNotes());
         AddMenu(menu, "源码与许可证", () => OpenBundledLicenses());
         AddMenu(menu, "反馈与问题报告", () => SurfaceDialog.Show(this,
-            "当前版本未配置在线更新或公开反馈服务。请通过获取此安装包时使用的发行渠道联系维护者。\n\n反馈时建议附上 FrameTrail 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
+            "这是 DogSC 的 Windows 社区移植版，当前没有配置公开反馈服务。请通过获取此版本的发行渠道联系 Windows 移植维护者；Mac 原版的问题入口不处理本移植版问题。\n\n反馈时建议附上 DogSC 版本、Windows 版本、复现步骤和相关日志；请勿附带未经同意的录屏或项目素材。",
             "反馈与问题报告", MessageBoxButton.OK, MessageBoxImage.Information));
         AddMenu(menu, "键盘快捷键", () => SurfaceDialog.Show(this, "Ctrl+S　保存项目\nCtrl+Z　撤销\nCtrl+Y　重做\nSpace　播放或暂停\n← / →　移动1帧；Shift+← / →　移动5帧\nS　在播放头分割所选效果；未选效果时分割播放头所在主片段\nQ / W　裁去所选效果的起点/终点；未选效果时波纹删除主片段的前段/后段\nD / Delete　删除所选项\nI / O　设置导出范围起点/终点\nCtrl+C / Ctrl+V　复制/粘贴效果；Ctrl+Shift+V　粘贴属性\n" + RecordingMarkerShortcutHelp + "\n\n文本框、下拉框或滑块获得焦点时，编辑快捷键暂停。", "键盘快捷键", MessageBoxButton.OK, MessageBoxImage.Information));
         AddMenu(menu, "打开本地项目目录", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyVideos), "FrameTrail")));
         AddMenu(menu, "打开本地设置与缓存", () => OpenLocalPath(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FrameTrail")));
         menu.Items.Add(new Separator());
         AddMenu(menu, "口播提词器", () => ShowMemoForDesktop());
-        AddMenu(menu, "退出 FrameTrail", RequestDesktopExitAsync);
+        AddMenu(menu, "退出 DogSC", RequestDesktopExitAsync);
         menu.PlacementTarget = (UIElement)sender; menu.Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom; menu.IsOpen = true;
+    }
+
+    private void ShowAbout() => CreateAboutDialog().ShowDialog();
+
+    internal Window CreateAboutDialog(bool attachOwner = true)
+    {
+        var version = typeof(MainWindow).Assembly.GetName().Version;
+        var versionText = version is null ? "未知" : $"{version.Major}.{version.Minor}.{Math.Max(0, version.Build)}";
+        var content = new StackPanel { Margin = new Thickness(24), HorizontalAlignment = HorizontalAlignment.Center };
+        content.SetResourceReference(TextElement.ForegroundProperty, "Ink");
+        var logo = new Image { Width = 88, Height = 88, Stretch = System.Windows.Media.Stretch.Uniform, Margin = new Thickness(0, 0, 0, 14) };
+        logo.Source = new System.Windows.Media.Imaging.BitmapImage(new Uri("pack://application:,,,/DogSC;component/Assets/DogSCLogo.png"));
+        content.Children.Add(logo);
+        content.Children.Add(new TextBlock { Text = $"DogSC {versionText}", FontSize = 22, FontWeight = FontWeights.SemiBold, HorizontalAlignment = HorizontalAlignment.Center });
+        content.Children.Add(new TextBlock { Text = "Windows 社区移植版 · 非官方 Windows 发行版", Margin = new Thickness(0, 8, 0, 14), HorizontalAlignment = HorizontalAlignment.Center });
+        content.Children.Add(new TextBlock { Text = "原作者：神烦老狗", HorizontalAlignment = HorizontalAlignment.Center });
+        var source = new TextBlock { HorizontalAlignment = HorizontalAlignment.Center, Margin = new Thickness(0, 8, 0, 0) };
+        var link = new Hyperlink(new Run("DogSC 原仓库")) { NavigateUri = new Uri("https://github.com/laogou717/dogsc") };
+        var linkStyle = new Style(typeof(Hyperlink));
+        linkStyle.Setters.Add(new Setter(TextElement.ForegroundProperty, new DynamicResourceExtension("Ink")));
+        linkStyle.Setters.Add(new Setter(TextElement.BackgroundProperty, new DynamicResourceExtension("Chrome")));
+        linkStyle.Setters.Add(new Setter(TextElement.FontWeightProperty, FontWeights.Medium));
+        var keyboardFocus = new Trigger { Property = ContentElement.IsFocusedProperty, Value = true };
+        keyboardFocus.Setters.Add(new Setter(TextElement.BackgroundProperty, new DynamicResourceExtension("Selection")));
+        keyboardFocus.Setters.Add(new Setter(TextElement.FontWeightProperty, FontWeights.SemiBold));
+        linkStyle.Triggers.Add(keyboardFocus);
+        link.Style = linkStyle;
+        link.TextDecorations = TextDecorations.Underline;
+        link.RequestNavigate += (_, args) => Process.Start(new ProcessStartInfo(args.Uri.AbsoluteUri) { UseShellExecute = true });
+        source.Inlines.Add(link);
+        content.Children.Add(source);
+        content.Children.Add(new TextBlock { Text = "原仓库采用 MIT 许可证；Windows 移植由社区贡献者维护。", TextWrapping = TextWrapping.Wrap, TextAlignment = TextAlignment.Center, Margin = new Thickness(0, 10, 0, 0), MaxWidth = 360 });
+        var dialog = new Window { Title = "关于 DogSC", Width = 440, SizeToContent = SizeToContent.Height, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false, WindowStartupLocation = WindowStartupLocation.CenterOwner };
+        SurfaceWindow.Configure(dialog, attachOwner ? this : null);
+        dialog.Content = SurfaceWindow.WrapContent(dialog, content, "关于 DogSC");
+        return dialog;
     }
 
     private void OpenReleaseNotes()
@@ -533,7 +566,7 @@ public partial class MainWindow
             return;
         }
         SurfaceDialog.Show(this,
-            "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 FrameTrail 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
+            "此构建没有内置发行说明，也未配置在线更新服务。需要更新时，请从获取 DogSC 的原发行渠道取得新版；源码包中的 docs/build-and-release.md 说明了手动构建与发布流程。",
             "手动更新", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
@@ -547,7 +580,7 @@ public partial class MainWindow
         }
 
         SurfaceDialog.Show(this,
-            "此构建没有找到随包提供的许可证文件。请从获取 FrameTrail 的原发行渠道索取对应许可证材料。",
+            "此构建没有找到随包提供的许可证文件。请从获取 DogSC 的原发行渠道索取对应许可证材料。",
             "源码与许可证", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
@@ -817,7 +850,7 @@ public partial class MainWindow
         var appearance = new StackPanel();
         appearance.Children.Add(FieldGrid(("预览清晰度", previewWidth), ("预览帧率", previewFps)));
         var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 8), MinHeight = 30 };
-        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
+        var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 DogSC 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
         foreach (var toggle in new[] { dark, excludeEditor })
         {
             toggle.Checked += (_, _) => ClearActionStatus();

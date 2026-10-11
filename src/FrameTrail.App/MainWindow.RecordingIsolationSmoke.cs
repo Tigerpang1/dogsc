@@ -660,7 +660,7 @@ public partial class MainWindow
     {
         public IsolationBackdropWindow(Color color, Rect workArea)
         {
-            Title = "FrameTrail recording isolation backdrop";
+            Title = "DogSC recording isolation backdrop";
             WindowStyle = WindowStyle.None;
             ResizeMode = ResizeMode.NoResize;
             ShowInTaskbar = false;
