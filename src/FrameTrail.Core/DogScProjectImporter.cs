@@ -11,6 +11,7 @@ public static class DogScProjectImporter
 {
     public const int MinimumDogScSchemaVersion = 23;
     public const int MaximumDogScSchemaVersion = 27;
+    public const string MissingCameraAspectWarning = "DogSC 摄像头布局使用 Original，但无法读取摄像头素材宽高比；DogSC 将按默认画幅显示。请检查导入报告并重新定位可读素材后再导入。";
 
     private static readonly JsonDocumentOptions DocumentOptions = new()
     {
@@ -893,7 +894,7 @@ public static class DogScProjectImporter
                     Mirrored = Bool(camera, "isMirrored", true)
                 };
                 if (cameraLayout == CameraMotionLayoutKind.Original && cameraAspectRatio is null)
-                    warnings.Add("DogSC 摄像头布局使用 Original，但无法读取摄像头素材宽高比；FrameTrail 将按默认画幅显示。请检查导入报告并重新定位可读素材后再导入。");
+                    warnings.Add(MissingCameraAspectWarning);
             }
             else if ((sourceRate != 1 || cameraAnchors.Count > 0) && cameraMappings.Count == 0)
                 warnings.Add("DogSC 摄像头时钟校正没有生成可用的正向素材片段；摄像头画面已跳过。");

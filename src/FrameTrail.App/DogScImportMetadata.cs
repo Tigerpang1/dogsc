@@ -8,8 +8,6 @@ namespace FrameTrail.App;
 /// <summary>Enriches an imported project with metadata that DogSC does not store in its manifest.</summary>
 public static class DogScImportMetadata
 {
-    private const string MissingAspectWarning = "DogSC 摄像头布局使用 Original，但无法读取摄像头素材宽高比；DogSC 将按默认画幅显示。请检查导入报告并重新定位可读素材后再导入。";
-
     public static async Task<DogScProjectImportResult> ApplyCameraAspectRatioAsync(
         DogScProjectImportResult imported,
         CancellationToken cancellationToken = default)
@@ -60,7 +58,7 @@ public static class DogScImportMetadata
         try { FrameTrailProjectStore.Save(imported.ProjectFilePath, imported.Project); }
         catch { imported.Project.Camera = camera; throw; }
         var remainingWarnings = imported.Report.Warnings
-            .Where(value => !string.Equals(value, MissingAspectWarning, StringComparison.Ordinal))
+            .Where(value => !string.Equals(value, DogScProjectImporter.MissingCameraAspectWarning, StringComparison.Ordinal))
             .Distinct(StringComparer.Ordinal).ToArray();
         if (remainingWarnings.Length == imported.Report.Warnings.Count) return imported;
         var cleanedReport = imported.Report with { Warnings = remainingWarnings };
@@ -72,7 +70,7 @@ public static class DogScImportMetadata
     private static Task<DogScProjectImportResult> SaveWarningAsync(DogScProjectImportResult imported, string projectDirectory, string warning)
     {
         var warnings = imported.Report.Warnings
-            .Where(value => !string.Equals(value, MissingAspectWarning, StringComparison.Ordinal))
+            .Where(value => !string.Equals(value, DogScProjectImporter.MissingCameraAspectWarning, StringComparison.Ordinal))
             .ToList();
         warnings.Add(warning);
         var report = imported.Report with { Warnings = warnings.Distinct(StringComparer.Ordinal).ToArray() };
