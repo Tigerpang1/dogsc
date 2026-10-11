@@ -33,10 +33,12 @@ internal static class PreviewLatencyProbe
             ?? throw new MissingFieldException(typeof(MainWindow).FullName, "PreviewFrameMeasured");
         Stopwatch? clickClock = null;
         double? bitmapAssignedMs = null;
+        double? expectedCallbackTime = null;
         var hookDelegate = new Action<PreviewFrameTiming>(timing =>
         {
             timings.Add(timing);
-            if (clickClock is not null && bitmapAssignedMs is null)
+            if (clickClock is not null && bitmapAssignedMs is null &&
+                (expectedCallbackTime is null || Math.Abs(timing.OutputTime - expectedCallbackTime.Value) < 1e-6))
                 bitmapAssignedMs = clickClock.Elapsed.TotalMilliseconds;
         });
 
@@ -129,11 +131,13 @@ internal static class PreviewLatencyProbe
                     var beforeHits = Decoder(window)?.CacheHits ?? 0;
                     var timingIndexBefore = timings.Count;
                     bitmapAssignedMs = null;
+                    expectedCallbackTime = null;
                     clickClock = Stopwatch.StartNew();
                     timeline.HandlePointerDown(clickPoint, MouseButton.Left, ModifierKeys.None, false);
                     timeline.HandlePointerUp(MouseButton.Left, clickPoint, false);
                     var clickHandlerMs = clickClock.Elapsed.TotalMilliseconds;
                     var requested = playhead.Value;
+                    expectedCallbackTime = requested;
                     var timeUntilBitmap = WaitForBitmapAndIdle(dispatcher, window, requested, clickClock,
                         () => bitmapAssignedMs, out var handlerEndFallback);
                     clickClock.Stop();
@@ -165,6 +169,43 @@ internal static class PreviewLatencyProbe
                         HookTiming = timings.Skip(timingIndexBefore).LastOrDefault()
                     });
                 }
+                // Unlike the isolated clicks above, these inputs arrive while decoding
+                // is in flight. Include cancellation callbacks in the handler timing.
+                var burstInputs = new List<object>();
+                var burstHookStart = timings.Count;
+                foreach (var fraction in new[] { .17, .84, .12, .65 })
+                {
+                    var point = FindClickPoint(timeline, project.Timeline.Duration, ToFrame(fraction) / fps, false);
+                    bitmapAssignedMs = null;
+                    expectedCallbackTime = null;
+                    clickClock = Stopwatch.StartNew();
+                    timeline.HandlePointerDown(point, MouseButton.Left, ModifierKeys.None, false);
+                    timeline.HandlePointerUp(MouseButton.Left, point, false);
+                    expectedCallbackTime = playhead.Value;
+                    burstInputs.Add(new { Requested = playhead.Value, ClickHandlerMs = clickClock.Elapsed.TotalMilliseconds });
+                    if (fraction != .65) PumpTask(Task.Delay(8), dispatcher);
+                }
+                var burstRequested = playhead.Value;
+                var burstReady = WaitForBitmapAndIdle(dispatcher, window, burstRequested, clickClock!,
+                    () => bitmapAssignedMs, out var burstFallback);
+                clickClock!.Stop();
+                var burstScene = CurrentScene(window);
+                if (Math.Abs(burstScene.OutputTime - burstRequested) > 1e-6)
+                    throw new InvalidOperationException("Rapid committed clicks did not finish at the last requested frame.");
+                rows.Add(new
+                {
+                    Resolution = resolution == 0 ? "auto" : "1440p",
+                    Scenario = "rapid-click-final",
+                    Input = "ruler",
+                    Inputs = burstInputs,
+                    UntilBitmapReadyMs = burstReady,
+                    UntilBitmapReadySource = burstFallback ? "cache early return" : "PreviewFrameMeasured callback for final target",
+                    Playhead = burstRequested,
+                    SceneOutputTime = burstScene.OutputTime,
+                    SceneSourceTime = burstScene.SourceTime,
+                    HookTiming = timings.Skip(burstHookStart).OfType<PreviewFrameTiming>()
+                        .LastOrDefault(timing => Math.Abs(timing.OutputTime - burstRequested) < 1e-6)
+                });
                 WaitForIdle(window, dispatcher);
                 var tierRows = rows.Skip(firstRowIndex).ToArray();
                 File.WriteAllText(Path.Combine(output, $"report-{(resolution == 0 ? "auto" : "1440p")}.json"),

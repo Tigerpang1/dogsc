@@ -232,6 +232,20 @@ try {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "发行包缺少必要文件：$path" }
     }
     $report.PortableArchiveFilesVerified = Assert-PortableArchive (Join-Path $repo "artifacts/release/FrameTrail-$Version-win-x64.zip") $release
+    if ([version]$Version -ge [version]'0.2.14') {
+        $libavRoot = Join-Path $release 'app/tools/libav'
+        $libavProvenance = Get-Content -LiteralPath (Join-Path $libavRoot 'provenance.json') -Raw | ConvertFrom-Json
+        if ($libavProvenance.archiveSha256 -ne 'c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c') { throw 'libav运行时来源不匹配。' }
+        $libavNames = @('avcodec-62.dll','avformat-62.dll','avutil-60.dll','swscale-9.dll','swresample-6.dll')
+        if (@(Compare-Object $libavNames @($libavProvenance.runtimeFiles.file)).Count -ne 0) { throw 'libav运行时清单不完整。' }
+        foreach ($entry in $libavProvenance.runtimeFiles) {
+            if ((Get-FileHash -LiteralPath (Join-Path $libavRoot $entry.file) -Algorithm SHA256).Hash -ne $entry.sha256) { throw "libav DLL哈希不匹配：$($entry.file)" }
+        }
+        foreach ($notice in @('FFmpeg-libav-LGPLv3.txt','FFmpeg-libav-NOTICE.md','FFmpeg.AutoGen-MIT.txt','libav-corresponding-source/README.md')) {
+            if (!(Test-Path -LiteralPath (Join-Path $release "licenses/$notice"))) { throw "libav许可或源码材料缺失：$notice" }
+        }
+        $report.Checks += [ordered]@{ Id='libav-runtime'; Name='常驻解码运行时五个DLL、固定来源哈希、许可证及对应源码材料齐备'; Passed=$true }
+    }
     $portableArchiveBaselineVerified = $true
     $expectedSamples = @('FrameTrail-Demo.frametrail', 'FrameTrail-Demo.mp4', 'synthetic-screen.mp4', 'synthetic-camera.mp4', 'independent-tone.wav', 'demo-badge.png', 'preview.png', 'README.md') | Sort-Object
     $sampleDirectory = Split-Path -Parent $sample

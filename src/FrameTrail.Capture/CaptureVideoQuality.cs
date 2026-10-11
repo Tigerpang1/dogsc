@@ -11,6 +11,13 @@ internal static class CaptureVideoQuality
     internal const int BaselineBitrate = 16_000_000;
     internal const int MinimumBitrate = 2_000_000;
     internal const int NvencConstantQuality = 19;
+    internal const double TargetKeyframeIntervalSeconds = 0.5;
+
+    internal static int KeyframeIntervalFrames(int frameRate)
+    {
+        if (frameRate <= 0) throw new ArgumentOutOfRangeException(nameof(frameRate));
+        return Math.Max(1, (int)Math.Round(frameRate * TargetKeyframeIntervalSeconds, MidpointRounding.AwayFromZero));
+    }
 
     internal static int ResolveBitrate(int width, int height, int frameRate, int? requestedBitrate = null)
     {
@@ -32,6 +39,7 @@ internal static class CaptureVideoQuality
         var bitrate = ResolveBitrate(width, height, video.FrameRate, video.Bitrate);
         var bitrateText = bitrate.ToString(CultureInfo.InvariantCulture);
         var args = new List<string> { "-c:v", encoder };
+        args.AddRange(["-g", KeyframeIntervalFrames(video.FrameRate).ToString(CultureInfo.InvariantCulture)]);
         switch (encoder)
         {
             case "h264_nvenc":

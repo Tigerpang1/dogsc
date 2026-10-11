@@ -12,6 +12,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+& (Join-Path $PSScriptRoot 'ensure-libav.ps1')
 $project = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
 $licenseRoot = Join-Path $repoRoot 'licenses'
 $releaseRoot = Join-Path $repoRoot 'artifacts/release'
@@ -109,6 +110,8 @@ if (-not (Test-Path -LiteralPath $applicationExe -PathType Leaf)) {
     throw "发布目录中未找到应用主程序 $ApplicationExeName。检查 App 项目的 AssemblyName 后再运行 package.ps1。"
 }
 Copy-Item -LiteralPath $licenseRoot -Destination $licenseOutput -Recurse -Force
+& (Join-Path $PSScriptRoot 'fetch-libav-corresponding-source.ps1')
+Copy-Item -LiteralPath (Join-Path $repoRoot 'artifacts/research/libav-source-materials') -Destination (Join-Path $licenseOutput 'libav-corresponding-source') -Recurse -Force
 foreach ($name in @('README.md', 'LICENSE')) {
     $sourceFile = Join-Path $repoRoot $name
     if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "发行材料缺失：$sourceFile" }

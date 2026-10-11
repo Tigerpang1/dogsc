@@ -38,8 +38,15 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
     private long timeBaseDenominator;
     private int disposed;
     private bool timestampStreamFailed;
+    private bool preferNative;
+    private NativeSeekFrameDecoder? nativeDecoder;
+    private readonly ByteBudgetLruCache<double, byte[]> nativeCache = new(CacheBudgetBytes);
+    public string DecoderBackend => nativeDecoder?.BackendName ?? "ffmpeg/process";
+    public string? NativeFailureReason { get; private set; }
+    public int NativeSessionCount { get; private set; }
 
-    public ScrubFrameDecoder(string sourcePath, int width, int height, double sourceFrameRate, double sourceDuration)
+    public ScrubFrameDecoder(string sourcePath, int width, int height, double sourceFrameRate, double sourceDuration,
+        bool preferNative = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sourcePath);
         if (!File.Exists(sourcePath)) throw new FileNotFoundException("找不到待预览的视频素材。", sourcePath);
@@ -54,6 +61,7 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         this.height = height;
         this.sourceFrameRate = sourceFrameRate;
         duration = sourceDuration;
+        this.preferNative = preferNative;
     }
 
     /// <summary>当前保留的帧像素总字节数，最多 96 MiB。</summary>
@@ -84,6 +92,41 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
             cancellationToken.ThrowIfCancellationRequested();
+            if (preferNative)
+            {
+                try
+                {
+                    if (!LibavRuntime.TryInitialize()) throw new NotSupportedException(LibavRuntime.UnavailableReason);
+                    var target = Math.Min(sourceTime, duration);
+                    if (nativeCache.TryGetValue(target, out var pixels))
+                    {
+                        Interlocked.Increment(ref cacheHits);
+                        return (byte[])pixels.Clone();
+                    }
+                    if (nativeDecoder is null)
+                    {
+                        nativeDecoder = new(sourcePath, width, height, sourceFrameRate, duration);
+                        NativeSessionCount++;
+                    }
+                    pixels = nativeDecoder.ReadFrame(target, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    nativeCache.Set(target, pixels, pixels.Length);
+                    Interlocked.Exchange(ref cacheBytes, nativeCache.CachedBytes);
+                    return (byte[])pixels.Clone();
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException or NotSupportedException)
+                {
+                    // Unavailable codecs/runtimes retain the established CLI semantics.
+                    // Cancellation must propagate and must never disable the fast path.
+                    cancellationToken.ThrowIfCancellationRequested();
+                    nativeDecoder?.Dispose();
+                    nativeDecoder = null;
+                    nativeCache.Clear();
+                    Interlocked.Exchange(ref cacheBytes, 0);
+                    preferNative = false;
+                    NativeFailureReason = error.Message;
+                }
+            }
             if (timestampStreamFailed)
             {
                 var fallbackTime = sourceTime >= duration ? Math.Max(0, duration - 1 / sourceFrameRate) : sourceTime;
@@ -257,7 +300,7 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
     {
         var active = process ?? throw new InvalidOperationException("时间轴解码进程尚未启动。");
         using var linkedCancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        using var registration = cancellationToken.Register(() => MediaTools.Kill(active));
+        using var registration = cancellationToken.Register(() => KillDecoder(active));
         var output = ReadPixelsAsync(linkedCancellation.Token);
         var timestamp = ReadNextTimestampAsync(active, linkedCancellation.Token);
         try
@@ -268,7 +311,7 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
             if (first.IsFaulted || first.IsCanceled)
             {
                 linkedCancellation.Cancel();
-                MediaTools.Kill(active);
+                KillDecoder(active);
             }
             await Task.WhenAll(output, timestamp).ConfigureAwait(false);
             return (await output.ConfigureAwait(false), await timestamp.ConfigureAwait(false));
@@ -276,7 +319,7 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         catch
         {
             linkedCancellation.Cancel();
-            MediaTools.Kill(active);
+            KillDecoder(active);
             try { await Task.WhenAll(output, timestamp).ConfigureAwait(false); }
             catch { /* Observe both pipe tasks after killing the process. */ }
             if (cancellationToken.IsCancellationRequested) throw;
@@ -351,13 +394,26 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         Interlocked.Exchange(ref activeProcessId, 0);
         try
         {
-            if (old is not null) await MediaTools.StopAsync(old).ConfigureAwait(false);
+            if (old is not null)
+            {
+                KillDecoder(old);
+                await old.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            }
         }
         finally
         {
             oldPipe?.Dispose();
             old?.Dispose();
         }
+    }
+
+    private static void KillDecoder(Process decoder)
+    {
+        // This is the FFmpeg executable we launched directly, with no shell or child
+        // workers. Tree enumeration costs tens of milliseconds on Windows and runs
+        // synchronously when a new pointer input cancels the previous request.
+        try { if (!decoder.HasExited) decoder.Kill(entireProcessTree: false); }
+        catch (InvalidOperationException) { }
     }
 
     public async ValueTask DisposeAsync()
@@ -368,6 +424,9 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         {
             await ResetStreamAsync().ConfigureAwait(false);
             cache.Clear();
+            nativeCache.Clear();
+            nativeDecoder?.Dispose();
+            nativeDecoder = null;
             indexedRuns.Clear();
             errorTail.Clear();
             Interlocked.Exchange(ref cacheBytes, 0);

@@ -137,6 +137,32 @@ function Assert-FileHash([string]$Path, [string]$Expected, [string]$Label) {
     if ($actual -ne $Expected.ToUpperInvariant()) { throw "$Label SHA-256 mismatch. Expected $Expected, actual $actual." }
 }
 
+function Assert-NoReparsePathWithin([string]$Path, [string]$Boundary) {
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $boundaryFull = [System.IO.Path]::GetFullPath($Boundary).TrimEnd('\')
+    $boundaryPrefix = $boundaryFull + '\'
+    if (-not $fullPath.StartsWith($boundaryPrefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.Equals($boundaryFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Path is outside the expected boundary: $fullPath"
+    }
+
+    $cursor = $fullPath
+    while ($true) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing to use a reparse point in validation path: $cursor"
+            }
+        }
+        if ($cursor.Equals($boundaryFull, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $parent = Split-Path -Parent $cursor
+        if (-not $parent -or $parent.Equals($cursor, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Could not walk validation path to its boundary: $fullPath"
+        }
+        $cursor = $parent
+    }
+}
+
 try {
     $null = New-Item -ItemType Directory -Path $resultDirectory -Force
     $null = New-Item -ItemType Directory -Path $logsDirectory -Force
@@ -242,6 +268,35 @@ try {
     $pwshPath = Join-Path $PSHOME 'pwsh.exe'
     if (-not (Test-Path -LiteralPath $pwshPath -PathType Leaf)) { throw "PowerShell executable not found: $pwshPath" }
     $utf8Bootstrap = Join-Path $PSScriptRoot 'invoke-utf8-script.ps1'
+    $sharedArchive = Join-Path $workspaceRoot 'artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip'
+    $sharedArchiveSha256 = 'c222a490dde4e7059f45495deef6bfb98dbcacc2b43df5b607546252037aa95c'
+    $libavParameters = @{}
+    if (Test-Path -LiteralPath $sharedArchive -PathType Leaf) {
+        Assert-FileHash $sharedArchive $sharedArchiveSha256 'Pinned FFmpeg shared runtime archive'
+        $runtimeCacheArchive = Join-Path $repoRoot 'artifacts/toolchains/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared/ffmpeg-n8.1.2-34-g9b6c8969e0-win64-lgpl-shared-8.1.zip'
+        $runtimeCacheParent = Split-Path -Parent $runtimeCacheArchive
+        $repoBoundary = [System.IO.Path]::GetFullPath($repoRoot).TrimEnd('\') + '\'
+        $runtimeCacheArchiveFull = [System.IO.Path]::GetFullPath($runtimeCacheArchive)
+        if (-not $runtimeCacheArchiveFull.StartsWith($repoBoundary, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to copy the runtime archive outside extracted source: $runtimeCacheArchiveFull"
+        }
+        Assert-TempPath $runtimeCacheArchiveFull
+        Assert-NoReparsePathWithin -Path $runtimeCacheParent -Boundary $repoRoot
+        Assert-NoReparsePathWithin -Path $runtimeCacheArchiveFull -Boundary $repoRoot
+        if (Test-Path -LiteralPath $runtimeCacheArchive) {
+            if (-not (Test-Path -LiteralPath $runtimeCacheArchive -PathType Leaf)) { throw "Runtime archive cache path exists but is not a file: $runtimeCacheArchive" }
+            Assert-FileHash $runtimeCacheArchive $sharedArchiveSha256 'Cached FFmpeg shared runtime archive'
+        } else {
+            $null = New-Item -ItemType Directory -Path $runtimeCacheParent -Force
+            Assert-NoReparsePathWithin -Path $runtimeCacheParent -Boundary $repoRoot
+            Copy-Item -LiteralPath $sharedArchive -Destination $runtimeCacheArchive
+            Assert-NoReparsePathWithin -Path $runtimeCacheArchiveFull -Boundary $repoRoot
+            Assert-FileHash $runtimeCacheArchive $sharedArchiveSha256 'Copied FFmpeg shared runtime archive'
+        }
+    }
+    $libavPrepareResult = Invoke-LoggedProcess -Name 'libav-prepare' -FileName $pwshPath `
+        -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', (Join-Path $repoRoot 'scripts/ensure-libav.ps1'), '-ParametersJson', ($libavParameters | ConvertTo-Json -Compress)) `
+        -WorkingDirectory $repoRoot -TimeoutSeconds $BuildTimeoutSeconds
     $testScript = Join-Path $repoRoot 'scripts/test.ps1'
     $testParameters = @{ Configuration='Release'; IncludeCaptureProbe=$true; IncludeVisualProbe=$true; IncludeReleaseProbe=$true } | ConvertTo-Json -Compress
     $testResult = Invoke-LoggedProcess -Name 'tests' -FileName $pwshPath `
@@ -254,6 +309,9 @@ try {
         -WorkingDirectory $repoRoot -TimeoutSeconds $BuildTimeoutSeconds
 
     $packageScript = Join-Path $repoRoot 'scripts/package.ps1'
+    $nativeSeekResult = Invoke-LoggedProcess -Name 'native-seek' -FileName 'dotnet' `
+        -Arguments @('run', '--project', (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj'), '--configuration', 'Release', '--', '--native-seek-decoder', (Join-Path $repoRoot 'artifacts/validation/native-seek')) `
+        -WorkingDirectory $repoRoot -TimeoutSeconds $TestTimeoutSeconds
     $packageParameters = @{ Configuration='Release'; Version=$Version; WithoutFfmpeg=$true; SkipInstaller=$true } | ConvertTo-Json -Compress
     $packageResult = Invoke-LoggedProcess -Name 'package-without-ffmpeg' -FileName $pwshPath `
         -Arguments @('-NoProfile', '-NonInteractive', '-File', $utf8Bootstrap, '-ScriptPath', $packageScript, '-ParametersJson', $packageParameters) `
@@ -300,8 +358,8 @@ try {
         $run.buildInfo = [ordered]@{ path = $buildInfoPath; error = 'BUILD-INFO.txt was not produced.' }
     }
 
-    $stepResults = @($testResult, $buildResult, $packageResult)
-    $stepsPassed = $stepResults.Count -eq 3 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
+    $stepResults = @($libavPrepareResult, $testResult, $buildResult, $nativeSeekResult, $packageResult)
+    $stepsPassed = $stepResults.Count -eq 5 -and @($stepResults | Where-Object { $_.timedOut -or $_.exitCode -ne 0 -or $_.error }).Count -eq 0
     $buildInfoPassed = $run.buildInfo.sourceKindCorrect -and $run.buildInfo.frameTrailCommitCorrect -and $run.buildInfo.upstreamCommitCorrect
     $screenRecorderLibPassed = $screenRecorderLibPatchApplyVerified -and $run.screenRecorderLib.publishedDllMatches -and $run.screenRecorderLib.publishedMaterialsVerified
     $run.screenRecorderLib.passed = $screenRecorderLibPassed

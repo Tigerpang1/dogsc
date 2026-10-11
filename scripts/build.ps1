@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $project = Join-Path $repoRoot 'src/FrameTrail.App/FrameTrail.App.csproj'
+& (Join-Path $PSScriptRoot 'ensure-libav.ps1')
 
 if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
     throw "应用项目尚未集成：$project"

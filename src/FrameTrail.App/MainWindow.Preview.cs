@@ -11,7 +11,7 @@ namespace FrameTrail.App;
 internal sealed record PreviewFrameTiming(double OutputTime, double QueueMs, double SceneMs,
     double DecodeMs, double AssetsMs, double WorkerQueueMs, double RenderMs, double BitmapMs,
     double DispatchMs, double ApplyMs, long DecoderStarts, long CacheHits,
-    int InputWidth, int InputHeight, int OutputWidth, int OutputHeight);
+    int InputWidth, int InputHeight, int OutputWidth, int OutputHeight, string DecoderBackend, int NativeSessions);
 
 public partial class MainWindow
 {
@@ -162,19 +162,24 @@ public partial class MainWindow
             var source = new FileInfo(path);
             var rate = double.IsFinite(snapshot.Media.FrameRate) && snapshot.Media.FrameRate > 0 ? snapshot.Media.FrameRate : 30;
             var key = (path, source.Length, source.LastWriteTimeUtc, inputWidth, inputHeight, rate, snapshot.Media.Duration);
-            if (scrubDecoder is null || scrubDecoderKey != key)
-            {
-                if (scrubDecoder is not null) await scrubDecoder.DisposeAsync();
-                scrubDecoder = new ScrubFrameDecoder(path, inputWidth, inputHeight, rate, snapshot.Media.Duration);
-                scrubDecoderKey = key;
-            }
             var decodeStarted = Stamp();
-            var startsBefore = scrubDecoder.ProcessStartCount;
-            var hitsBefore = scrubDecoder.CacheHits;
-            var buffer = await scrubDecoder.ReadFrameAsync(scene.SourceTime, token);
+            // Async decoder methods can start/stop a process or copy a cached 4K frame
+            // before their first incomplete await. Keep that work off the input thread.
+            // previewGate serializes the decoder, including project/size replacement.
+            var (buffer, decodeStarts, cacheHits) = await Task.Run(async () =>
+            {
+                if (scrubDecoder is null || scrubDecoderKey != key)
+                {
+                    if (scrubDecoder is not null) await scrubDecoder.DisposeAsync();
+                    scrubDecoder = new ScrubFrameDecoder(path, inputWidth, inputHeight, rate, snapshot.Media.Duration, preferNative: true);
+                    scrubDecoderKey = key;
+                }
+                var startsBefore = scrubDecoder.ProcessStartCount;
+                var hitsBefore = scrubDecoder.CacheHits;
+                var pixels = await scrubDecoder.ReadFrameAsync(scene.SourceTime, token);
+                return (pixels, scrubDecoder.ProcessStartCount - startsBefore, scrubDecoder.CacheHits - hitsBefore);
+            }, token);
             var decoded = Stamp();
-            var decodeStarts = scrubDecoder.ProcessStartCount - startsBefore;
-            var cacheHits = scrubDecoder.CacheHits - hitsBefore;
             var size = (inputWidth, inputHeight, width, height);
             if (previewAssets is null || previewAssetsProject != target.ProjectFile || previewSize != size)
             {
@@ -219,7 +224,7 @@ public partial class MainWindow
                     Milliseconds(decoded, assetsReady), Milliseconds(assetsReady, renderStarted),
                     Milliseconds(renderStarted, rendered), Milliseconds(rendered, bitmapReady),
                     Milliseconds(bitmapReady, applyStarted), Milliseconds(applyStarted, Stamp()),
-                    decodeStarts, cacheHits, inputWidth, inputHeight, width, height));
+                    decodeStarts, cacheHits, inputWidth, inputHeight, width, height, scrubDecoder!.DecoderBackend, scrubDecoder.NativeSessionCount));
         }
         finally { previewGate.Release(); }
     }

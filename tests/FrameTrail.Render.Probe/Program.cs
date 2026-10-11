@@ -12,6 +12,11 @@ if (args.Length > 0 && args[0] == "--scrub-decoder")
     await FrameTrail.Render.Probe.ScrubFrameDecoderProbe.RunAsync(args.Length > 1 ? args[1] : null);
     return;
 }
+if (args.Length > 0 && args[0] == "--native-seek-decoder")
+{
+    await FrameTrail.Render.Probe.NativeSeekDecoderProbe.RunAsync(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length > 0 && args[0] == "--timeline-assets")
 {
     await TimelineAssetsProbe.Run(args.Length > 1 ? args[1] : null);

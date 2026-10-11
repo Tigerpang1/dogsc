@@ -13,6 +13,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $coreTests = Join-Path $repoRoot 'tests/FrameTrail.Core.Tests/FrameTrail.Core.Tests.csproj'
 $captureProbe = Join-Path $repoRoot 'tests/FrameTrail.Capture.Probe/FrameTrail.Capture.Probe.csproj'
+if ($IncludeMediaProbe -or $IncludeVisualProbe) { & (Join-Path $PSScriptRoot 'ensure-libav.ps1') }
 
 if (-not (Test-Path -LiteralPath $coreTests -PathType Leaf)) {
     throw "测试项目不存在：$coreTests"
@@ -31,6 +32,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "时间线缩略图与波形测试失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --scrub-decoder (Join-Path $repoRoot ('artifacts/validation/scrub-decoder-' + [guid]::NewGuid().ToString('N')))
         if ($LASTEXITCODE -ne 0) { throw "时间线持续解码与帧缓存检查失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --native-seek-decoder (Join-Path $repoRoot ('artifacts/validation/native-seek-' + [guid]::NewGuid().ToString('N')))
+        if ($LASTEXITCODE -ne 0) { throw "常驻原生解码与时间戳检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --dogsc-camera-import
         if ($LASTEXITCODE -ne 0) { throw "DogSC 摄像头素材比例与保存失败回归失败，退出码 $LASTEXITCODE" }
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))

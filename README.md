@@ -4,7 +4,13 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 当前：0.2.13 时间线定位与预览交互候选
+## 当前：0.2.14 预览响应候选
+
+参考OpenScreen的常驻解码机制，暂停预览现在复用libav会话，输入线程只更新定位和调度；近邻顺向解码、最后请求优先、96 MiB帧缓存共同减少等待。同一段4K60旧录屏以1440预览：跨位置点击处理由45–59 ms降至0.5–3.7 ms，画面提交由223–416 ms降至59–264 ms。该结果来自无窗口后台探针，不代表显示器实际呈现或用户手感验收。显示器/区域新录制采用0.5秒关键帧间隔；旧素材保留原样。具体对比见 [OpenScreen采用记录](docs/openscreen-adoption.md)，交付与验证见 [0.2.14记录](docs/release-0.2.14.md)。
+
+鼠标悬浮不改变预览，画面停留在点击帧；只有按住左键拖动才连续定位。常驻软件解码在本机表现较稳定，暂未启用默认硬解或共享GPU纹理。预览尺寸和清晰度规则保持不变。
+
+## 0.2.13 时间线定位与预览交互
 
 0.2.13 将时间线预览改为显式定位：鼠标悬浮且未按左键时不触发预览，画面停留在最近一次点击定位的帧；点击片段、效果或轨道刻度立即定位播放头。左键在标尺或空白轨道按住拖动时才连续预览，松开后停留在最后一帧。范围操作和新粘贴内容以当前播放头定位。工具条移除悬浮预览开关，不再产生悬浮预览事件、状态或灰色悬浮线。快速拖动沿用 active 加 latest pending 调度，不反复取消正在解码的请求。
 
@@ -52,6 +58,8 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 需要 .NET 10 SDK（仓库 `global.json` 以 10.0.401 为基准）、Windows Media Foundation、Microsoft Visual C++ x64 Runtime、FFmpeg/FFprobe。可用 `FRAMETRAIL_FFMPEG_DIR` 指定媒体工具目录；发行便携包自带 .NET 与 FFmpeg。
 
+构建和打包脚本会准备并校验固定FFmpeg 8.1 shared运行时，复制五个DLL、来源记录和许可材料；单独运行 `dotnet build` 前可执行 `scripts/ensure-libav.ps1`。对应源码获取方式见 [原生解码运行时](docs/libav-runtime.md)。
+
 ```powershell
 git submodule update --init --recursive
 pwsh -File scripts/build.ps1
@@ -59,7 +67,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.13
+pwsh -File scripts/package.ps1 -Version 0.2.14
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。
