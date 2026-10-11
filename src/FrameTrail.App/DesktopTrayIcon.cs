@@ -3,6 +3,7 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Threading;
 
 namespace FrameTrail.App;
 
@@ -170,7 +171,7 @@ internal sealed class DesktopTrayIcon : IDisposable
                     handled = true;
                     break;
                 case WmContextMenu:
-                    ShowMenu(GetTrayIconCenter());
+                    ShowMenu(DecodePoint(wParam));
                     handled = true;
                     break;
                 case WmRButtonUp:
@@ -205,7 +206,25 @@ internal sealed class DesktopTrayIcon : IDisposable
         hasShownMenu = true;
         lastMenuAt = now;
         _ = SetForegroundWindow(messageSink.Handle);
-        showMenu(point);
+
+        // The notification-area callback is sent while Explorer is still processing
+        // the tray click. Opening a StaysOpen=false WPF ContextMenu here can acquire
+        // mouse capture before that click has finished, so WPF sees the click as an
+        // outside interaction and closes the menu immediately. Queue the open until
+        // this native callback has unwound; this is dispatcher ordering, not a delay.
+        messageSink.Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            if (disposed) return;
+            try
+            {
+                showMenu(point);
+            }
+            catch (Exception error)
+            {
+                LastFailure = error;
+                reportFailure?.Invoke(error);
+            }
+        }));
     }
 
     private void RegisterIcon()
@@ -274,22 +293,6 @@ internal sealed class DesktopTrayIcon : IDisposable
         return new Point(x, y);
     }
 
-    private Point GetTrayIconCenter()
-    {
-        var identifier = new NotifyIconIdentifier
-        {
-            cbSize = (uint)Marshal.SizeOf<NotifyIconIdentifier>(),
-            hWnd = messageSink.Handle,
-            uID = IconId,
-            guidItem = Guid.Empty
-        };
-        var result = Shell_NotifyIconGetRect(identifier, out var rect);
-        if (result < 0)
-            throw Marshal.GetExceptionForHR(result) ?? new Win32Exception(result, "无法取得托盘图标的屏幕位置。");
-
-        return new Point((rect.Left + rect.Right) / 2d, (rect.Top + rect.Bottom) / 2d);
-    }
-
     private void VerifyDispatcher()
     {
         if (messageSink is not null && !messageSink.Dispatcher.CheckAccess())
@@ -327,30 +330,9 @@ internal sealed class DesktopTrayIcon : IDisposable
         public IntPtr hBalloonIcon;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NotifyIconIdentifier
-    {
-        public uint cbSize;
-        public IntPtr hWnd;
-        public uint uID;
-        public Guid guidItem;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativeRect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool Shell_NotifyIcon(uint dwMessage, in NotifyIconData lpData);
-
-    [DllImport("shell32.dll", SetLastError = true)]
-    private static extern int Shell_NotifyIconGetRect(in NotifyIconIdentifier identifier, out NativeRect iconLocation);
 
     [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern uint ExtractIconEx(string szFileName, int nIconIndex, ref IntPtr phiconLarge, ref IntPtr phiconSmall, uint nIcons);

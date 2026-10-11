@@ -157,6 +157,7 @@ public sealed class MemoWindow : Window
             VerticalContentAlignment = VerticalAlignment.Top,
             FontSize = 18,
             Margin = new Thickness(10),
+            Background = Brushes.Transparent,
             Text = File.Exists(file) ? File.ReadAllText(file) : "录制提纲…"
         };
         try
@@ -515,6 +516,11 @@ public sealed class MemoWindow : Window
     internal bool IsScrollingForProbe => isScrolling;
     internal double ScrollSpeedForProbe => speedSlider.Value;
     internal double BackgroundOpacityForProbe => memoBackgroundOpacity;
+    internal void SetBackgroundOpacityForProbe(double value)
+    {
+        memoBackgroundOpacity = Math.Clamp(value, .55, 1);
+        ApplyBackgroundOpacity();
+    }
     internal bool IsEditingForProbe => isEditing;
     internal FrameworkElement FooterForProbe => footer;
     internal Button ScrollButtonForProbe => scrollButton;

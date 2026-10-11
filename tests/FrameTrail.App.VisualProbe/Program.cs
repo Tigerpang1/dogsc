@@ -75,7 +75,7 @@ internal static class Program
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     Passed = true,
-                    Scope = "全局错误壳与重入保护、备忘录写盘失败和恢复；临时夹具和浅深主题离屏窗口，不替代实机关闭重开或录屏排除验收",
+                    Scope = "全局错误壳与重入保护、备忘录写盘失败和恢复、浅深主题像素透明度及隐藏 HWND 合成配置；只使用临时文稿，不显示或激活窗口，不替代实机关闭重开或录屏排除验收",
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} error recovery checks; {output}");

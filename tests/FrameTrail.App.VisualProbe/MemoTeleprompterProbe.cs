@@ -38,6 +38,82 @@ internal static class MemoTeleprompterProbe
             "invalid timing values cannot produce a runaway scroll step", bounded);
 
         VerifyThemeLayouts(output, check);
+        VerifyHiddenHandle(output, check);
+    }
+
+    private static void VerifyHiddenHandle(string output, Action<bool, string, object?> check)
+    {
+        var fixture = Path.Combine(Path.GetTempPath(), "FrameTrail-Teleprompter-Hwnd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(fixture);
+        var scriptPath = Path.Combine(fixture, "memo.txt");
+        File.WriteAllText(scriptPath, "仅用于隐藏 HWND 分层透明诊断的临时文稿。");
+        MemoWindow? memo = null;
+        var errors = new List<Exception>();
+        try
+        {
+            memo = new MemoWindow(scriptPath, (_, _, _) => { }, errors.Add) { Width = 410, Height = 400 };
+            var root = (FrameworkElement)memo.Content;
+            root.Measure(new Size(memo.Width, memo.Height));
+            root.Arrange(new Rect(0, 0, memo.Width, memo.Height));
+            root.UpdateLayout();
+
+            var handle = new WindowInteropHelper(memo).EnsureHandle();
+            var source = HwndSource.FromHwnd(handle) ?? throw new InvalidOperationException("EnsureHandle did not create an HwndSource.");
+            var backgroundNodes = DescribeBackgrounds(memo, (Visual)memo.Content);
+            var composition = source.CompositionTarget;
+            check(!memo.IsVisible && handle != IntPtr.Zero && memo.AllowsTransparency && source.UsesPerPixelOpacity,
+                "hidden memo HWND uses per-pixel opacity without showing or activating the window",
+                new { memo.IsVisible, memo.AllowsTransparency, source.UsesPerPixelOpacity, HandleCreated = handle != IntPtr.Zero, memo.WindowStyle });
+            check(composition is not null && composition.BackgroundColor.A == 0,
+                "hidden memo HwndTarget composition background preserves transparent pixels",
+                new { BackgroundColor = composition?.BackgroundColor.ToString(), CompositionTarget = composition?.GetType().FullName });
+            check(backgroundNodes.Any(node => node.StartsWith("Window=#00", StringComparison.Ordinal))
+                  && backgroundNodes.Any(node => node.StartsWith("Control:TextBox=#00", StringComparison.Ordinal))
+                  && backgroundNodes.Any(node => node.StartsWith("Border=#FF", StringComparison.Ordinal)),
+                "hidden memo visual tree background configuration is captured for the HWND diagnostic", backgroundNodes);
+            check(errors.Count == 0, "hidden HWND diagnostic did not touch a user memo or report fixture errors", new { Errors = errors.Count });
+        }
+        finally
+        {
+            if (memo is null)
+            {
+                Directory.Delete(fixture, recursive: true);
+            }
+            else
+            {
+                try
+                {
+                    var handle = new WindowInteropHelper(memo).Handle;
+                    memo.Close();
+                    check(new WindowInteropHelper(memo).Handle == IntPtr.Zero,
+                        "hidden diagnostic HWND is destroyed after closing the temporary memo", new { WasCreated = handle != IntPtr.Zero });
+                }
+                finally { if (Directory.Exists(fixture)) Directory.Delete(fixture, recursive: true); }
+            }
+        }
+    }
+
+    private static string[] DescribeBackgrounds(params DependencyObject[] roots)
+    {
+        var nodes = new List<string>();
+        foreach (var root in roots) Visit(root);
+        return nodes.ToArray();
+
+        void Visit(DependencyObject node)
+        {
+            if (node is Window window) nodes.Add($"Window={DescribeBrush(window.Background)};Opacity={window.Opacity:0.##}");
+            if (node is Border border) nodes.Add($"Border={DescribeBrush(border.Background)};Opacity={border.Opacity:0.##}");
+            if (node is Panel panel) nodes.Add($"Panel={DescribeBrush(panel.Background)};Opacity={panel.Opacity:0.##}");
+            if (node is Control control) nodes.Add($"Control:{control.GetType().Name}={DescribeBrush(control.Background)};Opacity={control.Opacity:0.##}");
+            for (var i = 0; i < VisualTreeHelper.GetChildrenCount(node); i++) Visit(VisualTreeHelper.GetChild(node, i));
+        }
+
+        static string DescribeBrush(Brush? brush) => brush switch
+        {
+            SolidColorBrush solid => $"{solid.Color}*{solid.Opacity:0.##}",
+            null => "null",
+            _ => brush.GetType().Name
+        };
     }
 
     private static void VerifyThemeLayouts(string output, Action<bool, string, object?> check)
@@ -101,6 +177,21 @@ internal static class MemoTeleprompterProbe
                   && !memo.IsScrollingForProbe && new WindowInteropHelper(memo).Handle == IntPtr.Zero,
                 $"{ThemeName(dark)}: text opacity stays one, scrolling starts paused, and render creates no HWND", null);
 
+            foreach (var editing in new[] { true, false })
+            {
+                memo.SetEditingMode(editing);
+                root.UpdateLayout();
+                memo.SetBackgroundOpacityForProbe(.55);
+                root.UpdateLayout();
+                var translucentAlpha = RenderPixel(root, Math.Min(350, (int)root.ActualWidth - 8), Math.Min(200, (int)root.ActualHeight - 8)).A;
+                memo.SetBackgroundOpacityForProbe(1);
+                root.UpdateLayout();
+                var opaqueAlpha = RenderPixel(root, Math.Min(350, (int)root.ActualWidth - 8), Math.Min(200, (int)root.ActualHeight - 8)).A;
+                check(translucentAlpha < opaqueAlpha && translucentAlpha < 240 && opaqueAlpha > 245,
+                    $"{ThemeName(dark)}: {(editing ? "editing" : "reading")} backdrop alpha follows the setting in rendered pixels", new { translucentAlpha, opaqueAlpha });
+            }
+            memo.SetBackgroundOpacityForProbe(.92);
+
             var bitmap = new RenderTargetBitmap((int)Math.Ceiling(root.ActualWidth), (int)Math.Ceiling(root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
             bitmap.Render(root);
             var encoder = new PngBitmapEncoder();
@@ -149,6 +240,15 @@ internal static class MemoTeleprompterProbe
             && bounds.All(rect => rect.Left >= -.5 && rect.Top >= -.5
                 && rect.Right <= footer.ActualWidth + .5 && rect.Bottom <= footer.ActualHeight + .5)
             && footer.TransformToAncestor(root).TransformBounds(new Rect(footer.RenderSize)).Bottom <= root.ActualHeight + .5;
+    }
+
+    private static (byte B, byte G, byte R, byte A) RenderPixel(FrameworkElement root, int x, int y)
+    {
+        var bitmap = new RenderTargetBitmap((int)Math.Ceiling(root.ActualWidth), (int)Math.Ceiling(root.ActualHeight), 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(root);
+        var pixel = new byte[4];
+        bitmap.CopyPixels(new Int32Rect(x, y, 1, 1), pixel, 4, 0);
+        return (pixel[0], pixel[1], pixel[2], pixel[3]);
     }
 
     private static void InvokeThemeClick(MainWindow owner) =>

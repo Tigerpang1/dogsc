@@ -64,7 +64,7 @@ try {
         $desktopSurfacesOutput = Join-Path $repoRoot ('artifacts/validation/desktop-surfaces-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-surfaces $desktopSurfacesOutput
         if ($LASTEXITCODE -ne 0) { throw "独立录制浮窗布局与动态主题检查失败，退出码 $LASTEXITCODE" }
-        Write-Host 'WPF离屏检查完成，未创建桌面窗口或访问采集设备；真实交互仍须单独验收。'
+        Write-Host 'WPF离屏与隐藏 HWND 检查完成，未显示桌面窗口或访问采集设备；真实交互仍须单独验收。'
     }
 
     if ($IncludeCaptureProbe) {

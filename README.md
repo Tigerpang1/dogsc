@@ -4,15 +4,15 @@ FrameTrail 是基于 [DogSC](https://github.com/laogou717/dogsc) 的设计与核
 
 固定上游提交：`e207d11b111c5e58152238fb64115b2009850547`。开始迁移时核验远端 `main` 与 `v0.1.2` 均为该提交；本轮继续采用此基线。源码子模块在 `upstream/dogsc`，MIT 许可全文在 `licenses/DogSC-MIT.txt`。
 
-## 当前：0.2.9 桌面常驻与提词器开发候选
+## 当前：0.2.10 桌面交互修复候选
 
 当前源码候选增加桌面常驻与口播提词器交互：正常启动显示录制浮窗，主编辑器保持隐藏；关闭主编辑器会收起到通知区域，后续启动会唤回主实例。托盘、录制浮窗菜单和主窗设置菜单都提供明确的“退出 FrameTrail”入口；录制进行中选择退出会先询问是否结束并保存。托盘初始化失败时会显示主编辑器作为前台回退。
 
-口播提词器可编辑或阅读文稿，自动滚动默认停止；可调整速度、暂停/继续和回到开头。背景不透明度只作用于背景，文字保持清晰。正文自动保存，模式和外观设置在收起或关闭时保存；保存失败时窗口与文字会保留，可修复文件访问后重试。具体操作见[使用说明](docs/user-guide.md)。这些桌面常驻与提词器交互尚未实机验收，不作为已完成证据。
+口播提词器可编辑或阅读文稿，自动滚动默认停止；可调整速度、暂停/继续和回到开头。背景不透明度只作用于背景，文字保持清晰。正文自动保存，模式和外观设置在收起或关闭时保存；保存失败时窗口与文字会保留，可修复文件访问后重试。具体操作见[使用说明](docs/user-guide.md)。0.2.9已由用户确认主窗关闭后的浮窗独立、托盘找回和提词滚动；托盘菜单闪退仍需修复，退出和重启保存尚待验收。
 
 当前功能台账为28项通过、1项待修、1项待验、3项延期，分母仍为33项。FT-07桌面常驻/浮窗/提词器交互待修，权限拒绝后的实机恢复待验；该状态不代表达到95%门槛。下列0.2.5～0.2.8段落保留历史范围与证据，版本身份不能混用。
 
-0.2.9便携包、安装器和源码包已生成，包内容校验、仓库外源码重建和本机静默安装卸载通过；具体产物与验收边界见 [0.2.9候选交付](docs/release-0.2.9.md)。
+0.2.10针对托盘菜单打开时机和提词器编辑区透明底层提供修复候选，见 [0.2.10修复说明](docs/release-0.2.10.md)。0.2.9已有便携包、安装器和源码包，其历史验证与已知问题见 [0.2.9候选交付](docs/release-0.2.9.md)。
 
 ## 0.2.5 实现范围
 
@@ -49,7 +49,7 @@ pwsh -File scripts/test.ps1
 pwsh -File scripts/test.ps1 -IncludeMediaProbe -IncludeIntegration
 pwsh -File scripts/test.ps1 -IncludeVisualProbe
 pwsh -File scripts/test-release-manifest.ps1
-pwsh -File scripts/package.ps1 -Version 0.2.9
+pwsh -File scripts/package.ps1 -Version 0.2.10
 ```
 
 启动 `src/FrameTrail.App/bin/x64/Release/net10.0-windows/win-x64/FrameTrail.exe`。打包产物在 `artifacts/release`；[使用说明](docs/user-guide.md) 和 [构建与打包](docs/build-and-release.md) 说明操作与依赖。
