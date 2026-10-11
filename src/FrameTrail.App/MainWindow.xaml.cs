@@ -56,6 +56,7 @@ public partial class MainWindow : Window
 
     public MainWindow()
     {
+        _ = WarmUpPreviewAsync();
         InitializeComponent(); InitializeEditorShell(); SurfaceWindow.AttachNativeEdges(this);
         MainWindowPlacement.Attach(this);
         SurfaceWindow.FitToWorkArea(this);
@@ -88,6 +89,11 @@ public partial class MainWindow : Window
             }
         });
         playbackTimer.Tick += (_, _) => { if (!playing) return; refreshing = true; Playhead.Value = Math.Min(Player.Position.TotalSeconds, Playhead.Maximum); refreshing = false; UpdateTime(); };
+    }
+    private static async Task WarmUpPreviewAsync()
+    {
+        try { await GpuFrameRenderer.WarmUpShadersAsync().ConfigureAwait(false); }
+        catch (Exception error) { App.Log(error); }
     }
     private async void WindowLoaded(object sender, RoutedEventArgs e)
     {
@@ -220,7 +226,7 @@ public partial class MainWindow : Window
             if(excludeEditorDuringRecording)NativeWindows.Exclude(this);
             RegisterRecordingMarkerHotKey();
             await File.WriteAllTextAsync(Path.Combine(recordingFolder,"recording-controls.json"),JsonSerializer.Serialize(new { MarkerShortcut=markerHotKey.ShortcutText, MarkerShortcutIsFallback=markerHotKey.IsFallback, MarkerShortcutRegistrationError=markerHotKey.RegistrationError },new JsonSerializerOptions { WriteIndented=true }));
-            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(()=>AddMarker("button"), StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);},markerHotKey.ShortcutText,markerHotKey.IsFallback); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
+            recordingStart=0; recordingFaultHandled=false; await capture.StartAsync(request); await StartAdditionalTracks(); recordingGuard.Start(); recordingBar = new RecordingBar(()=>AddMarker("button"), StopRecording, async()=>await Guard(ToggleRecordingPause), error=>{App.Log(error);Status.Text="录制未能正常完成，原素材已保留。";SurfaceDialog.Show(this,error.Message,"录制未能完成",MessageBoxButton.OK,MessageBoxImage.Error);},markerHotKey.ShortcutText,markerHotKey.IsFallback,ShowDesktopMenu); recordingBar.Show(); RecorderOverlay.Visibility=Visibility.Collapsed;
             RecordButton.Content = "■  结束录制"; Status.Text = "正在录制，素材与鼠标事件写入本机。";
         }
         finally { RecordButton.IsEnabled = true;if(capture.State is not (CaptureState.Recording or CaptureState.Paused))NativeWindows.SetWindowDisplayAffinity(new WindowInteropHelper(this).Handle,0); }
@@ -314,7 +320,8 @@ public partial class MainWindow : Window
             if (desktopResident && !desktopExiting) ShowEditorForDesktop();
             await OpenProject(path);
             var journal = Path.Combine(recordingFolder!, "recording-recovery.json"); if (File.Exists(journal)) File.Delete(journal);
-            Status.Text = (recordingTrackWarnings.Count>0?$"录制已保留，有 {recordingTrackWarnings.Count} 项素材警告，详情见 recording-warnings.txt。 ":"")+$"录制完成 · {info.Duration:0.0}s · {created.PointerEvents.Count} 条鼠标事件。时钟偏移可在右侧校准。";
+            Status.Text = $"录制完成 · {info.Duration:0.0} 秒" +
+                (recordingTrackWarnings.Count > 0 ? $" · 有 {recordingTrackWarnings.Count} 项素材提醒，详情见 recording-warnings.txt。" : "");
         }
         catch (Exception error)
         {
@@ -409,7 +416,7 @@ public partial class MainWindow : Window
         }
         auxiliaryDurations.Clear();
         foreach (var entry in openedAuxiliaryDurations) auxiliaryDurations[entry.Key] = entry.Value;
-        project = opened; projectFile = path; selectedEffect=null;TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
+        project = opened; projectFile = path; selectedEffect=null;ClearTimelineHover();TimelineView.MultiSelection.Clear();TimelineView.RangeStart=null;TimelineView.RangeEnd=null; history = new(project, Clone); timelineAssets=null; InvalidateProxy(); RefreshProject(); Playhead.Value = 0; RecentProjects.Add(path); Status.Text = ProjectOpenedStatus(path, auxiliaryWarning); _=LoadTimelineAssets(media,opened); await RenderPreview(0);
     }
     private static bool MainMediaCoversTimeline(MediaInfo info, FrameTrailProject candidate)
     {
@@ -530,40 +537,9 @@ public partial class MainWindow : Window
             var nearest=edges.MinBy(x=>Math.Abs(x-e.NewValue)); var tolerance=Math.Min(.15,project.Timeline.Duration*8/Math.Max(Playhead.ActualWidth,1));
             if(Math.Abs(nearest-e.NewValue)<tolerance) { refreshing=true;Playhead.Value=nearest;refreshing=false; }
         }
-        StopPlayback(); UpdateTime(); _ = Guard(() => RenderPreview(Playhead.Value));
+        StopPlayback(); ClearTimelineHover(); UpdateTime(); _ = Guard(() => RenderTimelinePreview(Playhead.Value));
     }
     private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
-    private async Task RenderPreview(double time)
-    {
-        if (closingInProgress || project == null || projectFile == null) return; seekCancellation?.Cancel(); seekCancellation = new(); var token = seekCancellation.Token;
-        AutomationProperties.SetItemStatus(PreviewImage, "rendering");
-        var snapshot = project; var path = FrameTrailProjectStore.ResolveMediaPath(projectFile,snapshot);
-        try
-        {
-            await Task.Delay(90,token);
-            if (!ReferenceEquals(evaluatedProject,snapshot)) { previewEvaluator=new PreparedFrameSceneEvaluator(snapshot); evaluatedProject=snapshot; }
-            var scene = previewEvaluator!.Evaluate(Math.Clamp(time,0,snapshot.Timeline.Duration));
-            if(selectedEffect?.Kind=="zoom"&&!playing&&inspectorTab=="zoom"&&snapshot.ZoomClips.Any(x=>x.Id==selectedEffect.Id))scene=previewEvaluator.EvaluateTargetForZoom(selectedEffect.Id,Math.Clamp(time,0,snapshot.Timeline.Duration));
-            if(selectedEffect?.Kind=="motion" && !playing && inspectorTab=="zoom" && snapshot.ScreenMotions.Any(x=>x.Id==selectedEffect.Id))scene=scene with{ScreenMotion=previewEvaluator.EvaluateTargetForMotion(selectedEffect.Id)};
-            var inputWidth = Math.Min(previewResolution,(int)snapshot.Media.Width); var inputHeight = Math.Max(2,(int)(snapshot.Media.Height*inputWidth/snapshot.Media.Width));
-            var width = previewResolution; var height = Math.Max(2,(int)Math.Round(width*(double)snapshot.Settings.CanvasHeight/snapshot.Settings.CanvasWidth));
-            var buffer = await MediaTools.DecodeFrameAsync(path,Math.Min(scene.SourceTime,Math.Max(0,snapshot.Media.Duration-1d/30)),inputWidth,inputHeight,token);
-            await previewGate.WaitAsync(token); BitmapSource image;
-            try
-            {
-                var size=(inputWidth,inputHeight,width,height);
-                if(previewAssets==null||previewAssetsProject!=projectFile||previewSize!=size){previewAssets?.Dispose();previewAssets=new(projectFile!,width,height);previewAssetsProject=projectFile;}
-                var layers=await previewAssets.LoadAsync(scene,token);
-                image = await Task.Run(() => { token.ThrowIfCancellationRequested(); if(previewRenderer==null || previewSize!=size) { previewRenderer?.Dispose(); previewRenderer=new(inputWidth,inputHeight,width,height); previewSize=size; } var output = new byte[width*height*4]; previewRenderer.Render(buffer,scene,output,layers); var bmp = BitmapSource.Create(width,height,96,96,PixelFormats.Bgra32,null,output,width*4); bmp.Freeze(); return bmp; },token);
-            }
-            finally { previewGate.Release(); }
-            token.ThrowIfCancellationRequested(); PreviewImage.Source = image;displayedPreviewScene=scene;displayedPreviewProject=snapshot; PreviewImage.Visibility = Visibility.Visible; RefreshPreviewSelection();
-            AutomationProperties.SetItemStatus(PreviewImage, "ready");
-        }
-        catch (OperationCanceledException) { }
-        catch (Exception) when (token.IsCancellationRequested) { }
-        catch { AutomationProperties.SetItemStatus(PreviewImage, "error"); throw; }
-    }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
     private void InvalidateProxy() { StopPlayback(); if (proxyPath != null && File.Exists(proxyPath)) { Player.Close(); try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; }

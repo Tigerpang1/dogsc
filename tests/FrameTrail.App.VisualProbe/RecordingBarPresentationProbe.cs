@@ -30,6 +30,16 @@ internal static class RecordingBarPresentationProbe
                     dark = !dark;
                 }
 
+                var noMenuBar = new RecordingBar(() => { }, () => Task.CompletedTask, () => Task.CompletedTask);
+                try
+                {
+                    var noMenuButtons = Descendants((DependencyObject)noMenuBar.Content).OfType<Button>().ToArray();
+                    check(noMenuButtons.All(button => AutomationProperties.GetAutomationId(button) != "RecordingBarMenu"),
+                        $"{theme}: menu button is omitted when no callback is supplied",
+                        new { AutomationIds = noMenuButtons.Select(AutomationProperties.GetAutomationId).ToArray() });
+                }
+                finally { noMenuBar.CloseAfterRecording(); }
+
                 foreach (var shortcut in new[]
                          {
                              new ShortcutCase("default", "Ctrl+Alt+M", false, "Ctrl+Alt+M"),
@@ -38,12 +48,15 @@ internal static class RecordingBarPresentationProbe
                          })
                 {
                     var callbackCount = 0;
+                    var menuCallbackCount = 0;
+                    Button? callbackButton = null;
                     var bar = new RecordingBar(
                         () => callbackCount++,
                         () => Task.CompletedTask,
                         () => Task.CompletedTask,
                         markerShortcut: shortcut.Shortcut,
-                        markerShortcutIsFallback: shortcut.IsFallback);
+                        markerShortcutIsFallback: shortcut.IsFallback,
+                        showMenu: button => { menuCallbackCount++; callbackButton = button; });
                     try
                     {
                         var barHandle = new System.Windows.Interop.WindowInteropHelper(bar).Handle;
@@ -55,14 +68,20 @@ internal static class RecordingBarPresentationProbe
                         Layout(root, bar.Width, bar.Height);
                         var buttons = Descendants(root).OfType<Button>().ToArray();
                         var mark = buttons.SingleOrDefault(button => AutomationProperties.GetAutomationId(button) == "RecordingAddMarker");
+                        var menu = buttons.SingleOrDefault(button => AutomationProperties.GetAutomationId(button) == "RecordingBarMenu");
                         var pause = buttons.FirstOrDefault(button => button.ToolTip?.ToString() == "暂停录制");
                         var end = buttons.FirstOrDefault(button => button.Content?.ToString() == "结束录制");
-                        check(mark is not null && pause is not null && end is not null,
-                            $"{theme}/{shortcut.Name}: marker, pause, and end controls exist",
+                        check(mark is not null && menu is not null && pause is not null && end is not null,
+                            $"{theme}/{shortcut.Name}: marker, pause, end, and menu controls exist",
                             new { ButtonCount = buttons.Length, AutomationIds = buttons.Select(AutomationProperties.GetAutomationId).ToArray() });
 
-                        if (mark is null || pause is null || end is null)
+                        if (mark is null || menu is null || pause is null || end is null)
                             continue;
+
+                        check(menu.Width == 38 && menu.Height == 38 && menu.ToolTip?.ToString() == "FrameTrail 菜单" &&
+                              AutomationProperties.GetName(menu) == "FrameTrail 菜单",
+                            $"{theme}/{shortcut.Name}: menu button has the expected size and accessible label",
+                            new { menu.Width, menu.Height, ToolTip = menu.ToolTip?.ToString(), Name = AutomationProperties.GetName(menu) });
 
                         var text = Descendants(mark).OfType<TextBlock>().Select(block => block.Text).ToArray();
                         check(text.Contains("标记") && text.Contains(shortcut.ExpectedText),
@@ -102,7 +121,7 @@ internal static class RecordingBarPresentationProbe
                             icon.Bounds.Left >= 0 && icon.Bounds.Top >= 0 &&
                             icon.Bounds.Right <= icon.ButtonWidth + .5 && icon.Bounds.Bottom <= icon.ButtonHeight + .5);
                         check(iconsFit,
-                            $"{theme}/{shortcut.Name}: marker and pause icons fit inside their buttons",
+                            $"{theme}/{shortcut.Name}: marker, pause, and menu icons fit inside their buttons",
                             new { Icons = iconBounds });
 
                         var foreground = FindTextColor(mark);
@@ -150,6 +169,13 @@ internal static class RecordingBarPresentationProbe
                         check(callbackCount == 1,
                             $"{theme}/{shortcut.Name}: clicking marker invokes its callback once",
                             new { callbackCount });
+
+                        menu.RaiseEvent(new RoutedEventArgs(Button.ClickEvent, menu));
+                        check(menuCallbackCount == 1 && ReferenceEquals(callbackButton, menu) &&
+                              new System.Windows.Interop.WindowInteropHelper(bar).Handle == IntPtr.Zero && !bar.IsVisible,
+                            $"{theme}/{shortcut.Name}: clicking the unshown menu button passes that button to its callback exactly once",
+                            new { menuCallbackCount, SameButton = ReferenceEquals(callbackButton, menu), bar.IsVisible,
+                                Handle = new System.Windows.Interop.WindowInteropHelper(bar).Handle.ToInt64() });
                     }
                     finally
                     {

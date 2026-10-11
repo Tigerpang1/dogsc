@@ -45,6 +45,7 @@ internal static class AudioWriterFailureProbe
             recoveredOutput,
             bytes = bytes.Length,
             result.Warnings,
+            result.Diagnostics,
             result.PausedIntervals
         }, new JsonSerializerOptions { WriteIndented = true }));
     }

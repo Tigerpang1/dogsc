@@ -175,7 +175,7 @@ internal sealed class FfmpegDesktopRecorder : IAsyncDisposable
             "-an", "-vf", FormattableString.Invariant($"hwdownload,format=bgra,scale={_outputWidth}:{_outputHeight}:flags=bilinear:in_range=pc:out_range=tv:out_color_matrix=bt709,format=yuv420p"),
             "-color_range", "tv", "-colorspace", "bt709", "-color_trc", "iec61966-2-1", "-color_primaries", "bt709",
             "-r", _video.FrameRate.ToString(CultureInfo.InvariantCulture), "-fps_mode", "cfr" };
-        args.AddRange(EncoderArguments(EncoderName, _video));
+        args.AddRange(CaptureVideoQuality.EncoderArguments(EncoderName, _video, _outputWidth, _outputHeight));
         args.AddRange(["-movflags", "+faststart", "-y", segment]);
         foreach (var arg in args) psi.ArgumentList.Add(arg);
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
@@ -493,7 +493,7 @@ internal sealed class FfmpegDesktopRecorder : IAsyncDisposable
     private async Task<bool> TestEncoderAsync(string encoder, CancellationToken cancellationToken)
     {
         var args = new List<string> { "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=black:s=256x256:r=1:d=1" };
-        args.AddRange(EncoderArguments(encoder, _video));
+        args.AddRange(CaptureVideoQuality.EncoderArguments(encoder, _video, _outputWidth, _outputHeight));
         args.AddRange(["-frames:v", "1", "-f", "null", "-"]);
         var psi = new ProcessStartInfo(_ffmpeg) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
         foreach (var arg in args) psi.ArgumentList.Add(arg);
@@ -511,31 +511,6 @@ internal sealed class FfmpegDesktopRecorder : IAsyncDisposable
         catch (OperationCanceledException) { if (process is not null) await TerminateAsync(process).ConfigureAwait(false); throw; }
         catch (TimeoutException) { if (process is not null) await TerminateAsync(process).ConfigureAwait(false); SetStderrTail($"{encoder}: probe timed out after 8 seconds."); return false; }
         catch (Exception ex) { if (process is not null) await TerminateAsync(process).ConfigureAwait(false); SetStderrTail($"{encoder}: {ex.Message}"); return false; }
-    }
-
-    private static IEnumerable<string> EncoderArguments(string encoder, VideoOptions video)
-    {
-        yield return "-c:v"; yield return encoder;
-        switch (encoder)
-        {
-            case "h264_nvenc":
-                yield return "-preset"; yield return "p4"; yield return "-tune"; yield return "ull";
-                yield return "-b:v"; yield return (video.Bitrate ?? 6_000_000).ToString(CultureInfo.InvariantCulture);
-                break;
-            case "h264_amf":
-                yield return "-usage"; yield return "ultralowlatency"; yield return "-b:v"; yield return (video.Bitrate ?? 6_000_000).ToString(CultureInfo.InvariantCulture);
-                break;
-            case "h264_qsv":
-                yield return "-preset"; yield return "veryfast"; yield return "-b:v"; yield return (video.Bitrate ?? 6_000_000).ToString(CultureInfo.InvariantCulture);
-                break;
-            case "h264_mf":
-                yield return "-b:v"; yield return (video.Bitrate ?? 6_000_000).ToString(CultureInfo.InvariantCulture);
-                break;
-            default:
-                yield return "-preset"; yield return "ultrafast"; yield return "-tune"; yield return "zerolatency";
-                yield return "-b:v"; yield return (video.Bitrate ?? 6_000_000).ToString(CultureInfo.InvariantCulture);
-                break;
-        }
     }
 
     private static int Even(int value) => Math.Max(2, value - value % 2);

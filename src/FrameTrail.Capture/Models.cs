@@ -35,7 +35,8 @@ public sealed record RecordingResult(string OutputPath, long StartStopwatchTicks
     long? FirstFrameObservedStopwatchTicks = null, int? FirstFrameNumber = null,
     long? FirstFrameSystemTimestampUnixMilliseconds = null,
     long? ProgressEstimatedFirstFrameStopwatchTicks = null,
-    long? StopObservedStopwatchTicks = null);
+    long? StopObservedStopwatchTicks = null,
+    IReadOnlyList<string>? Diagnostics = null);
 public sealed record CapturePauseInterval(long PauseStartStopwatchTicks, long ResumeStopwatchTicks,
     long? PauseStartSourceFrame = null, long? ResumeSourceFrame = null, int? SourceSampleRate = null,
     long? PauseBoundaryNominalOffsetMaxFrames = null, long? AudioOutputFrame = null);
@@ -52,7 +53,8 @@ public sealed record CaptureTrackResult(CaptureTrackHandle Handle, long StopStop
     int Width, int Height, int FrameRate, EncoderMode EncoderMode, IReadOnlyList<string> Warnings,
     IReadOnlyList<CapturePauseInterval> PausedIntervals, int? AudioSampleRate = null,
     double? AudioDeviceClockDriftPpm = null, long? AudioFramesWritten = null,
-    IReadOnlyList<CaptureAudioClockSegment>? AudioClockSegments = null, double? AudioSourceRate = null);
+    IReadOnlyList<CaptureAudioClockSegment>? AudioClockSegments = null, double? AudioSourceRate = null,
+    IReadOnlyList<string>? Diagnostics = null);
 public sealed record CaptureTrackStateChanged(Guid TrackId, CaptureTrackKind Kind, CaptureTrackState State,
     long StopwatchTicks, string? Detail = null);
 public sealed record CaptureStateChanged(CaptureState State, long StopwatchTicks, string? Detail = null);

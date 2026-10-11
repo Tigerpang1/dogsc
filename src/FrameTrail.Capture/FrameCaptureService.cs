@@ -28,6 +28,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
     private EncoderMode _encoderMode = EncoderMode.Unknown;
     private string? _activeOutputPath;
     private readonly List<string> _warnings = [];
+    private readonly List<string> _diagnostics = [];
     private string? _windowPreviewFirstFrameDiagnostic;
     private WindowRecordingSource? _windowSource;
     private CancellationTokenSource? _windowMonitorCancellation;
@@ -109,6 +110,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
             await DisposeRecordingComponentsAsync().ConfigureAwait(false);
             _request = request;
             _warnings.Clear();
+            _diagnostics.Clear();
             _backendFailure = null;
             _backendFailureSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
             _pausedIntervals.Clear(); _pauseStartTicks = 0;
@@ -212,7 +214,8 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 await DisposeRecordingComponentsAsync().ConfigureAwait(false);
                 var desktopResult = new RecordingResult(_activeOutputPath!, _startTicks, _stopTicks, Stopwatch.Frequency,
                     mode, encoder, _width, _height, _frameRate, desktopInputPath, _warnings.ToArray(), _pausedIntervals.ToArray(),
-                    _firstFrameObservedTicks == 0 ? null : _firstFrameObservedTicks, null, null, progressFrameEstimate, stopObservedTicks);
+                    _firstFrameObservedTicks == 0 ? null : _firstFrameObservedTicks, null, null, progressFrameEstimate, stopObservedTicks,
+                    _diagnostics.ToArray());
                 _latestCompletedResult = desktopResult;
                 _activeOutputPath = null;
                 SetState(CaptureState.Completed);
@@ -263,15 +266,16 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 _warnings.Add("Capture backend failure: " + failedBackend.Message);
             var inputPath = _inputSampler?.OutputPath;
             await DisposeRecordingComponentsAsync().ConfigureAwait(false);
-            if (Volatile.Read(ref _windowPreviewFirstFrameDiagnostic) is { } previewDiagnostic) _warnings.Add(previewDiagnostic);
-            else if (_request?.Target.Kind == CaptureTargetKind.Window) _warnings.Add("Window source preview did not yield a diagnostic frame before capture finalized.");
+            if (Volatile.Read(ref _windowPreviewFirstFrameDiagnostic) is { } previewDiagnostic) _diagnostics.Add(previewDiagnostic);
+            else if (_request?.Target.Kind == CaptureTargetKind.Window) _diagnostics.Add("Window source preview did not yield a diagnostic frame before capture finalized.");
             SetState(CaptureState.Completed);
             _activeOutputPath = null;
             var result = new RecordingResult(output, _startTicks, _stopTicks, Stopwatch.Frequency, _encoderMode,
                 _encoderName, _width, _height, _frameRate, inputPath, _warnings.ToArray(), _pausedIntervals.ToArray(),
                 Interlocked.Read(ref _firstFrameObservedTicks) is var firstFrameTicks && firstFrameTicks != 0 ? firstFrameTicks : null,
                 Volatile.Read(ref _firstEncodedFrameSeen) == 2 ? Volatile.Read(ref _firstFrameNumber) : null,
-                Volatile.Read(ref _firstEncodedFrameSeen) == 2 ? Interlocked.Read(ref _firstFrameSystemTimestampUnixMilliseconds) : null);
+                Volatile.Read(ref _firstEncodedFrameSeen) == 2 ? Interlocked.Read(ref _firstFrameSystemTimestampUnixMilliseconds) : null,
+                Diagnostics: _diagnostics.ToArray());
             _latestCompletedResult = result;
             if (Volatile.Read(ref _windowTargetLost) != 0) _windowAutoStopResult = result;
             try { RecordingCompleted?.Invoke(result); }
@@ -402,16 +406,16 @@ public sealed class FrameCaptureService : IFrameCaptureService
                     catch (Exception ex) { _warnings.Add($"Input tracking unavailable: {ex.Message}"); }
                 });
             _desktopRecorder.UnexpectedExit += OnDesktopCaptureUnexpectedExit;
-            _warnings.Add("Display/region capture uses FFmpeg ddagrab Desktop Duplication; audio is recorded as separate WAV tracks through ICaptureTrackService.");
-            _warnings.Add("FirstFrameObservedStopwatchTicks is observed when the first ddagrab frame enters setpts and converted from FFmpeg wall-clock time to Stopwatch using a launch-time pair; it is an observation estimate, not a native frame PTS.");
-            _warnings.Add("FFmpeg ddagrab output index follows DXGI enumeration; this machine's output-index mapping is not verified on multi-monitor systems.");
+            _diagnostics.Add("Display/region capture uses FFmpeg ddagrab Desktop Duplication; audio is recorded as separate WAV tracks through ICaptureTrackService.");
+            _diagnostics.Add("FirstFrameObservedStopwatchTicks is observed when the first ddagrab frame enters setpts and converted from FFmpeg wall-clock time to Stopwatch using a launch-time pair; it is an observation estimate, not a native frame PTS.");
+            _diagnostics.Add("FFmpeg ddagrab output index follows DXGI enumeration; this machine's output-index mapping is not verified on multi-monitor systems.");
             if ((request.Audio?.RecordSystemAudio ?? false) || (request.Audio?.RecordMicrophone ?? false))
                 _warnings.Add("AudioOptions are not muxed by the ddagrab backend; start independent WAV capture through ICaptureTrackService.");
             await _desktopRecorder.StartAsync(cancellationToken).ConfigureAwait(false);
             _encoderMode = _desktopRecorder.EncoderMode;
             _encoderName = _desktopRecorder.EncoderName;
             if (_encoderMode == EncoderMode.Unknown)
-                _warnings.Add("FFmpeg Media Foundation encoder was selected, but its active hardware/software mode is not exposed.");
+                _diagnostics.Add("FFmpeg Media Foundation encoder was selected, but its active hardware/software mode is not exposed.");
             if (_desktopRecorder.EncoderFailures.Count > 0)
                 _warnings.Add("Encoder fallback attempts failed: " + string.Join(" | ", _desktopRecorder.EncoderFailures));
             SetState(CaptureState.Recording);
@@ -470,7 +474,7 @@ public sealed class FrameCaptureService : IFrameCaptureService
                 source = new DisplayRecordingSource(request.Target.Id) { RecorderApi = RecorderApi.DesktopDuplication, IsCursorCaptureEnabled = false };
                 break;
             case CaptureTargetKind.Window:
-                _warnings.Add("Window capture uses ScreenRecorderLib WindowRecordingSource (Windows Graphics Capture). The first-image time anchor uses Stopwatch when the source preview callback arrives, with the recorder frame callback as fallback; neither callback exposes a native source-frame timestamp.");
+                _diagnostics.Add("Window capture uses ScreenRecorderLib WindowRecordingSource (Windows Graphics Capture). The first-image time anchor uses Stopwatch when the source preview callback arrives, with the recorder frame callback as fallback; neither callback exposes a native source-frame timestamp.");
                 var windowSource = new WindowRecordingSource(request.Target.WindowHandle)
                 {
                     IsBorderRequired = false,
@@ -502,9 +506,9 @@ public sealed class FrameCaptureService : IFrameCaptureService
         };
         if (video.Bitrate is int bitrate) videoOptions.Bitrate = bitrate;
         if (video.EncoderPreference == EncoderPreference.Hardware)
-            _warnings.Add("Hardware encoding was requested; ScreenRecorderLib does not expose which encoder Media Foundation ultimately selected.");
+            _diagnostics.Add("Hardware encoding was requested; ScreenRecorderLib does not expose which encoder Media Foundation ultimately selected.");
         else if (video.EncoderPreference == EncoderPreference.Automatic)
-            _warnings.Add("Encoder mode is reported as Unknown because ScreenRecorderLib does not expose Media Foundation encoder selection.");
+            _diagnostics.Add("Encoder mode is reported as Unknown because ScreenRecorderLib does not expose Media Foundation encoder selection.");
         var outputOptions = new OutputOptions { OutputFrameSize = new ScreenRecorderLib.ScreenSize(_width, _height), RecorderMode = RecorderMode.Video };
         var audioOptions = CreateAudioOptions(request.Audio ?? new AudioOptions());
         var mouse = new MouseOptions { IsMousePointerEnabled = false, IsMouseClicksDetected = false };

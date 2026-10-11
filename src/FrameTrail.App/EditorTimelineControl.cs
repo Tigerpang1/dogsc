@@ -23,7 +23,12 @@ public sealed class EditorTimelineControl : FrameworkElement
  public bool Filmstrip {get;set;}=true;
  public bool Waveform {get;set;}=true;
  public bool Snap {get;set;}=true;
- public bool HoverEnabled {get;set;}=true;
+ bool hoverEnabled=true;
+ public bool HoverEnabled
+ {
+  get=>hoverEnabled;
+  set{if(hoverEnabled==value)return;hoverEnabled=value;if(!value)ClearHoverPreview();}
+ }
  public double? HoverTime {get;private set;}
  public event Action<double>? SeekRequested;
  public event Action<TimelineSelection>? SelectionRequested;
@@ -42,6 +47,31 @@ public sealed class EditorTimelineControl : FrameworkElement
  double Scale=>DocumentWidth/Math.Max(Project?.Timeline.Duration??1,.01);
  double X(double t)=>LabelWidth+t*Scale-Offset;
  double Time(double x)=>Math.Clamp((x-LabelWidth+Offset)/Scale,0,Project?.Timeline.Duration??0);
+ double FrameTime(double time)
+ {
+  var project=Project;if(project==null)return 0;var duration=project.Timeline.Duration;var rate=project.Media.FrameRate;
+  if(!double.IsFinite(rate)||rate<=0)rate=30;
+  var safe=Math.Clamp(time,0,duration);var elapsed=0d;
+  for(var index=0;index<project.Timeline.Segments.Count;index++)
+  {
+   var segment=project.Timeline.Segments[index];var outputEnd=elapsed+segment.OutputDuration;
+   if(safe<outputEnd||index==project.Timeline.Segments.Count-1)
+   {
+    var source=Math.Clamp(segment.SourceStart+(safe-elapsed)*segment.PlaybackRate,segment.SourceStart,segment.SourceEnd);
+    var sourceLimit=Math.Min(segment.SourceEnd,project.Media.Duration);
+    var maxFrame=Math.Max(0,Math.Ceiling(sourceLimit*rate)-1);
+    var frame=Math.Min(Math.Floor(source*rate),maxFrame);
+    var frameTime=Math.Max(segment.SourceStart,frame/rate);
+    return elapsed+Math.Clamp((frameTime-segment.SourceStart)/segment.PlaybackRate,0,segment.OutputDuration);
+   }
+   elapsed=outputEnd;
+  }
+  return 0;
+ }
+ internal void ClearHoverPreview(bool notify=true)
+ {
+  HoverTime=null;InvalidateVisual();if(notify)HoverRequested?.Invoke(null);
+ }
  bool IsHighContrast=>isHighContrast;
  Brush B(string name)
  {
@@ -128,33 +158,56 @@ public sealed class EditorTimelineControl : FrameworkElement
  }
  protected override void OnMouseDown(MouseButtonEventArgs e)
  {
-  base.OnMouseDown(e);Focus();if(Project==null)return;var p=e.GetPosition(this);if(p.X<LabelWidth){if(e.ChangedButton==MouseButton.Left&&p.Y<RulerHeight){TrackMenuRequested?.Invoke();return;}if(e.ChangedButton==MouseButton.Left&&p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);if((uint)index<(uint)lanes.Length){HiddenTracks.Add(lanes[index].Key);Refresh();e.Handled=true;}}return;}
-  var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));
-  if(e.ChangedButton==MouseButton.Right){if(hit!=null){Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);}ContextRequested?.Invoke();e.Handled=true;return;}
-  if(e.ChangedButton!=MouseButton.Left)return;
-  down=p;drag=hit;dragDelta=0;
-  if(hit!=null){if(Keyboard.Modifiers.HasFlag(ModifierKeys.Control)){if(!MultiSelection.Add(hit.Selection))MultiSelection.Remove(hit.Selection);}else if(Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)&&Selection?.Kind==hit.Selection.Kind){var previous=hits.Find(h=>h.Selection==Selection);if(previous!=null)foreach(var h in hits.Where(h=>h.Selection.Kind==hit.Selection.Kind&&h.Rect.X>=Math.Min(previous.Rect.X,hit.Rect.X)&&h.Rect.X<=Math.Max(previous.Rect.X,hit.Rect.X)))MultiSelection.Add(h.Selection);}else{MultiSelection.Clear();MultiSelection.Add(hit.Selection);}Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);dragMode=p.X-hit.Rect.Left<8?"trim-start":hit.Rect.Right-p.X<8?"trim-end":"move";}
-  else {seeking=true;SeekRequested?.Invoke(Time(p.X));}
-  CaptureMouse();InvalidateVisual();e.Handled=true;
+  base.OnMouseDown(e);Focus();var p=e.GetPosition(this);
+  if(Project==null)return;
+  if(p.X<LabelWidth)
+  {
+   if(e.ChangedButton==MouseButton.Left&&p.Y<RulerHeight){TrackMenuRequested?.Invoke();return;}
+   if(e.ChangedButton==MouseButton.Left&&p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);if((uint)index<(uint)lanes.Length){HiddenTracks.Add(lanes[index].Key);Refresh();e.Handled=true;}}
+   return;
+  }
+  HandlePointerDown(p,e.ChangedButton,Keyboard.Modifiers,true);e.Handled=e.ChangedButton is MouseButton.Left or MouseButton.Right;
  }
- protected override void OnMouseMove(MouseEventArgs e)
+ internal void HandlePointerDown(Point p,MouseButton button,ModifierKeys modifiers,bool capturePointer)
  {
-  base.OnMouseMove(e);var p=e.GetPosition(this);if(Project==null)return;
-  if(IsMouseCaptured){if(seeking)SeekRequested?.Invoke(Snapped(Time(p.X)));else if(drag!=null){dragDelta=p.X-down.X;InvalidateVisual();}return;}
-  if(p.X<LabelWidth&&p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);if((uint)index<(uint)lanes.Length){Cursor=Cursors.Hand;HoverTime=null;InvalidateVisual();return;}}
+  if(Project==null)return;
+  var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));
+  if(button==MouseButton.Right){if(hit!=null){Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);}ContextRequested?.Invoke();return;}
+  if(button!=MouseButton.Left)return;
+  down=p;drag=hit;dragDelta=0;ClearHoverPreview(false);
+  if(hit!=null)
+  {
+   if(modifiers.HasFlag(ModifierKeys.Control)){if(!MultiSelection.Add(hit.Selection))MultiSelection.Remove(hit.Selection);}
+   else if(modifiers.HasFlag(ModifierKeys.Shift)&&Selection?.Kind==hit.Selection.Kind){var previous=hits.Find(h=>h.Selection==Selection);if(previous!=null)foreach(var h in hits.Where(h=>h.Selection.Kind==hit.Selection.Kind&&h.Rect.X>=Math.Min(previous.Rect.X,hit.Rect.X)&&h.Rect.X<=Math.Max(previous.Rect.X,hit.Rect.X)))MultiSelection.Add(h.Selection);}
+   else{MultiSelection.Clear();MultiSelection.Add(hit.Selection);}
+   Selection=hit.Selection;SelectionRequested?.Invoke(hit.Selection);dragMode=p.X-hit.Rect.Left<8?"trim-start":hit.Rect.Right-p.X<8?"trim-end":"move";
+  }
+  else seeking=true;
+  SeekRequested?.Invoke(FrameTime(Time(p.X)));
+  if(capturePointer)CaptureMouse();InvalidateVisual();
+ }
+ protected override void OnMouseMove(MouseEventArgs e){base.OnMouseMove(e);HandlePointerMove(e.GetPosition(this),IsMouseCaptured);}
+ internal void HandlePointerMove(Point p,bool captured)
+ {
+  if(Project==null)return;
+  if(captured){if(seeking)SeekRequested?.Invoke(FrameTime(Snapped(Time(p.X))));else if(drag!=null){dragDelta=p.X-down.X;InvalidateVisual();}return;}
+  if(p.X<LabelWidth){if(p.Y>=RulerHeight+PrimaryHeight&&p.X>=LabelWidth-30){var lanes=LaneNames().ToArray();var index=(int)((p.Y-(RulerHeight+PrimaryHeight))/LaneHeight);Cursor=(uint)index<(uint)lanes.Length?Cursors.Hand:Cursors.Arrow;}else Cursor=Cursors.Arrow;return;}
   var hit=hits.LastOrDefault(h=>h.Rect.Contains(p));Cursor=hit!=null&&(p.X-hit.Rect.Left<8||hit.Rect.Right-p.X<8)?Cursors.SizeWE:hit!=null?Cursors.Hand:Cursors.Arrow;
-  HoverTime=HoverEnabled&&p.X>=LabelWidth?Time(p.X):null;HoverRequested?.Invoke(HoverTime);InvalidateVisual();
+  if(!HoverEnabled)return;
+  var time=FrameTime(Time(p.X));if(HoverTime==time)return;HoverTime=time;HoverRequested?.Invoke(time);InvalidateVisual();
  }
  double Snapped(double t){if(!Snap||Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)||Project==null)return t;var boundaries=new List<double>{0};var end=0d;foreach(var s in Project.Timeline.Segments)boundaries.Add(end+=s.OutputDuration);var nearest=boundaries.OrderBy(x=>Math.Abs(x-t)).First();return Math.Abs(nearest-t)*Scale<9?nearest:t;}
- protected override void OnMouseUp(MouseButtonEventArgs e)
+ protected override void OnMouseUp(MouseButtonEventArgs e){base.OnMouseUp(e);if(e.ChangedButton!=MouseButton.Left)return;HandlePointerUp(e.ChangedButton,e.GetPosition(this),true);e.Handled=true;}
+ internal void HandlePointerUp(MouseButton button,Point p,bool releasePointer)
  {
-  base.OnMouseUp(e);if(!IsMouseCaptured)return;ReleaseMouseCapture();seeking=false;
+  if(button!=MouseButton.Left)return;seeking=false;
   if(drag!=null&&Project!=null){if(Math.Abs(dragDelta)>3){var delta=dragDelta/Scale*drag.Rate;
-   if(drag.Selection.Kind=="screen"&&dragMode=="move"){var time=Time(e.GetPosition(this).X);var cumulative=0d;var index=0;foreach(var seg in Project.Timeline.Segments){if(time<cumulative+seg.OutputDuration/2)break;cumulative+=seg.OutputDuration;index++;}ChangeRequested?.Invoke(new(drag.Selection,"reorder",drag.SourceStart,drag.SourceDuration,Math.Clamp(index,0,Project.Timeline.Segments.Count-1)));}
+    if(drag.Selection.Kind=="screen"&&dragMode=="move"){var time=Time(p.X);var cumulative=0d;var index=0;foreach(var seg in Project.Timeline.Segments){if(time<cumulative+seg.OutputDuration/2)break;cumulative+=seg.OutputDuration;index++;}ChangeRequested?.Invoke(new(drag.Selection,"reorder",drag.SourceStart,drag.SourceDuration,Math.Clamp(index,0,Project.Timeline.Segments.Count-1)));}
    else{var start=drag.SourceStart;var duration=drag.SourceDuration;if(dragMode=="trim-start"){var end=start+duration;start=Math.Clamp(start+delta,0,end-.04);duration=end-start;}else if(dragMode=="trim-end")duration=Math.Clamp(duration+delta,.04,Project.Media.Duration-start);else start=Math.Clamp(start+delta,0,Math.Max(0,Project.Media.Duration-duration));if(Snap&&!Keyboard.Modifiers.HasFlag(ModifierKeys.Shift)&&drag.Selection.Kind!="screen"){var anchors=Project.ZoomClips.Where(x=>x.Id!=drag.Selection.Id).SelectMany(x=>new[]{x.Start,x.End}).Concat(Project.ScreenMotions.Where(x=>x.Id!=drag.Selection.Id).SelectMany(x=>new[]{x.Start,x.End})).ToArray();if(anchors.Length>0){var near=anchors.OrderBy(x=>Math.Abs(x-start)).First();if(Math.Abs(near-start)*Scale/drag.Rate<9)start=near;}}ChangeRequested?.Invoke(new(drag.Selection,dragMode,start,duration));}}
-   else if(drag.Selection.Kind=="screen")SeekRequested?.Invoke(Time(e.GetPosition(this).X));}
-  drag=null;dragDelta=0;InvalidateVisual();e.Handled=true;
+   }
+  drag=null;dragDelta=0;InvalidateVisual();if(releasePointer&&IsMouseCaptured)ReleaseMouseCapture();
  }
- protected override void OnMouseLeave(MouseEventArgs e){base.OnMouseLeave(e);if(IsMouseCaptured)return;HoverTime=null;HoverRequested?.Invoke(null);InvalidateVisual();}
+ protected override void OnLostMouseCapture(MouseEventArgs e){base.OnLostMouseCapture(e);seeking=false;drag=null;dragDelta=0;InvalidateVisual();}
+ protected override void OnMouseLeave(MouseEventArgs e){base.OnMouseLeave(e);}
  protected override void OnMouseWheel(MouseWheelEventArgs e){if(Keyboard.Modifiers.HasFlag(ModifierKeys.Control)){ZoomRequested?.Invoke(Math.Clamp(Zoom*(e.Delta>0?1.25:.8),1,12));e.Handled=true;}else if(Zoom>1){ScrollRequested?.Invoke(Math.Clamp(Offset-e.Delta,0,DocumentWidth-Math.Max(1,ActualWidth-LabelWidth)));e.Handled=true;}base.OnMouseWheel(e);}
 }

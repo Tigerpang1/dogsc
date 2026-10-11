@@ -35,16 +35,17 @@ public sealed class RecordingBar : Window
     private readonly Button pause=new() { Width=38,Height=38,Padding=new(0),ToolTip="暂停录制" };
     private readonly Button end;
     private readonly Button mark;
+    private readonly Button? menu;
     private readonly Func<Task> stop;
     private readonly Action<Exception>? stopFailed;
     private bool stopInProgress;
     private bool closeAfterRecording;
     private string? stopStatus;
     private bool paused;
-    public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null,string? markerShortcut="Ctrl+Alt+M",bool markerShortcutIsFallback=false)
+    public RecordingBar(Action addMarker,Func<Task> stop,Func<Task> togglePause,Action<Exception>? stopFailed=null,string? markerShortcut="Ctrl+Alt+M",bool markerShortcutIsFallback=false,Action<Button>? showMenu=null)
     {
         this.stop=stop??throw new ArgumentNullException(nameof(stop));this.stopFailed=stopFailed;
-        Title="FrameTrail · 录制条"; Width=markerShortcutIsFallback?458:428; Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
+        Title="FrameTrail · 录制条"; Width=(markerShortcutIsFallback?458:428)+(showMenu is null?0:46); Height=72; Top=30; Left=120; Topmost=true; ShowInTaskbar=false;
         SurfaceWindow.Configure(this,closeOnEscape:false,captionHeight:0);
         var panel=new StackPanel { Orientation=Orientation.Horizontal,Margin=new(12,6,12,6) }; Content=SurfaceWindow.WrapContent(this,panel,Title,showCloseButton:false,showTitleBar:false); panel.Children.Add(label);
         var markerContent=new StackPanel { Orientation=Orientation.Horizontal,VerticalAlignment=VerticalAlignment.Center };
@@ -56,6 +57,17 @@ public sealed class RecordingBar : Window
         mark.Click+=(_,_)=>addMarker(); panel.Children.Add(mark);
         pause.Content=new EditorIcon { Kind="pause" }; pause.Click+=async(_,_)=>{pause.IsEnabled=false;try{await togglePause();}finally{pause.IsEnabled=true;}};panel.Children.Add(pause);
         end=new Button { Content="结束录制",Foreground=Brushes.White,Background=new SolidColorBrush(Color.FromRgb(227,101,85)),Margin=new(8,0,0,0),Height=38 }; end.Click+=async(_,_)=>await RequestStopAsync(); panel.Children.Add(end);
+        if(showMenu is not null)
+        {
+            var icon=new EditorIcon { Kind="settings",Width=18,Height=18 };
+            icon.SetResourceReference(EditorIcon.StrokeProperty,"Ink");
+            var menuButton=new Button { Content=icon,Width=38,Height=38,Padding=new(0),Margin=new(8,0,0,0),ToolTip="FrameTrail 菜单" };
+            System.Windows.Automation.AutomationProperties.SetName(menuButton,"FrameTrail 菜单");
+            System.Windows.Automation.AutomationProperties.SetAutomationId(menuButton,"RecordingBarMenu");
+            menuButton.Click+=(_,_)=>showMenu(menuButton);
+            menu=menuButton;
+            panel.Children.Add(menuButton);
+        }
         timer.Tick+=(_,_)=>{if(!stopInProgress)RefreshLabel();};RefreshLabel();timer.Start();
         Closing+=OnClosing; SourceInitialized+=(_,_)=>NativeWindows.Exclude(this); Closed+=(_,_)=>timer.Stop();
         label.MouseLeftButtonDown+=(_,e)=>{ if(e.ClickCount==1)DragMove(); };
@@ -69,7 +81,7 @@ public sealed class RecordingBar : Window
     private async Task RequestStopAsync()
     {
         if(stopInProgress||closeAfterRecording)return;
-        stopInProgress=true;stopStatus="正在结束录制…";end.IsEnabled=false;pause.IsEnabled=false;mark.IsEnabled=false;label.Text=stopStatus;
+        stopInProgress=true;stopStatus="正在结束录制…";end.IsEnabled=false;pause.IsEnabled=false;mark.IsEnabled=false;if(menu is not null)menu.IsEnabled=false;label.Text=stopStatus;
         try
         {
             await stop();
@@ -83,7 +95,7 @@ public sealed class RecordingBar : Window
         finally
         {
             stopInProgress=false;
-            if(IsVisible&&!closeAfterRecording){end.IsEnabled=true;pause.IsEnabled=true;mark.IsEnabled=!paused;}
+            if(IsVisible&&!closeAfterRecording){end.IsEnabled=true;pause.IsEnabled=true;mark.IsEnabled=!paused;if(menu is not null)menu.IsEnabled=true;}
         }
     }
     public void CloseAfterRecording()

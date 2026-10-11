@@ -270,7 +270,7 @@ internal static class CaptureScenarios
             lastTicks = now; lastCpu = cpu;
         }
         var result = await tracks.StopTrackAsync(handle.TrackId);
-        var summary = new { result.Handle, result.StopStopwatchTicks, result.Width, result.Height, result.FrameRate, EncoderMode = result.EncoderMode.ToString(), result.PausedIntervals, result.Warnings,
+        var summary = new { result.Handle, result.StopStopwatchTicks, result.Width, result.Height, result.FrameRate, EncoderMode = result.EncoderMode.ToString(), result.PausedIntervals, result.Warnings, result.Diagnostics,
             DurationSeconds = (result.StopStopwatchTicks - handle.StartStopwatchTicks) / (double)handle.StopwatchFrequency, StartedUtc = startedUtc, StoppedUtc = DateTimeOffset.UtcNow,
             OutputPath = output, OutputBytes = File.Exists(output) ? new FileInfo(output).Length : 0, MetricsPath = metricsPath, Device = device.Name };
         var summaryPath = Path.ChangeExtension(output, ".summary.json");
@@ -759,6 +759,7 @@ internal static class CaptureScenarios
             recording.Width,
             recording.Height,
             recording.FrameRate,
+            recording.Diagnostics,
             AudioPath = audioResult.Handle.MediaPath,
             AudioStartStopwatchTicks = audioResult.Handle.StartStopwatchTicks,
             AudioStopStopwatchTicks = audioResult.StopStopwatchTicks,
@@ -1004,7 +1005,8 @@ internal static class CaptureScenarios
                 CaptureBounds = options.RegionPlayback ? bounds : display.Bounds, DisplayBounds = display.Bounds,
                 PlayerWindowHandle = playerWindow.Handle.ToInt64(), PlayerWindowBounds = playerWindow.OuterBounds, PlayerWindowClientBounds = playerWindow.ClientBounds,
                 DdagrabOffset = options.RegionPlayback ? new Point(bounds.X - display.Bounds.X, bounds.Y - display.Bounds.Y) : Point.Empty,
-                AudioWarnings = audioResult.Warnings, screenResult.Warnings, FfplayStderrPath = ffplayStderrPath,
+                AudioWarnings = audioResult.Warnings, AudioDiagnostics = audioResult.Diagnostics,
+                screenResult.Warnings, screenResult.Diagnostics, FfplayStderrPath = ffplayStderrPath,
                 AudioPacketDiagnosticsPath = diagnosticsPath, AudioPacketDiagnostics = audioPacketDiagnostics,
                 PlaybackSessionOverrideRequested = ownsPlaybackSession,
                 PlaybackSessionOverride = playbackSessionVolumeResult,

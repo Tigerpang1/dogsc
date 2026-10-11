@@ -26,7 +26,10 @@ internal static class Program
         var desktopInstanceOnly = args.FirstOrDefault() == "--desktop-instance";
         var desktopSurfacesOnly = args.FirstOrDefault() == "--desktop-surfaces";
         var trayMenuWindowOnly = args.FirstOrDefault() == "--tray-menu-window";
-        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
+        var timelineInputOnly = args.FirstOrDefault() == "--timeline-input";
+        var previewInteractionOnly = args.FirstOrDefault() == "--preview-interaction";
+        var previewSizingOnly = args.FirstOrDefault() == "--preview-sizing";
+        var outputArgument = textBoxEditMenuOnly || saveFailureOnly || preferencesExportOnly || recordingHotKeyOnly || windowSourceFilterOnly || microphoneAccessOnly || bundledResourcesOnly || errorRecoveryOnly || desktopInstanceOnly || desktopSurfacesOnly || trayMenuWindowOnly || timelineInputOnly || previewInteractionOnly || previewSizingOnly ? args.Skip(1).SingleOrDefault() : args.SingleOrDefault();
         var output = Path.GetFullPath(outputArgument ?? (preferencesExportOnly
             ? "artifacts/validation/noncamera-closeout-v4/preferences-export"
             : saveFailureOnly
@@ -45,6 +48,32 @@ internal static class Program
         MainWindow? window = null;
         try
         {
+            if (previewSizingOnly)
+            {
+                window = new MainWindow();
+                PreviewSizingProbe.Verify(window, output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "物理视口尺寸、4K源解码、同帧尺寸调整与共享播放场景像素对照；离屏验证，不代表实机观感已认可",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} preview sizing checks; {output}");
+                return 0;
+            }
+            if (previewInteractionOnly)
+            {
+                window = new MainWindow();
+                MainWindowPreviewProbe.Verify(window, output, Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "真实媒体解码和MainWindow合成调度、连续悬停/单击提交/取消与换项目；未显示或激活窗口，不代表用户实机体验已认可",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} preview interaction checks; {output}");
+                return 0;
+            }
             if (desktopSurfacesOnly)
             {
                 DesktopSurfacesProbe.Verify(output, Check);
@@ -55,6 +84,18 @@ internal static class Program
                     Checks = checks
                 }, new JsonSerializerOptions { WriteIndented = true }));
                 Console.WriteLine($"PASS: {checks.Count} desktop surface checks; {output}");
+                return 0;
+            }
+            if (timelineInputOnly)
+            {
+                TimelineInputProbe.Verify(Check);
+                File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
+                {
+                    Passed = true,
+                    Scope = "时间线控件共享输入处理路径的离屏验证；未创建 HWND、未捕获真实鼠标、未操作媒体或录制设备，不代表实机交互验收",
+                    Checks = checks
+                }, new JsonSerializerOptions { WriteIndented = true }));
+                Console.WriteLine($"PASS: {checks.Count} timeline input checks; {output}");
                 return 0;
             }
             if (trayMenuWindowOnly)

@@ -29,6 +29,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "共享GPU/媒体测试失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --timeline-assets
         if ($LASTEXITCODE -ne 0) { throw "时间线缩略图与波形测试失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --scrub-decoder (Join-Path $repoRoot ('artifacts/validation/scrub-decoder-' + [guid]::NewGuid().ToString('N')))
+        if ($LASTEXITCODE -ne 0) { throw "时间线持续解码与帧缓存检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --dogsc-camera-import
         if ($LASTEXITCODE -ne 0) { throw "DogSC 摄像头素材比例与保存失败回归失败，退出码 $LASTEXITCODE" }
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))
@@ -49,6 +51,15 @@ try {
         $visualOutput = Join-Path $repoRoot ('artifacts/validation/theme-offscreen-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- $visualOutput
         if ($LASTEXITCODE -ne 0) { throw "离屏主题文字与时间线像素检查失败，退出码 $LASTEXITCODE" }
+        $timelineInputOutput = Join-Path $repoRoot ('artifacts/validation/timeline-input-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --timeline-input $timelineInputOutput
+        if ($LASTEXITCODE -ne 0) { throw "时间线悬停保留与点击定位检查失败，退出码 $LASTEXITCODE" }
+        $previewInteractionOutput = Join-Path $repoRoot ('artifacts/validation/preview-interaction-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --preview-interaction $previewInteractionOutput
+        if ($LASTEXITCODE -ne 0) { throw "真实媒体预览调度与帧提交检查失败，退出码 $LASTEXITCODE" }
+        $previewSizingOutput = Join-Path $repoRoot ('artifacts/validation/preview-sizing-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --preview-sizing $previewSizingOutput
+        if ($LASTEXITCODE -ne 0) { throw "预览物理尺寸与源清晰度检查失败，退出码 $LASTEXITCODE" }
         $microphoneRecoveryOutput = Join-Path $repoRoot ('artifacts/validation/microphone-recovery-offscreen-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --microphone-access-recovery $microphoneRecoveryOutput
         if ($LASTEXITCODE -ne 0) { throw "离屏麦克风访问恢复提示检查失败，退出码 $LASTEXITCODE" }
@@ -64,6 +75,9 @@ try {
         $desktopSurfacesOutput = Join-Path $repoRoot ('artifacts/validation/desktop-surfaces-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --desktop-surfaces $desktopSurfacesOutput
         if ($LASTEXITCODE -ne 0) { throw "独立录制浮窗布局与动态主题检查失败，退出码 $LASTEXITCODE" }
+        $recordingBarOutput = Join-Path $repoRoot ('artifacts/validation/recording-bar-' + [guid]::NewGuid().ToString('N'))
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --recording-hotkey $recordingBarOutput
+        if ($LASTEXITCODE -ne 0) { throw "录制条布局、菜单回调与快捷键策略检查失败，退出码 $LASTEXITCODE" }
         $trayMenuOutput = Join-Path $repoRoot ('artifacts/validation/tray-menu-window-' + [guid]::NewGuid().ToString('N'))
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.App.VisualProbe/FrameTrail.App.VisualProbe.csproj') --configuration $Configuration -- --tray-menu-window $trayMenuOutput
         if ($LASTEXITCODE -ne 0) { throw "托盘菜单布局、命令与工作区定位检查失败，退出码 $LASTEXITCODE" }
@@ -76,7 +90,7 @@ try {
         }
         & dotnet build $captureProbe --configuration $Configuration -p:Platform=x64
         if ($LASTEXITCODE -ne 0) { throw "采集探针构建失败，退出码 $LASTEXITCODE" }
-        foreach ($pureProbe in @('--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test', '--microphone-clock-segment-test', '--microphone-access-error-test')) {
+        foreach ($pureProbe in @('--capture-result-notice-test', '--audio-packet-clock-test', '--audio-qpc-jitter-diagnosis-test', '--audio-packet-diagnostics-test', '--track-dispose-race-test', '--failure-lifecycle-probe', '--playback-options-test', '--playback-session-volume-test', '--microphone-clock-segment-test', '--microphone-access-error-test')) {
             & dotnet run --no-build --project $captureProbe --configuration $Configuration -p:Platform=x64 -- $pureProbe
             if ($LASTEXITCODE -ne 0) { throw "采集纯逻辑探针 $pureProbe 失败，退出码 $LASTEXITCODE" }
         }

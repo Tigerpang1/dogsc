@@ -1,6 +1,8 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 
 namespace FrameTrail.App;
@@ -9,6 +11,7 @@ namespace FrameTrail.App;
 internal sealed class TrayMenuWindow : Window
 {
     private readonly Menu menu;
+    private readonly HashSet<Popup> submenuPopups = [];
     private bool closing;
     private bool closed;
     private bool traceEnabled;
@@ -40,10 +43,11 @@ internal sealed class TrayMenuWindow : Window
         var layout = new Grid();
         layout.Children.Add(surface);
         Content = layout;
+        foreach (var item in Descendants(menu)) item.Loaded += OnMenuItemLoaded;
         SourceInitialized += (_, _) => NativeWindows.Exclude(this);
         Activated += (_, _) => TraceState("activated");
         Deactivated += (_, _) => { TraceState("deactivated"); CloseMenu(); };
-        Closed += (_, _) => { closed = true; TraceState("closed"); };
+        Closed += (_, _) => { closed = true; DetachSubmenuCaptureExclusion(); TraceState("closed"); };
         PreviewKeyDown += OnPreviewKeyDown;
         AddHandler(MenuItem.ClickEvent, new RoutedEventHandler(OnMenuItemClick));
     }
@@ -113,6 +117,62 @@ internal sealed class TrayMenuWindow : Window
     private void OnMenuItemClick(object sender, RoutedEventArgs args)
     {
         if (args.OriginalSource is MenuItem { HasItems: false }) { TraceState("command"); CloseMenu(); }
+    }
+
+    private void OnMenuItemLoaded(object sender, RoutedEventArgs args)
+    {
+        if (sender is not MenuItem item ||
+            item.Template?.FindName("PART_Popup", item) is not Popup popup ||
+            !submenuPopups.Add(popup)) return;
+
+        // A submenu has its own HWND; the root window's capture affinity does not
+        // cover it. Apply affinity when its presentation source is attached and
+        // recheck each time it opens, scoped to this recording menu only.
+        if (popup.Child is { } child)
+            PresentationSource.AddSourceChangedHandler(child, OnSubmenuSourceChanged);
+        popup.Opened += OnSubmenuOpened;
+        if (popup.IsOpen) ExcludeSubmenu(popup);
+    }
+
+    private void OnSubmenuSourceChanged(object sender, SourceChangedEventArgs args)
+    {
+        if (args.NewSource is HwndSource source) ExcludeSubmenuHandle(source.Handle);
+    }
+
+    private void OnSubmenuOpened(object? sender, EventArgs args)
+    {
+        if (sender is Popup popup) ExcludeSubmenu(popup);
+    }
+
+    private void ExcludeSubmenu(Popup popup)
+    {
+        if (popup.Child is { } child && PresentationSource.FromVisual(child) is HwndSource source)
+            ExcludeSubmenuHandle(source.Handle);
+    }
+
+    private void ExcludeSubmenuHandle(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero) return;
+        if (NativeWindows.SetWindowDisplayAffinity(handle, 0x11)) TraceState("submenu-excluded");
+        else
+        {
+            var error = System.Runtime.InteropServices.Marshal.GetLastWin32Error();
+            TraceState("submenu-exclusion-failed");
+            App.Log(new System.ComponentModel.Win32Exception(
+                error, "无法从采集中排除此录制菜单的子菜单。"));
+        }
+    }
+
+    private void DetachSubmenuCaptureExclusion()
+    {
+        foreach (var item in Descendants(menu)) item.Loaded -= OnMenuItemLoaded;
+        foreach (var popup in submenuPopups)
+        {
+            popup.Opened -= OnSubmenuOpened;
+            if (popup.Child is { } child)
+                PresentationSource.RemoveSourceChangedHandler(child, OnSubmenuSourceChanged);
+        }
+        submenuPopups.Clear();
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs args)

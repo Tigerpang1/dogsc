@@ -672,8 +672,20 @@ public sealed class GpuFrameRenderer : IDisposable
     { public void Dispose() { View.Dispose(); Texture.Dispose(); } }
 
     private static readonly string ShaderSource = ReadShaderSource();
-    private static readonly Lazy<byte[]> VertexBytecode = new(() => Compiler.Compile(ShaderSource, "VSMain", "FrameTrail.Scene.hlsl", "vs_5_0").ToArray());
-    private static readonly Lazy<byte[]> PixelBytecode = new(() => Compiler.Compile(ShaderSource, "PSMain", "FrameTrail.Scene.hlsl", "ps_5_0").ToArray());
+    private static readonly Lazy<byte[]> VertexBytecode = new(() => ShaderBytecodeCache.GetOrCompile(
+        ShaderSource, "VSMain", "vs_5_0",
+        () => Compiler.Compile(ShaderSource, "VSMain", "FrameTrail.Scene.hlsl", "vs_5_0").ToArray()));
+    private static readonly Lazy<byte[]> PixelBytecode = new(() => ShaderBytecodeCache.GetOrCompile(
+        ShaderSource, "PSMain", "ps_5_0",
+        () => Compiler.Compile(ShaderSource, "PSMain", "FrameTrail.Scene.hlsl", "ps_5_0").ToArray()));
+    private static readonly Lazy<Task> ShaderWarmUp = new(() => Task.Run(() =>
+    {
+        _ = VertexBytecode.Value;
+        _ = PixelBytecode.Value;
+    }));
+
+    public static Task WarmUpShadersAsync() => ShaderWarmUp.Value;
+
     private static string ReadShaderSource()
     {
         using var stream = typeof(GpuFrameRenderer).Assembly.GetManifestResourceStream("FrameTrail.Media.Scene.hlsl")

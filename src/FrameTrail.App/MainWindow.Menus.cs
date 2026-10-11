@@ -551,14 +551,17 @@ public partial class MainWindow
             "源码与许可证", MessageBoxButton.OK, MessageBoxImage.Information);
     }
 
+    private sealed record PreviewQualityChoice(int Width, string Label);
+
     private sealed class UserPreferences
     {
         public string? RecordingFolder { get; set; }
         public int FrameRate { get; set; } = 60;
-        public int PreviewResolution { get; set; } = 1440;
+        public int PreviewResolution { get; set; }
+        public int PreviewSizingVersion { get; set; }
         public int PreviewFrameRate { get; set; } = 30;
         public bool ExcludeEditorDuringRecording { get; set; } = true;
-        public bool OriginalResolution { get; set; }
+        public bool OriginalResolution { get; set; } = true;
         public bool RecordSystemSound { get; set; } = true;
         public bool RecordMicrophone { get; set; }
         public bool RecordCamera { get; set; }
@@ -585,7 +588,14 @@ public partial class MainWindow
 
     private static UserPreferences ReadUserPreferences()
     {
-        try { return JsonSerializer.Deserialize<UserPreferences>(File.ReadAllText(PreferencesFile)) ?? new(); }
+        try
+        {
+            var settings = JsonSerializer.Deserialize<UserPreferences>(File.ReadAllText(PreferencesFile)) ?? new();
+            // Upgrade the old default, retaining deliberately lower/higher fixed widths.
+            if (settings.PreviewSizingVersion == 0 && settings.PreviewResolution == 1440) settings.PreviewResolution = 0;
+            settings.PreviewSizingVersion = 1;
+            return settings;
+        }
         catch { return new(); }
     }
 
@@ -606,7 +616,7 @@ public partial class MainWindow
         preferredRecordingRoot = !string.IsNullOrWhiteSpace(settings.RecordingFolder) && Directory.Exists(settings.RecordingFolder)
             ? Path.GetFullPath(settings.RecordingFolder) : null;
         CaptureFps.SelectedIndex = settings.FrameRate == 30 ? 0 : 1;
-        previewResolution = settings.PreviewResolution is 960 or 1440 or 1920 ? settings.PreviewResolution : 1440;
+        previewResolution = settings.PreviewResolution is 0 or 960 or 1440 or 1920 ? settings.PreviewResolution : 0;
         previewFrameRate = settings.PreviewFrameRate == 60 ? 60 : 30;
         excludeEditorDuringRecording = settings.ExcludeEditorDuringRecording;
         CaptureResolution.SelectedIndex = settings.OriginalResolution ? 1 : 0;
@@ -798,14 +808,14 @@ public partial class MainWindow
         }
         content.Children.Add(Section("音视频来源", sources));
 
-        var previewWidth = new ComboBox { ItemsSource = new[] { 960, 1440, 1920 }, SelectedItem = current.PreviewResolution is 960 or 1440 or 1920 ? current.PreviewResolution : 1440, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
+        var previewWidth = new ComboBox { ItemsSource = new[] { new PreviewQualityChoice(0, "自动 · 清晰显示"), new PreviewQualityChoice(960, "960 px"), new PreviewQualityChoice(1440, "1440 px"), new PreviewQualityChoice(1920, "1920 px") }, DisplayMemberPath = "Label", SelectedValuePath = "Width", SelectedValue = current.PreviewResolution is 0 or 960 or 1440 or 1920 ? current.PreviewResolution : 0, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         var previewFps = new ComboBox { ItemsSource = new[] { 30, 60 }, SelectedItem = current.PreviewFrameRate == 60 ? 60 : 30, MinHeight = 32, Padding = new Thickness(10, 6, 10, 6), Margin = new Thickness(0, 3, 0, 3) };
         previewWidth.SelectionChanged += (_, _) => ClearActionStatus();
         previewFps.SelectionChanged += (_, _) => ClearActionStatus();
         System.Windows.Automation.AutomationProperties.SetName(previewWidth, "预览分辨率");
         System.Windows.Automation.AutomationProperties.SetName(previewFps, "预览帧率");
         var appearance = new StackPanel();
-        appearance.Children.Add(FieldGrid(("预览宽度", previewWidth), ("预览帧率", previewFps)));
+        appearance.Children.Add(FieldGrid(("预览清晰度", previewWidth), ("预览帧率", previewFps)));
         var dark = new CheckBox { Content = "使用深色编辑界面", IsChecked = current.DarkTheme, Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 10, 0, 8), MinHeight = 30 };
         var excludeEditor = new CheckBox { Content = "录制时排除编辑器窗口", IsChecked = current.ExcludeEditorDuringRecording, ToolTip = "录制显示器时避免把 FrameTrail 主窗口录进画面；关闭后可录制本程序自身。", Style = TryFindResource("InspectorToggle") as Style, Margin = new Thickness(0, 0, 0, 4), MinHeight = 30 };
         foreach (var toggle in new[] { dark, excludeEditor })
@@ -817,7 +827,7 @@ public partial class MainWindow
         appearance.Children.Add(excludeEditor);
         appearance.Children.Add(new TextBlock
         {
-            Text = "较大的预览尺寸会增加显存占用。麦克风和摄像头设备可在录制面板中选择。",
+            Text = "自动模式匹配窗口的实际像素，放大画面时保留源视频细节。固定较小尺寸可减少预览开销。",
             TextWrapping = TextWrapping.Wrap,
             Foreground = (System.Windows.Media.Brush)FindResource("Secondary"),
             FontSize = 11,
@@ -874,13 +884,13 @@ public partial class MainWindow
                     folder.Focus();
                     return;
                 }
-                if (previewWidth.SelectedItem is not int width || width is not (960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60))
+                if (previewWidth.SelectedValue is not int width || width is not (0 or 960 or 1440 or 1920) || previewFps.SelectedItem is not int previewFpsValue || previewFpsValue is not (30 or 60))
                 {
                     SetActionStatus("请选择有效的预览宽度和帧率。");
                     previewWidth.Focus();
                     return;
                 }
-                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
+                updated = new UserPreferences { RecordingFolder = path, FrameRate = fps, PreviewResolution = width, PreviewSizingVersion = 1, PreviewFrameRate = previewFpsValue, OriginalResolution = resolution.SelectedIndex == 1, RecordSystemSound = system.IsChecked == true, RecordMicrophone = microphone.IsChecked == true, RecordCamera = camera.IsChecked == true, MicrophoneId = (MicDevices.SelectedItem as AudioDeviceInfo)?.Id, CameraId = (CameraDevices.SelectedItem as CameraInfo)?.Id, DarkTheme = dark.IsChecked == true, ExcludeEditorDuringRecording = excludeEditor.IsChecked == true, FirstRunHelpShown = current.FirstRunHelpShown };
                 try { SaveUserPreferences(updated); }
                 catch (Exception ex)
                 {

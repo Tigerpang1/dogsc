@@ -120,8 +120,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                     AudioSampleRate = audioCapture.WaveFormat.SampleRate,
                     WaveFileWriter = waveWriter
                 };
-                session.Warnings.Add($"WASAPI audio format: {audioCapture.WaveFormat}; standalone WAV contains no video.");
-                session.Warnings.Add("WASAPI device positions place continuous audio packets; QPC anchors the source clock and measures drift. Timestamp-error packets retain valid contiguous device positions and use arrival time only when an anchor/reset is needed.");
+                session.Diagnostics.Add($"WASAPI audio format: {audioCapture.WaveFormat}; standalone WAV contains no video.");
+                session.Diagnostics.Add("WASAPI device positions place continuous audio packets; QPC anchors the source clock and measures drift. Timestamp-error packets retain valid contiguous device positions and use arrival time only when an anchor/reset is needed.");
                 audioCapture.PacketAvailable += (packet, frames, devicePosition, qpcPosition, arrivalTicks, flags) =>
                 {
                     try
@@ -330,8 +330,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
                     }
                 }
                 if (session.PausedIntervals.Count > 0)
-                    session.Warnings.Add($"Audio pause boundaries were mapped using {session.AudioPositionMapper?.DevicePositionMode ?? "unknown"} timing; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
-                session.Warnings.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, positionMode={session.AudioPositionMapper?.DevicePositionMode ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
+                    session.Diagnostics.Add($"Audio pause boundaries were mapped using {session.AudioPositionMapper?.DevicePositionMode ?? "unknown"} timing; largest packet was {session.MaxAudioPacketMilliseconds:F1} ms.");
+                session.Diagnostics.Add($"WASAPI packet timing: packets={session.AudioPacketCount}, firstPacketOffset={session.FirstPacketOffsetMilliseconds:F3} ms, firstDevicePosition={session.FirstDevicePosition?.ToString() ?? "unknown"}, positionMode={session.AudioPositionMapper?.DevicePositionMode ?? "unknown"}, timestampFallbacks={session.TimestampFallbackCount}, timestampErrors={session.TimestampErrorCount}, discontinuities={session.DataDiscontinuityCount}, devicePositionMismatches={session.DevicePositionMismatchCount}, devicePositionResets={session.DevicePositionResetCount}, qpcResidualAbsMax={session.AudioPositionMapper?.MaxQpcResidualMilliseconds:F3} ms, deviceClockDrift={session.AudioPositionMapper?.DeviceClockDriftPpm?.ToString("F1") ?? "unmeasured"} ppm, sampledArrivalLatencyP95={Percentile(session.ArrivalLatencySamples, 0.95):F3} ms (reservoir {session.ArrivalLatencySamples.Count}/{session.ArrivalLatencySampleCount}).");
             }
             else
             {
@@ -376,7 +376,8 @@ public sealed class CaptureTrackService : ICaptureTrackService
             return new CaptureTrackResult(session.Handle!, stopTicks, session.Width, session.Height,
                 session.FrameRate, session.EncoderMode, session.Warnings.ToArray(), session.PausedIntervals.ToArray(),
                 session.AudioSampleRate, session.AudioPositionMapper?.DeviceClockDriftPpm,
-                session.AudioCapture is null ? null : session.AudioFramesWritten, session.AudioClockSegments.ToArray(), audioSourceRate);
+                session.AudioCapture is null ? null : session.AudioFramesWritten, session.AudioClockSegments.ToArray(), audioSourceRate,
+                session.Diagnostics.ToArray());
         }
         catch (Exception ex)
         {
@@ -541,7 +542,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
         session.FrameRate = options.VideoEncoderOptions.Framerate;
         session.EncoderMode = options.VideoEncoderOptions.IsHardwareEncodingEnabled ? EncoderMode.Unknown : EncoderMode.Software;
         if (session.EncoderMode == EncoderMode.Unknown)
-            session.Warnings.Add("Media Foundation does not expose which encoder was selected.");
+            session.Diagnostics.Add("Media Foundation does not expose which encoder was selected.");
     }
 
     private void OnStatusChanged(TrackSession session, RecordingStatusEventArgs args)
@@ -842,6 +843,7 @@ public sealed class CaptureTrackService : ICaptureTrackService
         internal List<(long StartFrame, long EndFrame)> AudioPauseFrameIntervals { get; } = [];
         internal List<CaptureAudioClockSegment> AudioClockSegments { get; } = [];
         internal List<string> Warnings { get; } = [];
+        internal List<string> Diagnostics { get; } = [];
         internal long PauseStartTicks { get; set; }
         internal long? PauseStartSourceFrame { get; set; }
         internal long AudioSegmentStartTicks { get; set; }

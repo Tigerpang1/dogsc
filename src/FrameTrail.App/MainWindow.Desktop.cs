@@ -190,9 +190,9 @@ public partial class MainWindow
 
     private void ShowDesktopMenu(Button button)
     {
-        var menu = CreateDesktopMenu();
-        menu.PlacementTarget = button;
-        menu.IsOpen = true;
+        // Both recorder surfaces use the same activatable, capture-excluded menu
+        // as the notification icon, with an anchor just below the pressed button.
+        ShowDesktopTrayMenu(button.PointToScreen(new Point(0, button.ActualHeight + 6)));
     }
 
     private async Task RequestDesktopExitAsync()
@@ -244,6 +244,7 @@ public partial class MainWindow
             if (ReferenceEquals(desktopMemo, memo)) return;
         }
         SaveProject();
+        previewResizeTimer.Stop();
         seekCancellation?.Cancel();
         assetsCancellation?.Cancel();
         StopPlayback();
@@ -254,6 +255,8 @@ public partial class MainWindow
         await previewGate.WaitAsync();
         try
         {
+            if (scrubDecoder is not null) await scrubDecoder.DisposeAsync();
+            scrubDecoder = null; scrubDecoderKey = null; completedPreview = null;
             previewAssets?.Dispose(); previewAssets = null;
             previewRenderer?.Dispose(); previewRenderer = null;
         }

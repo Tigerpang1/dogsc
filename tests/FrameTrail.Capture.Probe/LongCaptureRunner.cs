@@ -111,7 +111,8 @@ internal static class LongCaptureRunner
             HasAudioTrackMarker = ContainsMarker(output, "soun"),
             LoopbackDevice = loopback?.Name,
             FfprobeDiagnostics = ffprobeDiagnostics,
-            Warnings = result.Warnings
+            Warnings = result.Warnings,
+            Diagnostics = result.Diagnostics
         };
         await File.WriteAllTextAsync(summaryPath, JsonSerializer.Serialize(summary, new JsonSerializerOptions { WriteIndented = true }));
         Console.WriteLine($"Finished: {output}; bytes={summary.Mp4Bytes}; stopReason={stopReason}; ffprobe={ffprobeDiagnostics}; audioTrackMarker={summary.HasAudioTrackMarker}; summary={summaryPath}");

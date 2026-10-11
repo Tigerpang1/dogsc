@@ -18,7 +18,7 @@ public partial class MainWindow
  }
  private async Task StartRealtimePlaybackCore(CancellationToken token)
  {
-  if(project==null||projectFile==null)return;seekCancellation?.Cancel();var snapshot=project;var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
+  if(project==null||projectFile==null)return;ClearTimelineHover();completedPreview=null;seekCancellation?.Cancel();var snapshot=project;var file=projectFile;var source=FrameTrailProjectStore.ResolveMediaPath(file,snapshot);
   var info=await MediaTools.ProbeAsync(source,token);
   var hasAudio=info.HasAudio&&MediaTools.HasAudibleMainAudio(snapshot.Timeline,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted)
    ||MediaTools.HasAudibleAudioTracks(snapshot.Timeline,snapshot.AudioTracks,snapshot.Settings.MainAudioVolume,snapshot.Settings.MainAudioMuted);
@@ -38,8 +38,8 @@ public partial class MainWindow
    await RunExport(candidate,new(960,540,30,true,true),true,token);token.ThrowIfCancellationRequested();if(!ReferenceEquals(snapshot,project)){if(File.Exists(candidate))File.Delete(candidate);return;}proxyPath=candidate;
   }
   token.ThrowIfCancellationRequested();var start=Playhead.Value>=Playhead.Maximum-.03?0:Playhead.Value;
-  var width=previewResolution;var frameRate=previewFrameRate;var height=Math.Max(2,(int)(width*(double)snapshot.Settings.CanvasHeight/snapshot.Settings.CanvasWidth)/2*2);
-  var session=await PreviewPlaybackSession.CreateAsync(snapshot,source,file,width,height,frameRate,token);var pixels=new byte[width*height*4];
+  var (width,height)=PreviewOutputSize(snapshot);var frameRate=previewFrameRate;
+  var session=await PreviewPlaybackSession.CreateAsync(snapshot,source,file,width,height,frameRate,token,preserveSourceResolution:previewResolution==0);var pixels=new byte[width*height*4];
   try{await session.ReadFrameAsync(start,pixels,token);}catch{await session.DisposeAsync();throw;}
   playbackRenderedFrames=0;playing=true;PreviewImage.Visibility=Visibility.Visible;Player.Visibility=Visibility.Collapsed;PlayButton.Content=new EditorIcon{Kind="pause",Width=18,Height=18};
   if(hasAudio)
