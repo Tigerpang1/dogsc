@@ -17,7 +17,16 @@ public sealed class EditorTimelineControl : FrameworkElement
  public double? RangeStart {get;set;}
  public double? RangeEnd {get;set;}
  public event Action? TrackMenuRequested;
- public double Position {get;set;}
+ DrawingGroup playheadDrawing=new();
+ TranslateTransform playheadTransform=new();
+ int renderPassCount;
+ internal int RenderPassCount=>renderPassCount;
+ public double Position
+ {
+  get=>position;
+  set{position=value;UpdatePlayheadTransform();}
+ }
+ double position;
  public double Zoom {get;set;}=1;
  public double Offset {get;set;}
  public bool Filmstrip {get;set;}=true;
@@ -99,6 +108,7 @@ public sealed class EditorTimelineControl : FrameworkElement
  { var family=(FontFamily?)TryFindResource("InterfaceFont")??new FontFamily("Microsoft YaHei UI");var f=new FormattedText(text,CultureInfo.CurrentCulture,FlowDirection.LeftToRight,new Typeface(family,FontStyles.Normal,weight??FontWeights.Normal,FontStretches.Normal),size,brush??B("Secondary"),VisualTreeHelper.GetDpi(this).PixelsPerDip){TextAlignment=alignment};if(double.IsFinite(maxWidth)){f.MaxTextWidth=Math.Max(1,maxWidth);f.Trimming=TextTrimming.CharacterEllipsis;}dc.DrawText(f,p);}
  protected override void OnRender(DrawingContext dc)
  {
+  renderPassCount++;
   dc.DrawRectangle(B("Surface"),null,new Rect(0,0,ActualWidth,ActualHeight));hits.Clear();var pen=new Pen(B("Hairline"),.65);
   EditorIcon.DrawVector(dc,"layers",new Rect(16,9,16,16),B("Ink"));Text(dc,"轨道",new(38,12),11,B("Ink"));EditorIcon.DrawVector(dc,"chevron",new Rect(LabelWidth-25,10,12,12),B("Secondary"));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
   if(Project==null){Text(dc,"录制或导入视频后，片段与效果将在此显示",new(LabelWidth+25,70),12);return;}
@@ -128,7 +138,11 @@ public sealed class EditorTimelineControl : FrameworkElement
   if(Project.BlurClips.Count>0)Lane("blur",Project.BlurClips.Select(z=>(z.Id,z.Start,z.Duration,z.Kind switch{BlurKind.Blur=>"柔化",BlurKind.Spotlight=>"聚光",_=>"马赛克"})),Color.FromRgb(208,192,220));
   if(Project.AudioTracks.Count>0)Lane("audio",Project.AudioTracks.Select((z,i)=>(AudioId(i),z.OffsetSeconds,z.Duration,z.Muted?"音频 · 静音":"音频 · "+(i+1))),Color.FromRgb(198,200,228));
   foreach(var marker in Project.Markers){var t=Project.Timeline.MapSourceToOutput(marker.SourceTime);if(t is null)continue;var x=X(t.Value);dc.DrawLine(new Pen(IsHighContrast?B("Accent"):new SolidColorBrush(Color.FromRgb(220,159,73)),1.5),new(x,0),new(x,ActualHeight));Text(dc,"⚑",new(x+2,0),14,B("Ink"));}
-  var playX=X(Position);dc.DrawLine(new Pen(B("Ink"),1.25),new(playX,5),new(playX,ActualHeight));dc.DrawEllipse(B("Ink"),null,new(playX,7),4,4);
+  using(var playhead=playheadDrawing.Open())
+  {
+   var ink=B("Ink");playhead.DrawLine(new Pen(ink,1.25),new(0,5),new(0,ActualHeight));playhead.DrawEllipse(ink,null,new(0,7),4,4);
+  }
+  playheadDrawing.Transform=playheadTransform;UpdatePlayheadTransform();dc.DrawDrawing(playheadDrawing);
   if(RangeStart.HasValue&&RangeEnd>RangeStart){var a=X(RangeStart.Value);var b=X(RangeEnd.Value);var rangeColor=IsHighContrast?SystemColors.HighlightColor:Color.FromRgb(70,169,134);dc.DrawRoundedRectangle(new SolidColorBrush(Color.FromArgb((byte)(IsHighContrast?70:50),rangeColor.R,rangeColor.G,rangeColor.B)),new Pen(B("Accent"),1),new Rect(a,3,b-a,30),4,4);}
   if(drag!=null&&Math.Abs(dragDelta)>3){var r=drag.Rect;r.Offset(dragDelta,0);dc.DrawRoundedRectangle(null,new Pen(B("Accent"),2),r,8,8);}
   dc.Pop();dc.DrawRectangle(B("Surface"),null,new Rect(0,RulerHeight,LabelWidth,Math.Max(0,ActualHeight-RulerHeight)));
@@ -136,6 +150,7 @@ public sealed class EditorTimelineControl : FrameworkElement
   foreach(var lane in LaneNames()){dc.DrawLine(pen,new(0,y),new(ActualWidth,y));EditorIcon.DrawVector(dc,lane.Icon,new Rect(17,y+16,17,17),B("Secondary"));Text(dc,lane.Label,new(41,y+18),11,B("Ink"));DrawHideButton(dc,new Rect(LabelWidth-30,y+12,24,28),B("Secondary"));y+=LaneHeight;}
   dc.DrawLine(pen,new(0,RulerHeight),new(ActualWidth,RulerHeight));dc.DrawLine(pen,new(LabelWidth,0),new(LabelWidth,ActualHeight));
  }
+ void UpdatePlayheadTransform()=>playheadTransform.X=X(Position);
  IEnumerable<(string Key,string Icon,string Label)> LaneNames(){if(!HiddenTracks.Contains("zoom"))yield return ("zoom","trackZoom","缩放");if(!HiddenTracks.Contains("motion"))yield return ("motion","track3d","屏幕 3D");if(Project?.Camera!=null&&!HiddenTracks.Contains("camera"))yield return ("camera","trackCamera","摄像头");if(Project?.CameraMotions.Count>0&&!HiddenTracks.Contains("cameraMotion"))yield return ("cameraMotion","trackCameraMotion","摄像运动");if(Project?.Overlays.Count>0&&!HiddenTracks.Contains("overlay"))yield return ("overlay","trackOverlay","贴图");if(Project?.BlurClips.Count>0&&!HiddenTracks.Contains("blur"))yield return ("blur","trackBlur","柔化");if(Project?.AudioTracks.Count>0&&!HiddenTracks.Contains("audio"))yield return ("audio","trackAudio","声音");}
  static void DrawHideButton(DrawingContext dc,Rect bounds,Brush brush){EditorIcon.DrawVector(dc,"eye",new Rect(bounds.X+6,bounds.Y+8,12,12),brush);dc.DrawLine(new Pen(brush,.85),new(bounds.X+6,bounds.Y+21),new(bounds.X+18,bounds.Y+7));}
  public static Guid AudioId(int i)=>new(i+1,0,0,new byte[8]);

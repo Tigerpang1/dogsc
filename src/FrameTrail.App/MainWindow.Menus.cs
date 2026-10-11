@@ -559,7 +559,7 @@ public partial class MainWindow
         public int FrameRate { get; set; } = 60;
         public int PreviewResolution { get; set; }
         public int PreviewSizingVersion { get; set; }
-        public int PreviewFrameRate { get; set; } = 30;
+        public int PreviewFrameRate { get; set; } = 60;
         public bool ExcludeEditorDuringRecording { get; set; } = true;
         public bool OriginalResolution { get; set; } = true;
         public bool RecordSystemSound { get; set; } = true;

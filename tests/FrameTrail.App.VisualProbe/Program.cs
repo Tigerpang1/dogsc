@@ -76,10 +76,11 @@ internal static class Program
             }
             if (playbackLatencyOnly)
             {
-                if (args.Length is < 2 or > 4) throw new ArgumentException("Usage: --playback-latency|--playback-audio-latency <outputDirectory> [projectFile|-] [30|60]");
+                if (args.Length is < 2 or > 5) throw new ArgumentException("Usage: --playback-latency|--playback-audio-latency <outputDirectory> [projectFile|-] [30|60] [1440|2560|3840]");
                 window = new MainWindow();
                 PlaybackLatencyProbe.Verify(window, output, args.Length >= 3 && args[2] != "-" ? Path.GetFullPath(args[2]) : null,
-                    enableAudio: playbackAudioLatencyOnly, frameRate: args.Length == 4 ? int.Parse(args[3]) : 30);
+                    enableAudio: playbackAudioLatencyOnly, frameRate: args.Length >= 4 ? int.Parse(args[3]) : 30,
+                    previewWidth: args.Length >= 5 ? int.Parse(args[4]) : 1440);
                 Console.WriteLine($"PASS: {(playbackAudioLatencyOnly ? "playback audio latency" : "playback latency")} probe; {output}");
                 return 0;
             }
@@ -111,6 +112,7 @@ internal static class Program
             if (timelineInputOnly)
             {
                 TimelineInputProbe.Verify(Check);
+                TimelinePlayheadRetentionProbe.Verify(Check);
                 File.WriteAllText(Path.Combine(output, "result.json"), JsonSerializer.Serialize(new
                 {
                     Passed = true,

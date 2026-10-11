@@ -3,7 +3,10 @@ using FrameTrail;
 
 namespace FrameTrail.Media;
 
-public readonly record struct PreviewFrameInfo(double OutputTime, double SourceTime, int Width, int Height, int FrameRate);
+public readonly record struct PreviewFrameInfo(double OutputTime, double SourceTime, int Width, int Height, int FrameRate)
+{
+    public FrameScene? Scene { get; init; }
+}
 
 /// <summary>Persistent FFmpeg decoder plus the same scene evaluator, asset loader and GPU compositor used by export.</summary>
 public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
@@ -19,6 +22,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
     private readonly GpuFrameRenderer renderer;
     private readonly bool preferNativeDecoder;
     private ScrubFrameDecoder? nativeDecoder;
+    private byte[]? nativeFrameBuffer;
     private readonly SemaphoreSlim gate = new(1, 1);
     private Process? decoder;
     private PreviewFramePipe? decoderFrames;
@@ -90,9 +94,10 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
             {
                 nativeDecoder ??= new ScrubFrameDecoder(sourcePath, sourceWidth, sourceHeight, sourceFrameRate, sourceDuration, preferNative: true);
                 // NativeSeekFrameDecoder is synchronous; keep codec work off the caller (often UI) thread.
-                sourceFrame = await Task.Run(() => nativeDecoder.ReadFrameAsync(scene.SourceTime, cancellation), cancellation).ConfigureAwait(false);
+                var reusableSourceFrame = nativeFrameBuffer ??= GC.AllocateUninitializedArray<byte>(checked(sourceWidth * sourceHeight * 4));
+                await Task.Run(() => nativeDecoder.ReadFrameIntoAsync(scene.SourceTime, reusableSourceFrame, cancellation), cancellation).ConfigureAwait(false);
                 cancellation.ThrowIfCancellationRequested();
-                lastDecoded = sourceFrame;
+                sourceFrame = reusableSourceFrame;
                 currentSourceFrame = targetFrame;
             }
             else
@@ -111,7 +116,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
             }
             var layers = await assets.LoadAsync(scene, cancellation).ConfigureAwait(false);
             renderer.Render(sourceFrame, scene, outputBgra, layers);
-            return new PreviewFrameInfo(safeOutputTime, scene.SourceTime, width, height, frameRate);
+            return new PreviewFrameInfo(safeOutputTime, scene.SourceTime, width, height, frameRate) { Scene = scene };
         }
         catch (Exception) when (cancellation.IsCancellationRequested)
         {
@@ -209,6 +214,7 @@ public sealed class PreviewPlaybackSession : IDisposable, IAsyncDisposable
             await StopDecoder().ConfigureAwait(false);
             if (nativeDecoder is not null) await nativeDecoder.DisposeAsync().ConfigureAwait(false);
             nativeDecoder = null;
+            nativeFrameBuffer = null;
             assets.Dispose(); renderer.Dispose();
         }
         finally { gate.Release(); }

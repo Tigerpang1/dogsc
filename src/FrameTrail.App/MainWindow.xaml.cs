@@ -539,7 +539,7 @@ public partial class MainWindow : Window
         }
         StopPlayback();  UpdateTime(); _ = Guard(() => RenderTimelinePreview(Playhead.Value));
     }
-    private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value;TimelineView.InvalidateVisual(); }
+    private void UpdateTime() { TimeLabel.Text = $"{TimeSpan.FromSeconds(Playhead.Value):mm\\:ss\\.ff} / {TimeSpan.FromSeconds(Playhead.Maximum):mm\\:ss\\.ff}"; TimelineView.Position=Playhead.Value; }
     private void PreviousFrame(object sender, RoutedEventArgs e) => StepFrames(-1);
     private void NextFrame(object sender, RoutedEventArgs e) => StepFrames(1);
     private void InvalidateProxy() { _ = DisposePlaybackResourcesAsync(); ClosePlaybackAudio(); if (proxyPath != null && File.Exists(proxyPath)) { try { File.Delete(proxyPath); } catch (IOException) { } } proxyPath=null; playbackProxyProject=null; }

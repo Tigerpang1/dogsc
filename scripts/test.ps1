@@ -36,6 +36,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "常驻原生解码与时间戳检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --native-playback (Join-Path $repoRoot ('artifacts/validation/native-playback-' + [guid]::NewGuid().ToString('N')))
         if ($LASTEXITCODE -ne 0) { throw "常驻播放的变速重排与像素一致性检查失败，退出码 $LASTEXITCODE" }
+        & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --frame-clock (Join-Path $repoRoot ('artifacts/validation/frame-clock-' + [guid]::NewGuid().ToString('N') + '.json'))
+        if ($LASTEXITCODE -ne 0) { throw "播放帧计时与取消释放检查失败，退出码 $LASTEXITCODE" }
         & dotnet run --no-build --project (Join-Path $repoRoot 'tests/FrameTrail.Render.Probe/FrameTrail.Render.Probe.csproj') --configuration $Configuration -- --dogsc-camera-import
         if ($LASTEXITCODE -ne 0) { throw "DogSC 摄像头素材比例与保存失败回归失败，退出码 $LASTEXITCODE" }
         & dotnet run --project (Join-Path $repoRoot 'tests/FrameTrail.AudioOverrides.Probe/FrameTrail.AudioOverrides.Probe.csproj') --configuration $Configuration -- (Join-Path $repoRoot ('artifacts/validation/audio-overrides-' + (Get-Date -Format 'yyyyMMdd-HHmmss')))

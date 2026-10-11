@@ -19,7 +19,7 @@ public partial class MainWindow
  private readonly TextBlock TimelineInfo=new();
  private string inspectorTab="frame",frameTab="layout",motionTab="zoom";
  private bool darkTheme,buildingInspector;
- private int previewResolution=0,previewFrameRate=30;
+ private int previewResolution=0,previewFrameRate=60;
  private bool excludeEditorDuringRecording=true;
  private TimelineSelection? selectedEffect;
  private string? effectClipboardKind,effectClipboardJson;

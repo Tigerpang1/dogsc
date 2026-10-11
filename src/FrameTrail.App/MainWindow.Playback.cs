@@ -15,7 +15,13 @@ public partial class MainWindow
     private sealed record PlaybackRequest(FrameTrailProject Project, string File, string Source, double Start,
         int Width, int Height, int FrameRate, bool NativeSource, string? AudioProxy, CancellationToken Lifetime);
     private sealed record PlaybackResources(PlaybackRequest Request, long SourceLength, DateTime SourceModified,
-        PreviewPlaybackSession Session, bool HasAudio, string? AudioProxy);
+        PreviewPlaybackSession Session, bool HasAudio, string? AudioProxy)
+    {
+        public byte[] Pixels { get; } = GC.AllocateUninitializedArray<byte>(checked(Request.Width * Request.Height * 4));
+        public PreparedPlaybackFrame? NextFrame { get; set; }
+        public PreparedPlaybackFrame? HeldFrame { get; set; }
+    }
+    private sealed record PreparedPlaybackFrame(BitmapSource Bitmap, PreviewFrameInfo Info);
     private CancellationTokenSource? playbackCancellation;
     private CancellationTokenSource playbackResourcesLifetime = new();
     // Workers are serialized. Pausing stops presentation; the in-flight frame may
@@ -83,40 +89,52 @@ public partial class MainWindow
                     playbackProxyProject = request.Project;
                     return EnsurePlaybackAudioLoadedAsync(resources.AudioProxy!);
                 });
-            var pixels = new byte[checked(request.Width * request.Height * 4)];
-            var info = await resources.Session.ReadFrameAsync(request.Start, pixels, request.Lifetime).ConfigureAwait(false);
-            var firstFrame = CreatePlaybackBitmap(pixels, request);
+            var pixels = resources.Pixels;
+            // Reuse the held image and one prepared next frame when resuming.
+            // Keep the original timestamp: advancing the video clock here would
+            // silently skip an audio interval every time the user presses play.
+            var held = resources.HeldFrame;
+            var canResume = held is not null && Math.Abs(held.Info.OutputTime - request.Start) < 1e-6;
+            var info = canResume ? held!.Info :
+                await resources.Session.ReadFrameAsync(request.Start, pixels, request.Lifetime).ConfigureAwait(false);
+            var firstFrame = canResume ? held!.Bitmap : CreatePlaybackBitmap(pixels, request);
             await audioReady.WaitAsync(token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
-            var clock = new Stopwatch();
+            var playbackStart = info.OutputTime;
+            long clockOrigin = 0;
+            using var frameClock = new PlaybackFrameClock();
+            double ElapsedSeconds() => Stopwatch.GetElapsedTime(clockOrigin).TotalSeconds;
+            long Deadline(double outputTime, double correction) => clockOrigin +
+                (long)Math.Round((outputTime - playbackStart - correction) * Stopwatch.Frequency);
             var presented = await Dispatcher.InvokeAsync(() =>
             {
                 if (!IsCurrentPlayback(owner, request)) return false;
-                ApplyPlaybackFrame(firstFrame, info.OutputTime, request.Project);
+                ApplyPlaybackFrame(firstFrame, info, request.Project);
                 if (resources.HasAudio)
                 {
-                    Player.Position = TimeSpan.FromSeconds(request.Start);
+                    Player.Position = TimeSpan.FromSeconds(playbackStart);
                     Player.Play();
                 }
-                clock.Start();
+                clockOrigin = Stopwatch.GetTimestamp();
                 playbackStarting = false;
                 return true;
             });
             if (!presented) { ready.TrySetCanceled(); return; }
-            token.ThrowIfCancellationRequested();
+            resources.HeldFrame = new(firstFrame, info);
+            if (!canResume) resources.NextFrame = null;
             ready.TrySetResult();
             var lastFrame = (long)Math.Floor(info.OutputTime * request.FrameRate + 1e-7);
             var audioCorrection = 0d;
             var nextAudioCheck = 1d;
-            while (!token.IsCancellationRequested)
+            while (true)
             {
-                var time = request.Start + clock.Elapsed.TotalSeconds + audioCorrection;
-                if (resources.HasAudio && clock.Elapsed.TotalSeconds >= nextAudioCheck)
+                var time = playbackStart + ElapsedSeconds() + audioCorrection;
+                if (resources.HasAudio && ElapsedSeconds() >= nextAudioCheck && !token.IsCancellationRequested)
                 {
                     var audioTime = await Dispatcher.InvokeAsync(() => Player.Position.TotalSeconds);
                     if (Math.Abs(audioTime - time) > .08) audioCorrection += audioTime - time;
-                    nextAudioCheck = clock.Elapsed.TotalSeconds + 1;
-                    time = request.Start + clock.Elapsed.TotalSeconds + audioCorrection;
+                    nextAudioCheck = ElapsedSeconds() + 1;
+                    time = playbackStart + ElapsedSeconds() + audioCorrection;
                 }
                 if (time >= request.Project.Timeline.Duration - .015) break;
                 // Prepare one frame ahead while the displayed frame is held. Waiting
@@ -124,20 +142,28 @@ public partial class MainWindow
                 var frameIndex = Math.Max(lastFrame + 1, (long)Math.Floor(time * request.FrameRate));
                 if (frameIndex / (double)request.FrameRate >= request.Project.Timeline.Duration)
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Max(.001, request.Project.Timeline.Duration - time)), token).ConfigureAwait(false);
+                    await frameClock.WaitUntilAsync(Deadline(request.Project.Timeline.Duration, audioCorrection), token).ConfigureAwait(false);
                     continue;
                 }
                 lastFrame = frameIndex;
                 time = frameIndex / (double)request.FrameRate;
-                info = await resources.Session.ReadFrameAsync(time, pixels, request.Lifetime).ConfigureAwait(false);
+                var prepared = resources.NextFrame;
+                var alreadyPrepared = prepared is not null && Math.Abs(prepared.Info.OutputTime - time) < 1e-6;
+                info = alreadyPrepared ? prepared!.Info :
+                    await resources.Session.ReadFrameAsync(time, pixels, request.Lifetime).ConfigureAwait(false);
+                var frame = alreadyPrepared ? prepared!.Bitmap : CreatePlaybackBitmap(pixels, request);
+                resources.NextFrame = new(frame, info);
                 token.ThrowIfCancellationRequested();
-                var frame = CreatePlaybackBitmap(pixels, request);
-                var remaining = time - (request.Start + clock.Elapsed.TotalSeconds + audioCorrection);
-                if (remaining > 0) await Task.Delay(TimeSpan.FromSeconds(remaining), token).ConfigureAwait(false);
-                await Dispatcher.InvokeAsync(() =>
+                await frameClock.WaitUntilAsync(Deadline(time, audioCorrection), token).ConfigureAwait(false);
+                presented = await Dispatcher.InvokeAsync(() =>
                 {
-                    if (IsCurrentPlayback(owner, request)) ApplyPlaybackFrame(frame, info.OutputTime, request.Project);
+                    if (!IsCurrentPlayback(owner, request)) return false;
+                    ApplyPlaybackFrame(frame, info, request.Project);
+                    return true;
                 });
+                if (!presented) break;
+                resources.HeldFrame = new(frame, info);
+                resources.NextFrame = null;
             }
             if (!token.IsCancellationRequested)
                 await Dispatcher.InvokeAsync(() =>
@@ -242,16 +268,21 @@ public partial class MainWindow
         return frame;
     }
 
-    private void ApplyPlaybackFrame(BitmapSource frame, double time, FrameTrailProject snapshot)
+    private void ApplyPlaybackFrame(BitmapSource frame, PreviewFrameInfo info, FrameTrailProject snapshot)
     {
+        var time = info.OutputTime;
         playbackRenderedFrames++;
         PreviewImage.Source = frame;
-        if (!ReferenceEquals(evaluatedProject, snapshot))
+        if (info.Scene is { } scene) displayedPreviewScene = scene;
+        else
         {
-            previewEvaluator = new PreparedFrameSceneEvaluator(snapshot);
-            evaluatedProject = snapshot;
+            if (!ReferenceEquals(evaluatedProject, snapshot))
+            {
+                previewEvaluator = new PreparedFrameSceneEvaluator(snapshot);
+                evaluatedProject = snapshot;
+            }
+            displayedPreviewScene = previewEvaluator!.Evaluate(time);
         }
-        displayedPreviewScene = previewEvaluator!.Evaluate(time);
         displayedPreviewProject = snapshot;
         AutomationProperties.SetItemStatus(PreviewImage, "ready");
         var wasRefreshing = refreshing;

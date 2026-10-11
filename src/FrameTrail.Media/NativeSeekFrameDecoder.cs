@@ -14,7 +14,6 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
     private bool _packetPending;
     private AVFrame* _frame;
     private AVFrame* _lastFrame;
-    private AVFrame* _output;
     private AVFrame* _transfer;
     private AVBufferRef* _hwDevice;
     private AVPixelFormat _hardwarePixelFormat = AVPixelFormat.AV_PIX_FMT_NONE;
@@ -30,6 +29,8 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
     private readonly double _timeBaseSec;
     private readonly AVIOInterruptCB_callback _interruptCallback;
     private readonly AVCodecContext_get_format _getFormatCallback;
+    private readonly byte*[] _destinationData = new byte*[4];
+    private readonly int[] _destinationLinesize = new int[4];
     private CancellationToken _activeCancellation;
     private bool _disposed;
 
@@ -80,13 +81,8 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
             _packet = ffmpeg.av_packet_alloc();
             _frame = ffmpeg.av_frame_alloc();
             _lastFrame = ffmpeg.av_frame_alloc();
-            _output = ffmpeg.av_frame_alloc();
             _transfer = ffmpeg.av_frame_alloc();
-            if (_packet == null || _frame == null || _lastFrame == null || _output == null || _transfer == null) throw new InvalidOperationException("packet/frame allocation failed");
-            _output->format = (int)AVPixelFormat.AV_PIX_FMT_BGRA;
-            _output->width = width;
-            _output->height = height;
-            Throw(ffmpeg.av_frame_get_buffer(_output, 32), "av_frame_get_buffer");
+            if (_packet == null || _frame == null || _lastFrame == null || _transfer == null) throw new InvalidOperationException("packet/frame allocation failed");
         }
         catch { Dispose(); throw; }
     }
@@ -158,6 +154,19 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!double.IsFinite(normalizedTime) || normalizedTime < 0 || normalizedTime > Duration + 0.05) throw new ArgumentOutOfRangeException(nameof(normalizedTime));
         cancellationToken.ThrowIfCancellationRequested();
+        var pixels = GC.AllocateUninitializedArray<byte>(checked(_width * _height * 4));
+        ReadFrameInto(normalizedTime, pixels, cancellationToken);
+        return pixels;
+    }
+
+    /// <summary>Decodes directly into caller-owned storage; callers must keep it exclusive until the call returns.</summary>
+    public void ReadFrameInto(double normalizedTime, byte[] destination, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(destination);
+        if (destination.Length != checked(_width * _height * 4)) throw new ArgumentException("Destination length does not match decoder dimensions.", nameof(destination));
+        if (!double.IsFinite(normalizedTime) || normalizedTime < 0 || normalizedTime > Duration + 0.05) throw new ArgumentOutOfRangeException(nameof(normalizedTime));
+        cancellationToken.ThrowIfCancellationRequested();
         var originPts = _format->streams[_streamIndex]->start_time != ffmpeg.AV_NOPTS_VALUE ? _format->streams[_streamIndex]->start_time : 0;
         var relativeTargetPts = (long)Math.Ceiling(normalizedTime / _timeBaseSec - 1e-9);
         var targetPts = originPts + relativeTargetPts;
@@ -165,7 +174,8 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
         if (_lastFramePts != ffmpeg.AV_NOPTS_VALUE && normalizedTime >= _lastRequestedTime && targetPts <= _lastFramePts)
         {
             _lastRequestedTime = normalizedTime;
-            return ConvertFrame(_lastFrame);
+            ConvertFrame(_lastFrame, destination);
+            return;
         }
 
         _activeCancellation = cancellationToken;
@@ -189,11 +199,10 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
             }
             else
             {
-                var buffered = ReceiveToTarget(targetPts, cancellationToken);
-                if (buffered != null)
+                if (ReceiveToTarget(targetPts, destination, cancellationToken))
                 {
                     _lastRequestedTime = normalizedTime;
-                    return buffered;
+                    return;
                 }
             }
             while (true)
@@ -204,33 +213,30 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
                     var pendingSend = ffmpeg.avcodec_send_packet(_codec, _packet);
                     if (pendingSend == ErrorAgain)
                     {
-                        var ready = ReceiveToTarget(targetPts, cancellationToken);
-                        if (ready != null)
+                        if (ReceiveToTarget(targetPts, destination, cancellationToken))
                         {
                             _lastRequestedTime = normalizedTime;
-                            return ready;
+                            return;
                         }
                         continue;
                     }
                     ThrowOrCancel(pendingSend, "avcodec_send_packet(pending)", cancellationToken);
                     ffmpeg.av_packet_unref(_packet);
                     _packetPending = false;
-                    var pendingResult = ReceiveToTarget(targetPts, cancellationToken);
-                    if (pendingResult != null)
+                    if (ReceiveToTarget(targetPts, destination, cancellationToken))
                     {
                         _lastRequestedTime = normalizedTime;
-                        return pendingResult;
+                        return;
                     }
                     continue;
                 }
                 var read = ffmpeg.av_read_frame(_format, _packet);
                 if (read == ffmpeg.AVERROR_EOF)
                 {
-                    var eofSample = FlushToTarget(targetPts, cancellationToken);
-                    if (eofSample != null)
+                    if (FlushToTarget(targetPts, destination, cancellationToken))
                     {
                         _lastRequestedTime = normalizedTime;
-                        return eofSample;
+                        return;
                     }
                     throw new InvalidOperationException("EOF before requested frame");
                 }
@@ -243,20 +249,18 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
                     if (sent == ErrorAgain)
                     {
                         _packetPending = true;
-                        var pending = ReceiveToTarget(targetPts, cancellationToken);
-                        if (pending != null)
+                        if (ReceiveToTarget(targetPts, destination, cancellationToken))
                         {
                             _lastRequestedTime = normalizedTime;
-                            return pending;
+                            return;
                         }
                         continue;
                     }
                     ThrowOrCancel(sent, "avcodec_send_packet", cancellationToken);
-                    var result = ReceiveToTarget(targetPts, cancellationToken);
-                    if (result != null)
+                    if (ReceiveToTarget(targetPts, destination, cancellationToken))
                     {
                         _lastRequestedTime = normalizedTime;
-                        return result;
+                        return;
                     }
                 }
                 finally
@@ -283,13 +287,13 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
         finally { _activeCancellation = default; }
     }
 
-    private byte[]? ReceiveToTarget(long targetPts, CancellationToken token)
+    private bool ReceiveToTarget(long targetPts, byte[] destination, CancellationToken token)
     {
         while (true)
         {
             token.ThrowIfCancellationRequested();
             var receive = ffmpeg.avcodec_receive_frame(_codec, _frame);
-            if (receive == ErrorAgain || receive == ffmpeg.AVERROR_EOF) return null;
+            if (receive == ErrorAgain || receive == ffmpeg.AVERROR_EOF) return false;
             ThrowOrCancel(receive, "avcodec_receive_frame", token);
             try
             {
@@ -300,37 +304,33 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
                 Throw(ffmpeg.av_frame_ref(_lastFrame, _frame), "av_frame_ref(last frame)");
                 _lastFramePts = pts;
                 if (pts < targetPts) continue;
-                var pixels = ConvertFrame();
+                ConvertFrame(_frame, destination);
                 LastTimestampSeconds = (pts - (_format->streams[_streamIndex]->start_time != ffmpeg.AV_NOPTS_VALUE ? _format->streams[_streamIndex]->start_time : 0)) * _timeBaseSec;
-                return pixels;
+                return true;
             }
             finally { ffmpeg.av_frame_unref(_frame); }
         }
     }
 
-    private byte[]? FlushToTarget(long targetPts, CancellationToken token)
+    private bool FlushToTarget(long targetPts, byte[] destination, CancellationToken token)
     {
         var sent = ffmpeg.avcodec_send_packet(_codec, null);
         if (sent == ErrorAgain)
         {
-            var pending = ReceiveToTarget(targetPts, token);
-            if (pending != null) return pending;
+            if (ReceiveToTarget(targetPts, destination, token)) return true;
             sent = ffmpeg.avcodec_send_packet(_codec, null);
         }
         if (sent < 0 && sent != ffmpeg.AVERROR_EOF) ThrowOrCancel(sent, "avcodec_send_packet(flush)", token);
-        var finalTarget = ReceiveToTarget(targetPts, token);
-        if (finalTarget != null) return finalTarget;
-        if (_lastFramePts == ffmpeg.AV_NOPTS_VALUE) return null;
+        if (ReceiveToTarget(targetPts, destination, token)) return true;
+        if (_lastFramePts == ffmpeg.AV_NOPTS_VALUE) return false;
         var lastPts = _lastFramePts;
-        if (lastPts == ffmpeg.AV_NOPTS_VALUE) return null;
+        if (lastPts == ffmpeg.AV_NOPTS_VALUE) return false;
         LastTimestampSeconds = (lastPts - (_format->streams[_streamIndex]->start_time != ffmpeg.AV_NOPTS_VALUE ? _format->streams[_streamIndex]->start_time : 0)) * _timeBaseSec;
-        return ConvertFrame(_lastFrame);
+        ConvertFrame(_lastFrame, destination);
+        return true;
     }
 
-    private byte[] ConvertFrame()
-        => ConvertFrame(_frame);
-
-    private byte[] ConvertFrame(AVFrame* inputFrame)
+    private void ConvertFrame(AVFrame* inputFrame, byte[] destination)
     {
         AVFrame* source = inputFrame;
         if (_hardwarePixelFormat != AVPixelFormat.AV_PIX_FMT_NONE && inputFrame->format == (int)_hardwarePixelFormat)
@@ -366,14 +366,22 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
         for (uint i = 0; i < 4; i++) coefficients[i] = coefficientPointer[i];
         var sourceRange = source->color_range == AVColorRange.AVCOL_RANGE_JPEG ? 1 : 0;
         Throw(ffmpeg.sws_setColorspaceDetails(_sws, in coefficients, sourceRange, in coefficients, 1, 0, 1 << 16, 1 << 16), "sws_setColorspaceDetails");
-        Throw(ffmpeg.av_frame_make_writable(_output), "av_frame_make_writable");
-        var rows = ffmpeg.sws_scale(_sws, source->data, source->linesize, 0, source->height, _output->data, _output->linesize);
-        if (rows != _height) throw new InvalidOperationException($"sws_scale produced {rows}/{_height} rows");
         var rowBytes = checked(_width * 4);
-        var bytes = new byte[checked(rowBytes * _height)];
-        for (var y = 0; y < _height; y++)
-            new ReadOnlySpan<byte>(_output->data[0] + y * _output->linesize[0], rowBytes).CopyTo(bytes.AsSpan(y * rowBytes, rowBytes));
-        return bytes;
+        fixed (byte* destinationPointer = destination)
+        {
+            _destinationData[0] = destinationPointer;
+            _destinationLinesize[0] = rowBytes;
+            try
+            {
+                var rows = ffmpeg.sws_scale(_sws, source->data, source->linesize, 0, source->height, _destinationData, _destinationLinesize);
+                if (rows != _height) throw new InvalidOperationException($"sws_scale produced {rows}/{_height} rows");
+            }
+            finally
+            {
+                _destinationData[0] = null;
+                _destinationLinesize[0] = 0;
+            }
+        }
     }
 
     private static void ValidateCodecDisplayMatrix(AVCodecParameters* parameters)
@@ -424,7 +432,6 @@ internal sealed unsafe class NativeSeekFrameDecoder : IDisposable
         if (_disposed) return;
         _disposed = true;
         if (_sws != null) { ffmpeg.sws_freeContext(_sws); _sws = null; }
-        if (_output != null) { var p = _output; ffmpeg.av_frame_free(&p); _output = null; }
         if (_transfer != null) { var p = _transfer; ffmpeg.av_frame_free(&p); _transfer = null; }
         if (_lastFrame != null) { var p = _lastFrame; ffmpeg.av_frame_free(&p); _lastFrame = null; }
         if (_frame != null) { var p = _frame; ffmpeg.av_frame_free(&p); _frame = null; }

@@ -37,6 +37,7 @@ internal static class NativePlaybackProbe
             };
             FrameTrailProjectStore.Save(projectPath, project);
             project = FrameTrailProjectStore.Load(projectPath);
+            var streamingBufferParity = await VerifyStreamingBufferParity(source);
 
             var nativeFrame = new byte[160 * 90 * 4];
             var referenceFrame = new byte[nativeFrame.Length];
@@ -75,7 +76,7 @@ internal static class NativePlaybackProbe
             // Both the libav context and fallback process must release the source.
             using (File.Open(source, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
 
-            var checks = new { passed = true, backend, nativeSessions, processStarts, maxPixelDelta, samples, sourceTimes, sourceReleasedAfterDispose = true };
+            var checks = new { passed = true, backend, nativeSessions, processStarts, maxPixelDelta, samples, sourceTimes, streamingBufferParity, sourceReleasedAfterDispose = true };
             await File.WriteAllTextAsync(report, JsonSerializer.Serialize(checks, new JsonSerializerOptions { WriteIndented = true }));
             Console.WriteLine("通过：native 播放重排/变速时间映射、暂停帧重读、向前与反向 seek、同渲染器逐像素一致；" + root);
         }
@@ -84,6 +85,40 @@ internal static class NativePlaybackProbe
             await File.WriteAllTextAsync(report, JsonSerializer.Serialize(new { passed = false, error = ex.ToString() }, new JsonSerializerOptions { WriteIndented = true }));
             throw;
         }
+    }
+
+    private static async Task<object> VerifyStreamingBufferParity(string source)
+    {
+        const int width = 162, height = 92;
+        var times = new[] { .2, .3, 1.2, .7, .4 };
+        await using var cached = new ScrubFrameDecoder(source, width, height, 30, 3, preferNative: true);
+        await using var streaming = new ScrubFrameDecoder(source, width, height, 30, 3, preferNative: true);
+        var reusable = new byte[width * height * 4];
+        var matches = 0;
+        foreach (var time in times)
+        {
+            var expected = await cached.ReadFrameAsync(time);
+            await streaming.ReadFrameIntoAsync(time, reusable);
+            Check(expected.AsSpan().SequenceEqual(reusable), $"caller-buffer decoder differs at {time:F3}s, stride {width * 4}");
+            matches++;
+        }
+
+        using var canceled = new CancellationTokenSource();
+        canceled.Cancel();
+        try
+        {
+            await streaming.ReadFrameIntoAsync(.9, reusable, canceled.Token);
+            throw new InvalidOperationException("caller-buffer decoder accepted a pre-canceled request");
+        }
+        catch (OperationCanceledException) when (canceled.IsCancellationRequested) { }
+        var expectedAfterCancel = await cached.ReadFrameAsync(.9);
+        await streaming.ReadFrameIntoAsync(.9, reusable);
+        Check(expectedAfterCancel.AsSpan().SequenceEqual(reusable), "caller-buffer decoder failed to recover after cancellation");
+        matches++;
+        Check(cached.DecoderBackend.StartsWith("libav/", StringComparison.Ordinal)
+            && streaming.DecoderBackend.StartsWith("libav/", StringComparison.Ordinal),
+            $"caller-buffer parity did not exercise libav: cached={cached.DecoderBackend}; streaming={streaming.DecoderBackend}");
+        return new { width, height, strideBytes = width * 4, exactMatches = matches, requests = times.Length + 1, cancellationRecovery = true };
     }
 
     private static int PixelDelta(byte[] left, byte[] right)

@@ -182,6 +182,60 @@ public sealed class ScrubFrameDecoder : IAsyncDisposable
         finally { gate.Release(); }
     }
 
+    /// <summary>Reads a frame into reusable caller-owned BGRA storage. The caller must retain exclusive ownership until this completes.</summary>
+    public async Task ReadFrameIntoAsync(double sourceTime, byte[] destination, CancellationToken cancellationToken = default)
+    {
+        if (!double.IsFinite(sourceTime) || sourceTime < 0) throw new ArgumentOutOfRangeException(nameof(sourceTime));
+        ArgumentNullException.ThrowIfNull(destination);
+        if (destination.Length != checked(width * height * 4)) throw new ArgumentException("Destination length does not match decoder dimensions.", nameof(destination));
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (preferNative)
+            {
+                try
+                {
+                    if (!LibavRuntime.TryInitialize()) throw new NotSupportedException(LibavRuntime.UnavailableReason);
+                    var target = Math.Min(sourceTime, duration);
+                    if (nativeCache.TryGetValue(target, out var cached))
+                    {
+                        Interlocked.Increment(ref cacheHits);
+                        cached.AsSpan().CopyTo(destination);
+                        return;
+                    }
+                    if (nativeDecoder is null)
+                    {
+                        nativeDecoder = new(sourcePath, width, height, sourceFrameRate, duration);
+                        NativeSessionCount++;
+                    }
+                    nativeDecoder.ReadFrameInto(target, destination, cancellationToken);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    // Streaming frames are consumed synchronously by PreviewPlaybackSession and deliberately are not retained in the seek cache.
+                    return;
+                }
+                catch (Exception error) when (error is IOException or InvalidOperationException or NotSupportedException)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    nativeDecoder?.Dispose();
+                    nativeDecoder = null;
+                    nativeCache.Clear();
+                    Interlocked.Exchange(ref cacheBytes, 0);
+                    preferNative = false;
+                    NativeFailureReason = error.Message;
+                }
+            }
+        }
+        finally { gate.Release(); }
+
+        // Preserve the existing timestamp-indexed CLI and one-shot fallback behavior.
+        var fallback = await ReadFrameAsync(sourceTime, cancellationToken).ConfigureAwait(false);
+        fallback.AsSpan().CopyTo(destination);
+    }
+
     private async Task<byte[]> ReadLastFrameAsync(CancellationToken cancellationToken)
     {
         for (var runNode = indexedRuns.Last; runNode is not null; runNode = runNode.Previous)

@@ -7,6 +7,16 @@ using FrameTrail.Media;
 using Vortice.D3DCompiler;
 
 const int sourceWidth = 320, sourceHeight = 180, outputWidth = 640, outputHeight = 360;
+if (args.Length > 0 && args[0] == "--frame-clock")
+{
+    await FrameTrail.Render.Probe.FrameClockProbe.RunAsync(args.Length > 1 ? args[1] : null);
+    return;
+}
+if (args.Length > 0 && args[0] == "--playback-throughput")
+{
+    await FrameTrail.Render.Probe.PlaybackThroughputProbe.RunAsync(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length > 0 && args[0] == "--scrub-decoder")
 {
     await FrameTrail.Render.Probe.ScrubFrameDecoderProbe.RunAsync(args.Length > 1 ? args[1] : null);

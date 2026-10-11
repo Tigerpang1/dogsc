@@ -19,9 +19,10 @@ internal static class PlaybackLatencyProbe
 {
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    public static void Verify(MainWindow window, string output, string? sourceProject, bool enableAudio = false, int frameRate = 30)
+    public static void Verify(MainWindow window, string output, string? sourceProject, bool enableAudio = false, int frameRate = 30, int previewWidth = 1440)
     {
         if (frameRate is not (30 or 60)) throw new ArgumentOutOfRangeException(nameof(frameRate));
+        if (previewWidth is not (1440 or 2560 or 3840)) throw new ArgumentOutOfRangeException(nameof(previewWidth));
         Directory.CreateDirectory(output);
         var dispatcher = window.Dispatcher;
         var previousContext = SynchronizationContext.Current;
@@ -45,6 +46,12 @@ internal static class PlaybackLatencyProbe
         Stopwatch? advancingFrameClock = null;
         double advancingFrameStart = 0;
         double? inputToFirstForwardFrameCommitMs = null;
+        double? expectedResumeTime = null;
+        double? firstResumeOutputTime = null;
+        double? firstResumeCommitMs = null;
+        Stopwatch? resumeFrameClock = null;
+        bool captureSustainedFrames = false;
+        var sustainedSamples = new List<(double OutputTime, long Timestamp, double AudioSeconds)>();
         bool? proxiesRemovedByProduction = null;
         bool? playbackResourcesReleasedByProduction = null;
         try
@@ -109,13 +116,42 @@ internal static class PlaybackLatencyProbe
             originalFramePresentedHook = framePresentedHookField.GetValue(window);
             framePresentedHook = outputTime =>
             {
+                if (expectedResumeTime is not null && firstResumeOutputTime is null)
+                {
+                    firstResumeOutputTime = outputTime;
+                    firstResumeCommitMs = resumeFrameClock?.Elapsed.TotalMilliseconds;
+                }
                 if (advancingFrameClock is not null && inputToFirstForwardFrameCommitMs is null && outputTime > advancingFrameStart + 1e-5)
                     inputToFirstForwardFrameCommitMs = advancingFrameClock.Elapsed.TotalMilliseconds;
+                if (captureSustainedFrames)
+                    sustainedSamples.Add((outputTime, Stopwatch.GetTimestamp(), player.Position.TotalSeconds));
             };
             framePresentedHookField.SetValue(window, framePresentedHook);
-            Set(window, "previewResolution", 1440);
+            Set(window, "previewResolution", previewWidth);
             Set(window, "previewFrameRate", frameRate);
             report["PreviewFrameRate"] = frameRate;
+            report["RequestedPreviewWidth"] = previewWidth;
+
+            var timelineView = (EditorTimelineControl)window.FindName("TimelineView");
+            var timelineProjectCopy = Clone(project);
+            timelineView.Project = timelineProjectCopy;
+            timelineView.Refresh();
+            var layoutWidth = Math.Max(1280, window.ActualWidth);
+            var layoutHeight = Math.Max(240, window.ActualHeight);
+            timelineView.Measure(new Size(layoutWidth, layoutHeight));
+            timelineView.Arrange(new Rect(0, 0, layoutWidth, Math.Max(240, timelineView.DesiredSize.Height)));
+            timelineView.UpdateLayout();
+            report["OffscreenTimelineLayout"] = new
+            {
+                InMemoryProjectCopy = !ReferenceEquals(timelineView.Project, project),
+                ProjectDurationSeconds = timelineView.Project?.Timeline.Duration,
+                MeasuredWidth = timelineView.DesiredSize.Width,
+                MeasuredHeight = timelineView.DesiredSize.Height,
+                ArrangedWidth = timelineView.ActualWidth,
+                ArrangedHeight = timelineView.ActualHeight,
+                HasHwnd = new WindowInteropHelper(window).Handle != IntPtr.Zero
+            };
+            RequireOffscreen(window);
             var playhead = Get<Slider>(window, "Playhead");
             playhead.Maximum = project.Timeline.Duration;
             playhead.Value = 0;
@@ -143,7 +179,9 @@ internal static class PlaybackLatencyProbe
             var inputReturnMs = start.Elapsed.TotalMilliseconds;
             WaitUntil(dispatcher, () => Get<int>(window, "playbackRenderedFrames") > initialCount && CurrentImage(window) is not null, TimeSpan.FromSeconds(20));
             var firstFrameMs = start.Elapsed.TotalMilliseconds;
-            frameRows.Add(new { Scenario = "first-frame", InputToFirstFrameUpperBoundMs = firstFrameMs, PollIntervalMs = 1, ImageAssigned = CurrentImage(window) is not null, ImageReferenceChanged = !ReferenceEquals(initialImage, CurrentImage(window)) });
+            var firstImageSize = CurrentImage(window)!;
+            report["ActualBitmapSize"] = new { PixelWidth = firstImageSize.PixelWidth, PixelHeight = firstImageSize.PixelHeight };
+            frameRows.Add(new { Scenario = "first-frame", InputToFirstFrameUpperBoundMs = firstFrameMs, PollIntervalMs = 1, ImageAssigned = CurrentImage(window) is not null, ImageReferenceChanged = !ReferenceEquals(initialImage, CurrentImage(window)), BitmapPixelWidth = firstImageSize.PixelWidth, BitmapPixelHeight = firstImageSize.PixelHeight });
             startRows.Add(new { Scenario = "initial-start", InputToSynchronousReturnMs = firstCall.SynchronousReturnMs, InputToStartTaskCompletionMs = inputReturnMs, RenderedFramesAtReturn = Get<int>(window, "playbackRenderedFrames"), SessionGeneration = Generation(window) });
             RequireOffscreen(window);
 
@@ -165,12 +203,19 @@ internal static class PlaybackLatencyProbe
                 start.Restart();
                 advancingFrameStart = beforeTime;
                 inputToFirstForwardFrameCommitMs = null;
+                expectedResumeTime = beforeTime;
+                firstResumeOutputTime = null;
+                firstResumeCommitMs = null;
                 advancingFrameClock = start;
+                resumeFrameClock = start;
                 var resumeCall = StartMeasured(window);
                 Pump(dispatcher, resumeCall.Task);
                 var returnMs = start.Elapsed.TotalMilliseconds;
-                WaitUntil(dispatcher, () => !ReferenceEquals(beforeImage, CurrentImage(window)) && Get<int>(window, "playbackRenderedFrames") > 0 && Get<bool>(window, "playing"), TimeSpan.FromSeconds(20));
-                var firstResumedMs = start.Elapsed.TotalMilliseconds;
+                WaitUntil(dispatcher, () => firstResumeOutputTime is not null && Get<int>(window, "playbackRenderedFrames") > 0 && Get<bool>(window, "playing"), TimeSpan.FromSeconds(20));
+                var firstResumedMs = firstResumeCommitMs ?? throw new InvalidOperationException("Resume callback did not capture its first frame commit time.");
+                var resumedAtPausedFrame = Math.Abs(firstResumeOutputTime!.Value - beforeTime) <= 1e-7;
+                if (!resumedAtPausedFrame)
+                    throw new InvalidOperationException($"Resume cycle {i} first submitted outputTime {firstResumeOutputTime.Value:R} did not equal paused position {beforeTime:R}.");
                 WaitUntil(dispatcher, () => playhead.Value > beforeTime + 1e-5 && Get<int>(window, "playbackRenderedFrames") > 0, TimeSpan.FromSeconds(20));
                 var firstAdvanceMs = start.Elapsed.TotalMilliseconds;
                 var firstForwardCommitMs = inputToFirstForwardFrameCommitMs;
@@ -184,7 +229,9 @@ internal static class PlaybackLatencyProbe
                 if (!generationStable) throw new InvalidOperationException($"Resume cycle {i} recreated the playback session.");
                 var audioReused = !enableAudio || audioOpensBeforeResume == audioOpensAfterResume;
                 if (!audioReused) throw new InvalidOperationException($"Resume cycle {i} reopened the audio proxy.");
-                frameRows.Add(new { Scenario = "resume", Cycle = i, InputToSynchronousReturnMs = resumeCall.SynchronousReturnMs, InputToStartTaskCompletionMs = returnMs, InputToFirstFrameUpperBoundMs = firstResumedMs, InputToFirstForwardFrameCommitMs = firstForwardCommitMs, InputToFirstPlayheadAdvanceUpperBoundMs = firstAdvanceMs, PollIntervalMs = 1, FrameCommitMeans = "PlaybackFramePresented在PreviewImage.Source赋值并更新Playhead后回调；不代表物理显示器呈现。", PlayheadBefore = beforeTime, PlayheadAfter = playhead.Value, SessionGenerationBefore = generationBeforeResume, SessionGenerationAfter = generationAfterResume, SessionReused = generationStable, AudioOpenCountBefore = audioOpensBeforeResume, AudioOpenCountAfter = audioOpensAfterResume, AudioProxyReused = audioReused, Passed = advanced && audioReused });
+                frameRows.Add(new { Scenario = "resume", Cycle = i, InputToSynchronousReturnMs = resumeCall.SynchronousReturnMs, InputToStartTaskCompletionMs = returnMs, InputToFirstFrameUpperBoundMs = firstResumedMs, FirstSubmittedOutputTime = firstResumeOutputTime, PausedPosition = beforeTime, FirstSubmissionMatchesPausedPosition = resumedAtPausedFrame, InputToFirstForwardFrameCommitMs = firstForwardCommitMs, InputToFirstPlayheadAdvanceUpperBoundMs = firstAdvanceMs, PollIntervalMs = 1, FrameCommitMeans = "PlaybackFramePresented在PreviewImage.Source赋值并更新Playhead后回调；不代表物理显示器呈现。", PlayheadBefore = beforeTime, PlayheadAfter = playhead.Value, SessionGenerationBefore = generationBeforeResume, SessionGenerationAfter = generationAfterResume, SessionReused = generationStable, AudioOpenCountBefore = audioOpensBeforeResume, AudioOpenCountAfter = audioOpensAfterResume, AudioProxyReused = audioReused, Passed = advanced && audioReused && resumedAtPausedFrame });
+                expectedResumeTime = null;
+                resumeFrameClock = null;
                 Pause(window);
                 Pump(dispatcher, Task.Delay(80));
             }
@@ -243,10 +290,23 @@ internal static class PlaybackLatencyProbe
             if (!raceObserved) throw new InvalidOperationException("Rapid play-pause-play did not produce a frame from the final playback request.");
             var sustainedStart = playhead.Value;
             var audioPositionStart = player.Position;
-            Pump(dispatcher, Task.Delay(TimeSpan.FromMilliseconds(1250)));
+            sustainedSamples.Clear();
+            captureSustainedFrames = true;
+            Pump(dispatcher, Task.Delay(TimeSpan.FromSeconds(3)));
+            captureSustainedFrames = false;
             var sustainedAdvanced = playhead.Value > sustainedStart + .5;
             var audioClockAdvanced = !enableAudio || player.Position > audioPositionStart + TimeSpan.FromMilliseconds(500);
-            frameRows.Add(new { Scenario = "sustained-playback", DurationMs = 1250, PlayheadBefore = sustainedStart, PlayheadAfter = playhead.Value, MediaElementPositionBefore = audioPositionStart, MediaElementPositionAfter = player.Position, Passed = sustainedAdvanced && audioClockAdvanced });
+            var sustainedMetrics = SummarizeSustainedFrames(sustainedSamples, frameRate);
+            report["SustainedFrameMetrics"] = sustainedMetrics;
+            if (enableAudio && sustainedSamples.Count > 0)
+            {
+                var audioVideoDeltaMs = sustainedSamples.Select(sample => Math.Abs(sample.AudioSeconds - sample.OutputTime) * 1000).ToArray();
+                var maxAvDeltaMs = audioVideoDeltaMs.Max();
+                report["AudioVideoDifference"] = new { MaxAbsoluteMs = maxAvDeltaMs, P95AbsoluteMs = Percentile(audioVideoDeltaMs, .95), Samples = audioVideoDeltaMs.Length, LimitMs = 120 };
+                if (maxAvDeltaMs >= 120) throw new InvalidOperationException($"Audio/video position difference exceeded 120 ms: max={maxAvDeltaMs:F1} ms.");
+            }
+            else report["AudioVideoDifference"] = null;
+            frameRows.Add(new { Scenario = "sustained-playback", DurationMs = 3000, PlayheadBefore = sustainedStart, PlayheadAfter = playhead.Value, MediaElementPositionBefore = audioPositionStart, MediaElementPositionAfter = player.Position, SustainedFrameMetrics = sustainedMetrics, Passed = sustainedAdvanced && audioClockAdvanced });
             if (!sustainedAdvanced || !audioClockAdvanced) throw new InvalidOperationException("Sustained playback did not advance the video and audio clock as expected.");
 
             Pause(window);
@@ -370,6 +430,43 @@ internal static class PlaybackLatencyProbe
         return (task, clock.Elapsed.TotalMilliseconds);
     }
     private static void Pause(MainWindow window) => typeof(MainWindow).GetMethod("StopPlayback", Private)!.Invoke(window, null);
+    private static object SummarizeSustainedFrames(IReadOnlyList<(double OutputTime, long Timestamp, double AudioSeconds)> samples, int frameRate)
+    {
+        var intervals = new double[Math.Max(0, samples.Count - 1)];
+        var dropped = 0;
+        var frames = new object[samples.Count];
+        for (var i = 0; i < samples.Count; i++)
+        {
+            var elapsedMs = (samples[i].Timestamp - samples[0].Timestamp) * 1000d / Stopwatch.Frequency;
+            double? intervalMs = null;
+            int? outputFrameDelta = null;
+            if (i > 0)
+            {
+                intervalMs = (samples[i].Timestamp - samples[i - 1].Timestamp) * 1000d / Stopwatch.Frequency;
+                intervals[i - 1] = intervalMs.Value;
+                outputFrameDelta = Math.Max(1, (int)Math.Round((samples[i].OutputTime - samples[i - 1].OutputTime) * frameRate));
+                dropped += Math.Max(0, outputFrameDelta.Value - 1);
+            }
+            frames[i] = new { OutputTime = samples[i].OutputTime, ElapsedMs = elapsedMs, IntervalMs = intervalMs, OutputFrameDelta = outputFrameDelta, AudioPositionSeconds = samples[i].AudioSeconds };
+        }
+        var elapsedSeconds = samples.Count > 1 ? (samples[^1].Timestamp - samples[0].Timestamp) / (double)Stopwatch.Frequency : 0;
+        return new
+        {
+            CallbackCount = samples.Count,
+            MeasuredSubmittedFps = elapsedSeconds > 0 ? (samples.Count - 1) / elapsedSeconds : 0,
+            P95CallbackGapMs = Percentile(intervals, .95),
+            EstimatedDroppedFrames = dropped,
+            EstimatedDroppedFramesMeans = "按相邻 PlaybackFramePresented outputTime 的帧率索引差估算，不代表物理显示器丢帧。",
+            FrameCallbacks = frames
+        };
+    }
+    private static double Percentile(double[] values, double percentile)
+    {
+        if (values.Length == 0) return 0;
+        Array.Sort(values);
+        var index = Math.Clamp((int)Math.Ceiling(percentile * values.Length) - 1, 0, values.Length - 1);
+        return values[index];
+    }
     private static BitmapSource? CurrentImage(MainWindow window) => ((Image)window.FindName("PreviewImage")).Source as BitmapSource;
     private static T Get<T>(MainWindow window, string name) => (T)(typeof(MainWindow).GetField(name, Private)!.GetValue(window) ?? throw new InvalidOperationException($"{name} is null."));
     private static void Set<T>(MainWindow window, string name, T value) => typeof(MainWindow).GetField(name, Private)!.SetValue(window, value);
