@@ -175,26 +175,69 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { App.Log(ex); Status.Text = ex.Message; SurfaceDialog.Show(DesktopDialogOwner(), ex.Message, "操作未完成", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
+    /// <summary>
+    /// 设备/窗口枚举的统一保护：异步查询加超时，超时或异常就跳过这一项。
+    /// 异常设备（离线音频端点、虚拟显示器、MIDI 测试设备等）会让枚举无限期阻塞，
+    /// 过去表现为整个程序 AppHang、界面永远出不来。
+    /// </summary>
+    private static async Task<T?> TryQueryAsync<T>(string what, Task<T> query, TimeSpan budget) where T : class
+    {
+        try
+        {
+            var result = await query.WaitAsync(budget);
+            App.Trace($"devices: {what} ok");
+            return result;
+        }
+        catch (TimeoutException)
+        {
+            App.Trace($"devices: {what} TIMEOUT after {budget.TotalSeconds:0}s, skipped");
+            return null;
+        }
+        catch (Exception error)
+        {
+            App.Trace($"devices: {what} failed: {error.GetType().Name} {error.Message}");
+            return null;
+        }
+    }
+
     private async Task RefreshDevices()
     {
         if (!IsLoaded && !desktopResident) return;
+        App.Trace("RefreshDevices: begin");
+        var budget = TimeSpan.FromSeconds(6);
         var oldMicrophone=(MicDevices.SelectedItem as AudioDeviceInfo)?.Id;var oldCamera=(CameraDevices.SelectedItem as CameraInfo)?.Id;
         var list = new List<TargetItem>();
         if (CaptureKind.SelectedIndex == 1)
         {
-            var windows = await capture.EnumerateWindowsAsync();
-            var visibleWindows = WindowCaptureSourceFilter.Filter(
-                windows,
-                Environment.ProcessId,
-                new WindowInteropHelper(this).Handle,
-                excludeEditorDuringRecording);
-            list.AddRange(visibleWindows.Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+            var windows = await TryQueryAsync("windows", capture.EnumerateWindowsAsync(), budget);
+            if (windows is not null)
+            {
+                var visibleWindows = WindowCaptureSourceFilter.Filter(
+                    windows,
+                    Environment.ProcessId,
+                    new WindowInteropHelper(this).Handle,
+                    excludeEditorDuringRecording);
+                list.AddRange(visibleWindows.Select(x => new TargetItem(x.Title, new(CaptureTargetKind.Window, x.Id, x.Bounds, x.Handle))));
+            }
         }
-        else list.AddRange((await capture.EnumerateDisplaysAsync()).Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
-        Targets.ItemsSource = list; Targets.SelectedIndex = 0;
-        MicDevices.ItemsSource = (await trackCapture.EnumerateAudioDevicesAsync()).Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
-        CameraDevices.ItemsSource = await trackCapture.EnumerateCamerasAsync(); CameraDevices.SelectedItem=CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault(x=>x.Id==oldCamera)??CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault();
+        else
+        {
+            var displays = await TryQueryAsync("displays", capture.EnumerateDisplaysAsync(), budget);
+            if (displays is not null) list.AddRange(displays.Select(x => new TargetItem($"{x.Name} · {x.Bounds.Width}×{x.Bounds.Height}", new(CaptureTargetKind.Display, x.Id, x.Bounds))));
+        }
+        Targets.ItemsSource = list; Targets.SelectedIndex = list.Count > 0 ? 0 : -1;
+        var microphones = await TryQueryAsync("microphones", trackCapture.EnumerateAudioDevicesAsync(), budget);
+        if (microphones is not null)
+        {
+            MicDevices.ItemsSource = microphones.Where(x => x.Kind == AudioDeviceKind.Microphone).ToArray(); MicDevices.SelectedItem=MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault(x=>x.Id==oldMicrophone)??MicDevices.Items.Cast<AudioDeviceInfo>().FirstOrDefault();
+        }
+        var cameras = await TryQueryAsync("cameras", trackCapture.EnumerateCamerasAsync(), budget);
+        if (cameras is not null)
+        {
+            CameraDevices.ItemsSource = cameras; CameraDevices.SelectedItem=CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault(x=>x.Id==oldCamera)??CameraDevices.Items.Cast<CameraInfo>().FirstOrDefault();
+        }
         RegionButton.Visibility = CaptureKind.SelectedIndex == 2 ? Visibility.Visible : Visibility.Collapsed;
+        App.Trace("RefreshDevices: end");
     }
     private async void CaptureKindChanged(object sender, SelectionChangedEventArgs e) { if (IsLoaded&&!changingRecorderMode) await Guard(RefreshDevices); }
     private async void RefreshDevicesClick(object sender, RoutedEventArgs e) => await Guard(RefreshDevices);
