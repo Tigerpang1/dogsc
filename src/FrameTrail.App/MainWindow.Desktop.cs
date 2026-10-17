@@ -169,7 +169,7 @@ public partial class MainWindow
         {
             var projects = new MenuItem { Header = "最近项目" };
             foreach (var path in recent)
-                AddMenu(projects, System.IO.Path.GetFileNameWithoutExtension(path), () => Guard(async () => { ShowEditorForDesktop(); await OpenProject(path); }));
+                AddMenu(projects, RecentProjects.DisplayNameFor(path), () => Guard(async () => { ShowEditorForDesktop(); await OpenProject(path); }));
             menu.Items.Add(projects);
         }
         menu.Items.Add(new Separator());
